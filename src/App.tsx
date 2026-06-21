@@ -317,6 +317,61 @@ function NoteInfoPopover({ note }: { note: NoteWithContent | null }) {
   );
 }
 
+function ResizeHandle({
+  side,
+  ariaLabel,
+  style,
+  onResize,
+}: {
+  side: "left" | "right";
+  ariaLabel: string;
+  style: React.CSSProperties;
+  onResize: (clientX: number) => void;
+}) {
+  const [active, setActive] = useState(false);
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    function onMove(event: PointerEvent) {
+      if (draggingRef.current) {
+        onResizeRef.current(event.clientX);
+      }
+    }
+    function onUp() {
+      if (draggingRef.current) {
+        draggingRef.current = false;
+        setActive(false);
+        document.body.classList.remove("resizing");
+      }
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  return (
+    <div
+      className={`resize-handle resize-handle-${side}${active ? " active" : ""}`}
+      style={style}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={ariaLabel}
+      onDoubleClick={() => onResizeRef.current(-1)}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        draggingRef.current = true;
+        setActive(true);
+        document.body.classList.add("resizing");
+      }}
+    />
+  );
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<BankSnapshot>(emptySnapshot);
   const [activeNote, setActiveNote] = useState<NoteWithContent | null>(null);
@@ -347,7 +402,35 @@ function App() {
   } | null>(null);
   const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(
+    () => Number(localStorage.getItem("smooth-sidebar-width")) || 340,
+  );
+  const [panelWidth, setPanelWidth] = useState(
+    () => Number(localStorage.getItem("smooth-panel-width")) || 308,
+  );
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const MIN_EDITOR = 360;
+
+  function resizeSidebar(clientX: number) {
+    if (clientX < 0) {
+      setSidebarWidth(340);
+      return;
+    }
+    const reserved = activeNote && panelOpen ? panelWidth : 0;
+    const max = Math.max(240, window.innerWidth - reserved - MIN_EDITOR);
+    setSidebarWidth(Math.min(Math.max(clientX, 240), max));
+  }
+
+  function resizePanel(clientX: number) {
+    if (clientX < 0) {
+      setPanelWidth(308);
+      return;
+    }
+    const next = window.innerWidth - clientX;
+    const max = Math.max(240, window.innerWidth - sidebarWidth - MIN_EDITOR);
+    setPanelWidth(Math.min(Math.max(next, 240), max));
+  }
 
   const activeNotes = snapshot.notes.filter((note) => !note.deleted_at);
   const trashedNotes = useMemo(
@@ -470,6 +553,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem("smooth-note-sort", sortMode);
   }, [sortMode]);
+
+  useEffect(() => {
+    localStorage.setItem("smooth-sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("smooth-panel-width", String(panelWidth));
+  }, [panelWidth]);
 
   useEffect(() => {
     let cancelled = false;
@@ -788,7 +879,10 @@ function App() {
           <kbd>⌘K</kbd>
         </button>
       </header>
-      <div className="app-body">
+      <div
+        className="app-body"
+        style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}
+      >
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>Knowledge Bank</h1>
@@ -998,6 +1092,11 @@ function App() {
             className={
               activeNote && panelOpen ? "notes-workspace with-panel" : "notes-workspace"
             }
+            style={
+              activeNote && panelOpen
+                ? { gridTemplateColumns: `minmax(0, 1fr) ${panelWidth}px` }
+                : undefined
+            }
           >
             <NoteEditor
               note={activeNote}
@@ -1012,18 +1111,32 @@ function App() {
               onMove={moveNote}
             />
             {activeNote && panelOpen ? (
-              <ContextPanel
-                note={activeNote}
-                linkedNotes={linkedNotes}
-                linkSuggestions={linkSuggestions}
-                onOpenNote={openNote}
-                onLinkSuggestion={linkSuggestedNote}
-                onUnlink={unlinkNotes}
-              />
+              <>
+                <ResizeHandle
+                  side="right"
+                  ariaLabel="Resize details panel"
+                  style={{ right: panelWidth }}
+                  onResize={resizePanel}
+                />
+                <ContextPanel
+                  note={activeNote}
+                  linkedNotes={linkedNotes}
+                  linkSuggestions={linkSuggestions}
+                  onOpenNote={openNote}
+                  onLinkSuggestion={linkSuggestedNote}
+                  onUnlink={unlinkNotes}
+                />
+              </>
             ) : null}
           </div>
         )}
       </section>
+      <ResizeHandle
+        side="left"
+        ariaLabel="Resize sidebar"
+        style={{ left: sidebarWidth }}
+        onResize={resizeSidebar}
+      />
       </div>
 
       {paletteOpen ? (

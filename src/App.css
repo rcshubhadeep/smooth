@@ -322,6 +322,7 @@ input[type="checkbox"]:focus-visible,
 }
 
 .app-body {
+  position: relative;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   min-height: 0;
@@ -1459,6 +1460,7 @@ select {
    Editor
    ============================================================ */
 .notes-workspace {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
@@ -2423,6 +2425,51 @@ select {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+/* ============================================================
+   Resizable pane splitters
+   ============================================================ */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.resize-handle-left {
+  margin-left: -5px;
+}
+
+.resize-handle-right {
+  margin-right: -5px;
+}
+
+/* The visible hairline, centered on the boundary */
+.resize-handle::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  content: "";
+  transition: background var(--t) var(--ease);
+}
+
+.resize-handle:hover::after,
+.resize-handle.active::after {
+  background: var(--accent);
+}
+
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ============================================================
