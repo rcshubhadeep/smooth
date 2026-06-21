@@ -18,6 +18,7 @@ import {
   FolderOpen,
   Heading2,
   Inbox,
+  Info,
   Italic,
   Link2,
   List,
@@ -156,6 +157,8 @@ const emptySnapshot: BankSnapshot = {
   links: [],
 };
 
+const ENTITY_PREVIEW_LIMIT = 12;
+
 function markdownToHtml(markdown: string) {
   return marked.parse(markdown || "", { async: false }) as string;
 }
@@ -178,6 +181,11 @@ function formatTime(value: string) {
     month: "short",
     day: "numeric",
   });
+}
+
+function noteWordCount(content: string) {
+  const text = content.replace(/[#>*_`~\-[\]()]/g, " ").trim();
+  return text ? text.split(/\s+/).length : 0;
 }
 
 function dateValue(value: string) {
@@ -278,6 +286,34 @@ function ToastViewport() {
         );
       })}
     </div>
+  );
+}
+
+function NoteInfoPopover({ note }: { note: NoteWithContent | null }) {
+  if (!note) {
+    return null;
+  }
+
+  return (
+    <span className="note-info-popover">
+      <button className="note-info-button" type="button" aria-label="Note info">
+        <Info size={13} />
+      </button>
+      <span className="note-info-card" role="tooltip">
+        <span>
+          <b>Created</b>
+          <small>{formatTime(note.created_at)}</small>
+        </span>
+        <span>
+          <b>Updated</b>
+          <small>{formatTime(note.updated_at)}</small>
+        </span>
+        <span>
+          <b>Words</b>
+          <small>{noteWordCount(note.content).toLocaleString()}</small>
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -1865,6 +1901,7 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
     entities: [],
   });
   const [isQueuing, setIsQueuing] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const refreshExtraction = useCallback(async () => {
     const nextExtraction = await invoke<NoteExtractionView>("get_note_extraction", {
@@ -1879,6 +1916,7 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
       ...current,
       status: note.extraction_status,
     }));
+    setIsExpanded(false);
     void refreshExtraction();
   }, [note.extraction_status, note.id, refreshExtraction]);
 
@@ -1908,6 +1946,10 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
     !note.deleted_at &&
     !["queued", "processing"].includes(extraction.status) &&
     note.content.trim().length > 0;
+  const visibleEntities = isExpanded
+    ? extraction.entities
+    : extraction.entities.slice(0, ENTITY_PREVIEW_LIMIT);
+  const hiddenEntityCount = Math.max(0, extraction.entities.length - ENTITY_PREVIEW_LIMIT);
 
   return (
     <section className="entity-strip">
@@ -1924,13 +1966,24 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
       {extraction.error ? <p className="entity-error">{extraction.error}</p> : null}
       {extraction.entities.length > 0 ? (
         <div className="entity-chips">
-          {extraction.entities.map((entity) => (
+          {visibleEntities.map((entity) => (
             <span className="entity-chip" key={entity.id} title={entity.entity_type}>
               <small>{entity.entity_type}</small>
               {entity.name}
               {entity.mention_count > 1 ? <b>{entity.mention_count}</b> : null}
             </span>
           ))}
+          {hiddenEntityCount > 0 ? (
+            <button
+              className="entity-more"
+              type="button"
+              onClick={() => setIsExpanded((expanded) => !expanded)}
+              aria-expanded={isExpanded}
+            >
+              <ChevronDown className={isExpanded ? "expanded" : ""} size={14} />
+              {isExpanded ? "Less" : `${hiddenEntityCount} more`}
+            </button>
+          ) : null}
         </div>
       ) : (
         <p className="entity-empty">
@@ -2124,6 +2177,7 @@ function NoteEditor({
                   </option>
                 ))}
               </select>
+              <NoteInfoPopover note={note} />
               {saveState !== "idle" ? (
                 <span className={`save-indicator ${saveState}`}>
                   {saveState === "saving"
@@ -2235,31 +2289,8 @@ function ContextPanel({
   onLinkSuggestion,
   onUnlink,
 }: ContextPanelProps) {
-  const wordCount = useMemo(() => {
-    const text = note.content.replace(/[#>*_`~\-[\]()]/g, " ").trim();
-    return text ? text.split(/\s+/).length : 0;
-  }, [note.content]);
-
   return (
     <aside className="context-panel">
-      <div className="context-section">
-        <div className="context-heading">About</div>
-        <dl className="context-meta">
-          <div>
-            <dt>Created</dt>
-            <dd>{formatTime(note.created_at)}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatTime(note.updated_at)}</dd>
-          </div>
-          <div>
-            <dt>Words</dt>
-            <dd>{wordCount.toLocaleString()}</dd>
-          </div>
-        </dl>
-      </div>
-
       <EntityStrip note={note} />
 
       <div className="context-section">

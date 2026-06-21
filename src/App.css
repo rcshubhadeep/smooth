@@ -192,6 +192,7 @@ button {
 button:focus-visible,
 select:focus-visible,
 input[type="checkbox"]:focus-visible,
+.note-info-button:focus-visible,
 .search-field:focus-within,
 .folder-form:focus-within {
   outline: none;
@@ -347,6 +348,95 @@ input[type="checkbox"]:focus-visible,
 .sidebar-header .icon-button.primary {
   width: 40px;
   height: 40px;
+}
+
+.note-info-popover {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.note-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.note-info-button:hover,
+.note-info-popover:focus-within .note-info-button {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--panel-strong);
+  color: var(--accent-strong);
+}
+
+.note-info-card {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  min-width: 170px;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition:
+    opacity var(--t) var(--ease),
+    transform var(--t) var(--ease);
+}
+
+.editor-meta .note-info-card {
+  right: 0;
+  left: auto;
+  min-width: 190px;
+}
+
+.note-info-popover:hover .note-info-card,
+.note-info-popover:focus-within .note-info-card {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.note-info-card span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.note-info-card b,
+.note-info-card small {
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.note-info-card b {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.note-info-card small {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .eyebrow {
@@ -1661,6 +1751,40 @@ select {
   font-weight: 600;
 }
 
+.entity-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition:
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.entity-more:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-strong);
+  color: var(--accent-strong);
+}
+
+.entity-more svg {
+  transition: transform var(--t) var(--ease);
+}
+
+.entity-more svg.expanded {
+  transform: rotate(180deg);
+}
+
 .entity-empty,
 .entity-error {
   margin: 5px 0 0;
@@ -1672,7 +1796,7 @@ select {
 }
 
 /* ============================================================
-   Right context panel (note details: about / entities / links)
+   Right context panel (entities / links)
    ============================================================ */
 .context-panel {
   display: flex;
@@ -1717,7 +1841,8 @@ select {
 }
 
 .context-section:first-child,
-.context-panel > .context-section:first-child {
+.context-panel > .context-section:first-child,
+.context-panel > .entity-strip:first-child {
   border-top: 0;
 }
 
