@@ -138,6 +138,13 @@ type NoteExtractionView = {
   entities: NoteEntity[];
 };
 
+type LinkSuggestion = {
+  note: NoteListItem;
+  shared_entities: NoteEntity[];
+  shared_entity_count: number;
+  shared_mention_count: number;
+};
+
 type DropTarget = {
   folderId: string | null;
   index: number;
@@ -296,6 +303,7 @@ function App() {
   };
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [linkSuggestions, setLinkSuggestions] = useState<LinkSuggestion[]>([]);
   const [menuTarget, setMenuTarget] = useState<{
     note: NoteListItem;
     x: number;
@@ -426,6 +434,35 @@ function App() {
   useEffect(() => {
     localStorage.setItem("smooth-note-sort", sortMode);
   }, [sortMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!activeNote || activeNote.deleted_at) {
+      setLinkSuggestions([]);
+      return;
+    }
+
+    invoke<LinkSuggestion[]>("get_link_suggestions", {
+      noteId: activeNote.id,
+      limit: 6,
+    })
+      .then((suggestions) => {
+        if (!cancelled) {
+          setLinkSuggestions(suggestions);
+        }
+      })
+      .catch((suggestionError: unknown) => {
+        if (!cancelled) {
+          setLinkSuggestions([]);
+          setError(String(suggestionError));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNote?.deleted_at, activeNote?.id, snapshot.links]);
 
   async function openNote(id: string) {
     try {
@@ -649,6 +686,26 @@ function App() {
       setError(null);
       const bank = await invoke<BankSnapshot>("link_notes", { ids: selectedIds });
       setSnapshot(bank);
+    } catch (linkError) {
+      setError(String(linkError));
+    }
+  }
+
+  async function linkSuggestedNote(targetId: string) {
+    if (!activeNote) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const bank = await invoke<BankSnapshot>("link_notes", {
+        ids: [activeNote.id, targetId],
+      });
+      setSnapshot(bank);
+      setLinkSuggestions((current) =>
+        current.filter((suggestion) => suggestion.note.id !== targetId),
+      );
+      toast.success("Linked note");
     } catch (linkError) {
       setError(String(linkError));
     }
@@ -922,7 +979,9 @@ function App() {
               <ContextPanel
                 note={activeNote}
                 linkedNotes={linkedNotes}
+                linkSuggestions={linkSuggestions}
                 onOpenNote={openNote}
+                onLinkSuggestion={linkSuggestedNote}
                 onUnlink={unlinkNotes}
               />
             ) : null}
@@ -2162,11 +2221,20 @@ function NoteEditor({
 type ContextPanelProps = {
   note: NoteWithContent;
   linkedNotes: NoteListItem[];
+  linkSuggestions: LinkSuggestion[];
   onOpenNote: (id: string) => Promise<void>;
+  onLinkSuggestion: (targetId: string) => Promise<void>;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
-function ContextPanel({ note, linkedNotes, onOpenNote, onUnlink }: ContextPanelProps) {
+function ContextPanel({
+  note,
+  linkedNotes,
+  linkSuggestions,
+  onOpenNote,
+  onLinkSuggestion,
+  onUnlink,
+}: ContextPanelProps) {
   const wordCount = useMemo(() => {
     const text = note.content.replace(/[#>*_`~\-[\]()]/g, " ").trim();
     return text ? text.split(/\s+/).length : 0;
@@ -2216,6 +2284,47 @@ function ContextPanel({ note, linkedNotes, onOpenNote, onUnlink }: ContextPanelP
                   title="Unlink note"
                 >
                   <Unlink size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="context-section">
+        <div className="context-heading">
+          <span>Suggested links</span>
+          <small>{linkSuggestions.length}</small>
+        </div>
+        {linkSuggestions.length === 0 ? (
+          <p className="context-empty">No entity matches yet</p>
+        ) : (
+          <div className="context-links">
+            {linkSuggestions.map((suggestion) => (
+              <div className="suggested-row" key={suggestion.note.id}>
+                <button
+                  className="suggested-main"
+                  type="button"
+                  onClick={() => void onOpenNote(suggestion.note.id)}
+                >
+                  <span>{suggestion.note.title || "Untitled"}</span>
+                  <small>
+                    {suggestion.shared_entity_count} shared{" "}
+                    {suggestion.shared_entity_count === 1 ? "entity" : "entities"}
+                  </small>
+                  <span className="suggested-entities">
+                    {suggestion.shared_entities.map((entity) => (
+                      <b key={entity.id}>{entity.name}</b>
+                    ))}
+                  </span>
+                </button>
+                <button
+                  className="ghost-icon"
+                  type="button"
+                  onClick={() => void onLinkSuggestion(suggestion.note.id)}
+                  title="Link suggested note"
+                >
+                  <Link2 size={15} />
                 </button>
               </div>
             ))}

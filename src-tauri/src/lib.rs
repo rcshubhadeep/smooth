@@ -202,6 +202,14 @@ struct NoteExtractionView {
     entities: Vec<NoteEntity>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct LinkSuggestion {
+    note: NoteListItem,
+    shared_entities: Vec<NoteEntity>,
+    shared_entity_count: u64,
+    shared_mention_count: u64,
+}
+
 #[derive(Debug)]
 enum ChunkExtractionError {
     Split(String),
@@ -1964,6 +1972,142 @@ fn get_note_extraction(app: AppHandle, id: String) -> Result<NoteExtractionView,
 }
 
 #[tauri::command]
+fn get_link_suggestions(
+    app: AppHandle,
+    note_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<LinkSuggestion>, String> {
+    let connection = open_database(&app)?;
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id = ?1 AND deleted_at IS NULL",
+            params![note_id],
+            |row| row.get::<_, u64>(0),
+        )
+        .map_err(db_error)
+        .and_then(|count| {
+            if count == 0 {
+                Err("Note not found".to_string())
+            } else {
+                Ok(())
+            }
+        })?;
+
+    let limit = i64::from(limit.unwrap_or(6).clamp(1, 20));
+    let mut statement = connection
+        .prepare(
+            "
+            WITH source_entities AS (
+                SELECT entity_id, COUNT(*) AS source_mentions
+                FROM entity_mentions
+                WHERE note_id = ?1
+                GROUP BY entity_id
+            ),
+            candidate_entities AS (
+                SELECT mentions.note_id,
+                       mentions.entity_id,
+                       COUNT(*) AS candidate_mentions
+                FROM entity_mentions AS mentions
+                JOIN source_entities
+                  ON source_entities.entity_id = mentions.entity_id
+                JOIN notes
+                  ON notes.id = mentions.note_id
+                 AND notes.deleted_at IS NULL
+                WHERE mentions.note_id != ?1
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM note_links
+                    WHERE (source_id = ?1 AND target_id = mentions.note_id)
+                       OR (source_id = mentions.note_id AND target_id = ?1)
+                  )
+                GROUP BY mentions.note_id, mentions.entity_id
+            ),
+            ranked_notes AS (
+                SELECT note_id,
+                       COUNT(*) AS shared_entity_count,
+                       SUM(candidate_mentions) AS shared_mention_count
+                FROM candidate_entities
+                GROUP BY note_id
+                ORDER BY shared_entity_count DESC,
+                         shared_mention_count DESC,
+                         MAX(note_id) ASC
+                LIMIT ?2
+            )
+            SELECT note_id, shared_entity_count, shared_mention_count
+            FROM ranked_notes
+            ORDER BY shared_entity_count DESC, shared_mention_count DESC, note_id ASC
+            ",
+        )
+        .map_err(db_error)?;
+    let candidates = statement
+        .query_map(params![note_id, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        })
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+
+    let mut suggestions = Vec::with_capacity(candidates.len());
+    for (candidate_id, shared_entity_count, shared_mention_count) in candidates {
+        let meta = load_note_meta(&connection, &candidate_id)?;
+        let content = read_note_content(&app, &candidate_id)?;
+        let mut entity_statement = connection
+            .prepare(
+                "
+                SELECT entities.id,
+                       entities.canonical_name,
+                       entities.entity_type,
+                       COUNT(candidate_mentions.id) AS mention_count
+                FROM entity_mentions AS source_mentions
+                JOIN entity_mentions AS candidate_mentions
+                  ON candidate_mentions.entity_id = source_mentions.entity_id
+                 AND candidate_mentions.note_id = ?2
+                JOIN entities ON entities.id = source_mentions.entity_id
+                WHERE source_mentions.note_id = ?1
+                GROUP BY entities.id, entities.canonical_name, entities.entity_type
+                ORDER BY mention_count DESC, entities.canonical_name COLLATE NOCASE ASC
+                LIMIT 5
+                ",
+            )
+            .map_err(db_error)?;
+        let shared_entities = entity_statement
+            .query_map(params![note_id, candidate_id], |row| {
+                Ok(NoteEntity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    mention_count: row.get(3)?,
+                })
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+
+        suggestions.push(LinkSuggestion {
+            note: NoteListItem {
+                id: meta.id,
+                title: meta.title,
+                folder_id: meta.folder_id,
+                created_at: meta.created_at,
+                updated_at: meta.updated_at,
+                deleted_at: meta.deleted_at,
+                excerpt: excerpt(&content),
+                extraction_status: meta.extraction_status,
+            },
+            shared_entities,
+            shared_entity_count,
+            shared_mention_count,
+        });
+    }
+
+    Ok(suggestions)
+}
+
+#[tauri::command]
 fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueueStatus, String> {
     let mut connection = open_database(&app)?;
     let note = load_note_meta(&connection, &id)?;
@@ -2389,6 +2533,7 @@ pub fn run() {
             get_llama_status,
             get_extraction_queue_status,
             get_note_extraction,
+            get_link_suggestions,
             enqueue_note_extraction,
             enqueue_all_note_extractions,
             retry_failed_extractions,
