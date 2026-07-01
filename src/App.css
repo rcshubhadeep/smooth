@@ -191,7 +191,6 @@ button {
    never on the large text-editing surfaces (editor body & title). */
 button:focus-visible,
 select:focus-visible,
-input[type="checkbox"]:focus-visible,
 .note-info-button:focus-visible,
 .search-field:focus-within,
 .folder-form:focus-within {
@@ -852,29 +851,50 @@ select {
   position: relative;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
 }
 
 .row-lead .row-file-icon,
-.row-lead input[type="checkbox"] {
+.row-lead .row-checkbox {
   grid-area: 1 / 1;
-  transition: opacity var(--t) var(--ease);
+  transition:
+    opacity var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease);
 }
 
 .row-lead .row-file-icon {
-  color: var(--faint);
   opacity: 1;
 }
 
-.row-lead input[type="checkbox"] {
+.row-lead .row-checkbox {
+  position: relative;
   width: 16px;
   height: 16px;
-  margin: 0;
-  accent-color: var(--accent);
+  border: 1.5px solid color-mix(in srgb, var(--muted) 70%, var(--border));
+  border-radius: 4px;
+  background: var(--panel-strong);
   opacity: 0;
-  cursor: pointer;
-  pointer-events: none;
+}
+
+.row-lead .row-checkbox::after {
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 4px;
+  height: 8px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  content: "";
+  opacity: 0;
+  transform: rotate(45deg);
 }
 
 .note-row:hover .row-lead .row-file-icon,
@@ -882,10 +902,19 @@ select {
   opacity: 0;
 }
 
-.note-row:hover .row-lead input[type="checkbox"],
-.note-row.selected .row-lead input[type="checkbox"] {
+.note-row:hover .row-lead .row-checkbox,
+.note-row.selected .row-lead .row-checkbox,
+.row-lead:focus-visible .row-checkbox {
   opacity: 1;
-  pointer-events: auto;
+}
+
+.note-row.selected .row-lead .row-checkbox {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.note-row.selected .row-lead .row-checkbox::after {
+  opacity: 1;
 }
 
 .row-file-icon {
@@ -1187,6 +1216,12 @@ select {
 
 .settings-header .eyebrow {
   margin-bottom: 5px;
+}
+
+.settings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .settings-section {

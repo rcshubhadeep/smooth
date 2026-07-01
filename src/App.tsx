@@ -4,6 +4,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
   ArchiveRestore,
+  ArrowLeft,
   ArrowDownUp,
   Bold,
   BookOpen,
@@ -856,6 +857,22 @@ function App() {
     );
   }
 
+  const updateNoteExtractionStatus = useCallback((id: string, status: string) => {
+    setActiveNote((current) =>
+      current?.id === id && current.extraction_status !== status
+        ? { ...current, extraction_status: status }
+        : current,
+    );
+    setSnapshot((current) => ({
+      ...current,
+      notes: current.notes.map((note) =>
+        note.id === id && note.extraction_status !== status
+          ? { ...note, extraction_status: status }
+          : note,
+      ),
+    }));
+  }, []);
+
   function cycleTheme() {
     setTheme((current) =>
       current === "system" ? "light" : current === "light" ? "dark" : "system",
@@ -933,6 +950,13 @@ function App() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void createFolder();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setNewFolderName("");
+                  setIsFolderFormOpen(false);
+                }
               }}
             >
               <input
@@ -1086,7 +1110,7 @@ function App() {
 
       <section className="workspace">
         {view === "settings" ? (
-          <SettingsView />
+          <SettingsView onClose={() => setView("notes")} />
         ) : (
           <div
             className={
@@ -1124,6 +1148,7 @@ function App() {
                   linkSuggestions={linkSuggestions}
                   onOpenNote={openNote}
                   onLinkSuggestion={linkSuggestedNote}
+                  onExtractionStatusChange={updateNoteExtractionStatus}
                   onUnlink={unlinkNotes}
                 />
               </>
@@ -1320,7 +1345,11 @@ function CommandPalette({
   );
 }
 
-function SettingsView() {
+type SettingsViewProps = {
+  onClose: () => void;
+};
+
+function SettingsView({ onClose }: SettingsViewProps) {
   const [config, setConfig] = useState<LlamaConfig>({
     base_url: "http://127.0.0.1:8080",
     preferred_model: null,
@@ -1437,18 +1466,28 @@ function SettingsView() {
           <p className="eyebrow">Settings</p>
           <h2>Local AI</h2>
         </div>
-        <button
-          className="icon-button"
-          type="button"
-          onClick={() => {
-            void checkStatus();
-            void refreshQueueStatus();
-          }}
-          disabled={isChecking || isLoading}
-          title="Refresh connection status"
-        >
-          <RefreshCw className={isChecking ? "spin" : ""} size={17} />
-        </button>
+        <div className="settings-header-actions">
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            title="Back to notes"
+          >
+            <ArrowLeft size={17} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => {
+              void checkStatus();
+              void refreshQueueStatus();
+            }}
+            disabled={isChecking || isLoading}
+            title="Refresh connection status"
+          >
+            <RefreshCw className={isChecking ? "spin" : ""} size={17} />
+          </button>
+        </div>
       </header>
 
       <section className="settings-section">
@@ -1761,16 +1800,19 @@ function NoteRow({
       }
     >
       {selectable ? (
-        <span className="row-lead">
+        <button
+          className="row-lead"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSelected?.(note.id);
+          }}
+          aria-pressed={isSelected}
+          aria-label={`${isSelected ? "Unselect" : "Select"} ${note.title}`}
+        >
           <FileText className="row-file-icon" size={15} />
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={() => onToggleSelected?.(note.id)}
-            onClick={(event) => event.stopPropagation()}
-            aria-label={`Select ${note.title}`}
-          />
-        </span>
+          <span className="row-checkbox" aria-hidden="true" />
+        </button>
       ) : (
         <FileText className="row-file-icon" size={15} />
       )}
@@ -2007,7 +2049,12 @@ function NoteContextMenu({
   );
 }
 
-function EntityStrip({ note }: { note: NoteWithContent }) {
+type EntityStripProps = {
+  note: NoteWithContent;
+  onStatusChange: (noteId: string, status: string) => void;
+};
+
+function EntityStrip({ note, onStatusChange }: EntityStripProps) {
   const [extraction, setExtraction] = useState<NoteExtractionView>({
     status: note.extraction_status,
     error: null,
@@ -2021,8 +2068,9 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
       id: note.id,
     });
     setExtraction(nextExtraction);
+    onStatusChange(note.id, nextExtraction.status);
     return nextExtraction;
-  }, [note.id]);
+  }, [note.id, onStatusChange]);
 
   useEffect(() => {
     setExtraction((current) => ({
@@ -2048,7 +2096,14 @@ function EntityStrip({ note }: { note: NoteWithContent }) {
     setIsQueuing(true);
     try {
       await invoke("enqueue_note_extraction", { id: note.id });
-      await refreshExtraction();
+      const nextExtraction = await refreshExtraction();
+      toast.info(
+        nextExtraction.status === "queued"
+          ? "Extraction queued"
+          : `Extraction ${nextExtraction.status.replace("_", " ")}`,
+      );
+    } catch (queueError) {
+      toast.error(queueError);
     } finally {
       setIsQueuing(false);
     }
@@ -2391,6 +2446,7 @@ type ContextPanelProps = {
   linkSuggestions: LinkSuggestion[];
   onOpenNote: (id: string) => Promise<void>;
   onLinkSuggestion: (targetId: string) => Promise<void>;
+  onExtractionStatusChange: (noteId: string, status: string) => void;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
@@ -2400,11 +2456,12 @@ function ContextPanel({
   linkSuggestions,
   onOpenNote,
   onLinkSuggestion,
+  onExtractionStatusChange,
   onUnlink,
 }: ContextPanelProps) {
   return (
     <aside className="context-panel">
-      <EntityStrip note={note} />
+      <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
 
       <div className="context-section">
         <div className="context-heading">

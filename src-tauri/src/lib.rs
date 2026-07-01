@@ -624,6 +624,48 @@ fn enqueue_extraction(
     Ok(())
 }
 
+fn force_enqueue_extraction(
+    transaction: &rusqlite::Transaction<'_>,
+    note_id: &str,
+    hash: &str,
+) -> Result<(), String> {
+    let now = now_string();
+    transaction
+        .execute(
+            "
+            INSERT INTO extraction_jobs (
+                note_id, content_hash, status, priority, attempts, max_attempts,
+                available_at, created_at, updated_at, started_at, lease_token, last_error
+            )
+            VALUES (?1, ?2, 'pending', 0, 0, 3, ?3, ?3, ?3, NULL, NULL, NULL)
+            ON CONFLICT(note_id) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                status = 'pending',
+                attempts = 0,
+                available_at = excluded.available_at,
+                updated_at = excluded.updated_at,
+                started_at = NULL,
+                lease_token = NULL,
+                last_error = NULL
+            ",
+            params![note_id, hash, now],
+        )
+        .map_err(db_error)?;
+    transaction
+        .execute(
+            "
+            UPDATE notes
+            SET content_hash = ?1,
+                extraction_status = 'queued',
+                extraction_error = NULL
+            WHERE id = ?2
+            ",
+            params![hash, note_id],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
 fn clear_extraction_job(
     transaction: &rusqlite::Transaction<'_>,
     note_id: &str,
@@ -2120,7 +2162,7 @@ fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueue
     if content.trim().is_empty() {
         clear_extraction_job(&transaction, &id)?;
     } else {
-        enqueue_extraction(&transaction, &id, &content_hash(&content))?;
+        force_enqueue_extraction(&transaction, &id, &content_hash(&content))?;
     }
     transaction.commit().map_err(db_error)?;
     get_extraction_queue_status(app)
