@@ -774,7 +774,8 @@ fn extraction_messages(title: &str, chunk: &str) -> serde_json::Value {
                 "Canonicalize names conservatively. Do not merge people or organizations merely ",
                 "because their names are similar. Include meaningful concepts, but omit generic ",
                 "words and incidental nouns. surface_text must be text appearing in the input. ",
-                "Return only the schema-constrained JSON."
+                "Return only the schema-constrained JSON. Do not include markdown, explanations, ",
+                "thinking text, or thinking tags."
             )
         },
         {
@@ -782,6 +783,53 @@ fn extraction_messages(title: &str, chunk: &str) -> serde_json::Value {
             "content": format!("Note title: {title}\n\nNote chunk:\n{chunk}")
         }
     ])
+}
+
+fn extraction_request_payload(
+    model: &str,
+    budget: ExtractionBudget,
+    title: &str,
+    chunk: &str,
+    strict_schema: bool,
+) -> serde_json::Value {
+    let mut payload = json!({
+        "model": model,
+        "messages": extraction_messages(title, chunk),
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "max_tokens": budget.max_output_tokens,
+        "stream": false,
+        "reasoning_format": "none",
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        }
+    });
+
+    if strict_schema {
+        payload
+            .as_object_mut()
+            .expect("payload is an object")
+            .insert(
+                "response_format".to_string(),
+                json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "note_entities",
+                        "strict": true,
+                        "schema": extraction_schema(budget.max_entities)
+                    }
+                }),
+            );
+    }
+
+    payload
+}
+
+fn is_grammar_sampler_error(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    lower.contains("grammar sampler")
+        || lower.contains("error initializing grammar")
+        || lower.contains("generation prompt:")
 }
 
 fn normalize_entity_name(value: &str) -> String {
@@ -1001,65 +1049,84 @@ async fn extract_chunk_entities(
     title: &str,
     chunk: &str,
 ) -> Result<Vec<ExtractedEntity>, ChunkExtractionError> {
-    let response = client
-        .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
-        .json(&json!({
-            "model": model,
-            "messages": extraction_messages(title, chunk),
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "note_entities",
-                    "strict": true,
-                    "schema": extraction_schema(budget.max_entities)
-                }
-            },
-            "temperature": 0.1,
-            "top_p": 0.9,
-            "max_tokens": budget.max_output_tokens,
-            "stream": false,
-            "reasoning_format": "none",
-            "chat_template_kwargs": {
-                "enable_thinking": false
-            }
-        }))
-        .send()
-        .await
-        .map_err(|error| {
-            ChunkExtractionError::Retry(format!("llama.cpp request failed: {error}"))
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
+    async fn request_completion(
+        client: &reqwest::Client,
+        config: &LlamaConfig,
+        model: &str,
+        budget: ExtractionBudget,
+        title: &str,
+        chunk: &str,
+        strict_schema: bool,
+    ) -> Result<(reqwest::StatusCode, String), ChunkExtractionError> {
+        let response = client
+            .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
+            .json(&extraction_request_payload(
+                model,
+                budget,
+                title,
+                chunk,
+                strict_schema,
+            ))
+            .send()
+            .await
+            .map_err(|error| {
+                ChunkExtractionError::Retry(format!("llama.cpp request failed: {error}"))
+            })?;
+        let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        Ok((status, body))
+    }
+
+    fn http_extraction_error(status: reqwest::StatusCode, body: &str) -> ChunkExtractionError {
         let message = format!(
             "llama.cpp returned HTTP {}: {}",
             status.as_u16(),
             truncate_chars(body.trim(), 300)
         );
-        return if status == reqwest::StatusCode::BAD_REQUEST
+        if status == reqwest::StatusCode::BAD_REQUEST
             || status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
         {
-            Err(ChunkExtractionError::Split(message))
+            ChunkExtractionError::Split(message)
         } else {
-            Err(ChunkExtractionError::Retry(message))
-        };
+            ChunkExtractionError::Retry(message)
+        }
     }
 
-    let response = response.text().await.map_err(|error| {
-        ChunkExtractionError::Retry(format!("Unable to read llama.cpp response: {error}"))
-    })?;
-    // #[cfg(debug_assertions)]
-    // println!(
-    //     "[smooth:llm-extraction-response]\nmodel={model}\ninput_budget={}\noutput_budget={}\nchunk_chars={}\nraw_response={response}",
-    //     budget.input_tokens,
-    //     budget.max_output_tokens,
-    //     chunk.chars().count()
-    // );
+    let (status, mut response) =
+        request_completion(client, config, model, budget, title, chunk, true).await?;
+    let used_fallback = if !status.is_success() && is_grammar_sampler_error(&response) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[smooth:llm-extraction-fallback]\nmodel={model}\nreason=strict_schema_grammar_error\nerror={}",
+            truncate_chars(response.trim(), 1000)
+        );
+        let (fallback_status, fallback_response) =
+            request_completion(client, config, model, budget, title, chunk, false).await?;
+        if !fallback_status.is_success() {
+            return Err(http_extraction_error(fallback_status, &fallback_response));
+        }
+        response = fallback_response;
+        true
+    } else {
+        if !status.is_success() {
+            return Err(http_extraction_error(status, &response));
+        }
+        false
+    };
+
+    #[cfg(debug_assertions)]
+    println!(
+        "[smooth:llm-extraction-response]\nmodel={model}\nmode={}\ninput_budget={}\noutput_budget={}\nchunk_chars={}\nraw_response={response}",
+        if used_fallback { "plain_json_fallback" } else { "strict_schema" },
+        budget.input_tokens,
+        budget.max_output_tokens,
+        chunk.chars().count()
+    );
 
     let response = serde_json::from_str::<ChatCompletionResponse>(&response).map_err(|error| {
         ChunkExtractionError::Retry(format!("Invalid llama.cpp response: {error}"))
     })?;
+
     let choice = response.choices.first().ok_or_else(|| {
         ChunkExtractionError::Retry("llama.cpp returned no completion choice".to_string())
     })?;
@@ -2829,6 +2896,21 @@ mod tests {
         assert_eq!(budget.max_output_tokens, 1600);
         assert_eq!(budget.initial_chars, 25344);
         assert_eq!(budget.max_entities, 64);
+    }
+
+    #[test]
+    fn detects_llama_grammar_sampler_errors() {
+        let body = r#"common_sampler_init: error initializing grammar sampler
+Generation prompt:
+'<|im_start|>assistant
+<think>
+
+</think>
+
+'"#;
+
+        assert!(is_grammar_sampler_error(body));
+        assert!(!is_grammar_sampler_error("ordinary HTTP failure"));
     }
 
     #[test]
