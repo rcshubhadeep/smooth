@@ -149,6 +149,20 @@ struct ExtractionJob {
     lease_token: String,
 }
 
+#[derive(Clone, Debug)]
+struct ExtractionModel {
+    id: String,
+    context_tokens: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExtractionBudget {
+    input_tokens: usize,
+    max_output_tokens: usize,
+    initial_chars: usize,
+    max_entities: usize,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct ExtractedEntities {
     #[serde(default)]
@@ -216,9 +230,11 @@ enum ChunkExtractionError {
     Retry(String),
 }
 
-const EXTRACTION_INPUT_TOKEN_BUDGET: usize = 1400;
-const EXTRACTION_MAX_OUTPUT_TOKENS: usize = 900;
-const EXTRACTION_INITIAL_CHARS: usize = 2200;
+const DEFAULT_EXTRACTION_CONTEXT_TOKENS: usize = 8192;
+const EXTRACTION_CONTEXT_RESERVE_TOKENS: usize = 256;
+const EXTRACTION_MIN_OUTPUT_TOKENS: usize = 700;
+const EXTRACTION_MAX_OUTPUT_TOKENS: usize = 1600;
+const EXTRACTION_MIN_INPUT_TOKENS: usize = 700;
 const EXTRACTION_MIN_SPLIT_CHARS: usize = 300;
 const EXTRACTION_POLL_SECONDS: u64 = 2;
 
@@ -691,7 +707,35 @@ fn clear_extraction_job(
     Ok(())
 }
 
-fn extraction_schema() -> serde_json::Value {
+fn extraction_budget(context_tokens: Option<usize>) -> ExtractionBudget {
+    let context_tokens = context_tokens.unwrap_or(DEFAULT_EXTRACTION_CONTEXT_TOKENS);
+    let reserve_tokens = EXTRACTION_CONTEXT_RESERVE_TOKENS.min(context_tokens / 8);
+    let output_ceiling =
+        context_tokens.saturating_sub(reserve_tokens + EXTRACTION_MIN_INPUT_TOKENS);
+    let max_output_tokens = (context_tokens / 5)
+        .clamp(EXTRACTION_MIN_OUTPUT_TOKENS, EXTRACTION_MAX_OUTPUT_TOKENS)
+        .min(output_ceiling);
+    let input_tokens = context_tokens
+        .saturating_sub(max_output_tokens + reserve_tokens)
+        .max(EXTRACTION_MIN_INPUT_TOKENS);
+
+    ExtractionBudget {
+        input_tokens,
+        max_output_tokens,
+        initial_chars: input_tokens.saturating_mul(4),
+        max_entities: (max_output_tokens / 25).clamp(30, 80),
+    }
+}
+
+fn model_context_tokens(model: &LlamaModelResponse) -> Option<usize> {
+    model
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.n_ctx.or(meta.n_ctx_train))
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn extraction_schema(max_entities: usize) -> serde_json::Value {
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -699,7 +743,7 @@ fn extraction_schema() -> serde_json::Value {
         "properties": {
             "entities": {
                 "type": "array",
-                "maxItems": 30,
+                "maxItems": max_entities,
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -794,7 +838,7 @@ fn split_text_near_middle(value: &str) -> Option<(String, String)> {
     }
 }
 
-fn initial_note_chunks(content: &str) -> Vec<String> {
+fn initial_note_chunks(content: &str, max_chars: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
 
@@ -803,14 +847,14 @@ fn initial_note_chunks(content: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|paragraph| !paragraph.is_empty())
     {
-        if paragraph.chars().count() > EXTRACTION_INITIAL_CHARS {
+        if paragraph.chars().count() > max_chars {
             if !current.is_empty() {
                 chunks.push(current.trim().to_string());
                 current.clear();
             }
             let mut pending = VecDeque::from([paragraph.to_string()]);
             while let Some(part) = pending.pop_front() {
-                if part.chars().count() <= EXTRACTION_INITIAL_CHARS {
+                if part.chars().count() <= max_chars {
                     chunks.push(part);
                 } else if let Some((first, second)) = split_text_near_middle(&part) {
                     pending.push_front(second);
@@ -823,8 +867,7 @@ fn initial_note_chunks(content: &str) -> Vec<String> {
         }
 
         let separator = if current.is_empty() { 0 } else { 2 };
-        if current.chars().count() + separator + paragraph.chars().count()
-            > EXTRACTION_INITIAL_CHARS
+        if current.chars().count() + separator + paragraph.chars().count() > max_chars
             && !current.is_empty()
         {
             chunks.push(current.trim().to_string());
@@ -875,17 +918,18 @@ async fn fit_chunks_to_context(
     client: &reqwest::Client,
     config: &LlamaConfig,
     model: &str,
+    budget: ExtractionBudget,
     title: &str,
     content: &str,
 ) -> Result<Vec<String>, String> {
-    let mut pending = VecDeque::from(initial_note_chunks(content));
+    let mut pending = VecDeque::from(initial_note_chunks(content, budget.initial_chars));
     let mut chunks = Vec::new();
 
     while let Some(chunk) = pending.pop_front() {
         let token_count = count_extraction_input_tokens(client, config, model, title, &chunk).await;
         let fits = token_count
-            .map(|count| count <= EXTRACTION_INPUT_TOKEN_BUDGET)
-            .unwrap_or_else(|| chunk.chars().count() <= EXTRACTION_INITIAL_CHARS);
+            .map(|count| count <= budget.input_tokens)
+            .unwrap_or_else(|| chunk.chars().count() <= budget.initial_chars);
         if fits {
             chunks.push(chunk);
             continue;
@@ -894,7 +938,7 @@ async fn fit_chunks_to_context(
         if chunk.chars().count() <= EXTRACTION_MIN_SPLIT_CHARS {
             return Err(format!(
                 "A note segment cannot fit within the {} token extraction budget",
-                EXTRACTION_INPUT_TOKEN_BUDGET
+                budget.input_tokens
             ));
         }
         let Some((first, second)) = split_text_near_middle(&chunk) else {
@@ -953,6 +997,7 @@ async fn extract_chunk_entities(
     client: &reqwest::Client,
     config: &LlamaConfig,
     model: &str,
+    budget: ExtractionBudget,
     title: &str,
     chunk: &str,
 ) -> Result<Vec<ExtractedEntity>, ChunkExtractionError> {
@@ -966,12 +1011,12 @@ async fn extract_chunk_entities(
                 "json_schema": {
                     "name": "note_entities",
                     "strict": true,
-                    "schema": extraction_schema()
+                    "schema": extraction_schema(budget.max_entities)
                 }
             },
             "temperature": 0.1,
             "top_p": 0.9,
-            "max_tokens": EXTRACTION_MAX_OUTPUT_TOKENS,
+            "max_tokens": budget.max_output_tokens,
             "stream": false,
             "reasoning_format": "none",
             "chat_template_kwargs": {
@@ -1001,12 +1046,20 @@ async fn extract_chunk_entities(
         };
     }
 
-    let response = response
-        .json::<ChatCompletionResponse>()
-        .await
-        .map_err(|error| {
-            ChunkExtractionError::Retry(format!("Invalid llama.cpp response: {error}"))
-        })?;
+    let response = response.text().await.map_err(|error| {
+        ChunkExtractionError::Retry(format!("Unable to read llama.cpp response: {error}"))
+    })?;
+    // #[cfg(debug_assertions)]
+    // println!(
+    //     "[smooth:llm-extraction-response]\nmodel={model}\ninput_budget={}\noutput_budget={}\nchunk_chars={}\nraw_response={response}",
+    //     budget.input_tokens,
+    //     budget.max_output_tokens,
+    //     chunk.chars().count()
+    // );
+
+    let response = serde_json::from_str::<ChatCompletionResponse>(&response).map_err(|error| {
+        ChunkExtractionError::Retry(format!("Invalid llama.cpp response: {error}"))
+    })?;
     let choice = response.choices.first().ok_or_else(|| {
         ChunkExtractionError::Retry("llama.cpp returned no completion choice".to_string())
     })?;
@@ -1030,6 +1083,7 @@ async fn extract_entities_adaptively(
     client: &reqwest::Client,
     config: &LlamaConfig,
     model: &str,
+    budget: ExtractionBudget,
     title: &str,
     chunk: String,
 ) -> Result<Vec<ExtractedEntity>, String> {
@@ -1037,7 +1091,7 @@ async fn extract_entities_adaptively(
     let mut entities = Vec::new();
 
     while let Some(part) = pending.pop_front() {
-        match extract_chunk_entities(client, config, model, title, &part).await {
+        match extract_chunk_entities(client, config, model, budget, title, &part).await {
             Ok(extracted) => entities.extend(extracted),
             Err(ChunkExtractionError::Retry(error)) => return Err(error),
             Err(ChunkExtractionError::Split(error)) => {
@@ -1145,14 +1199,10 @@ async fn llama_server_ready(client: &reqwest::Client, config: &LlamaConfig) -> b
         .unwrap_or(false)
 }
 
-async fn resolve_extraction_model(
+async fn fetch_llama_models(
     client: &reqwest::Client,
     config: &LlamaConfig,
-) -> Result<String, String> {
-    if let Some(model) = config.preferred_model.as_ref() {
-        return Ok(model.clone());
-    }
-
+) -> Result<Vec<LlamaModelResponse>, String> {
     let response = client
         .get(llama_endpoint(&config.base_url, "/v1/models"))
         .send()
@@ -1167,12 +1217,39 @@ async fn resolve_extraction_model(
     response
         .json::<LlamaModelsResponse>()
         .await
-        .map_err(|error| format!("Invalid model discovery response: {error}"))?
-        .data
+        .map(|response| response.data)
+        .map_err(|error| format!("Invalid model discovery response: {error}"))
+}
+
+async fn resolve_extraction_model(
+    client: &reqwest::Client,
+    config: &LlamaConfig,
+) -> Result<ExtractionModel, String> {
+    if let Some(model) = config.preferred_model.as_ref() {
+        let context_tokens = fetch_llama_models(client, config)
+            .await
+            .ok()
+            .and_then(|models| {
+                models
+                    .into_iter()
+                    .find(|candidate| candidate.id == *model)
+                    .and_then(|candidate| model_context_tokens(&candidate))
+            });
+        return Ok(ExtractionModel {
+            id: model.clone(),
+            context_tokens,
+        });
+    }
+
+    let model = fetch_llama_models(client, config)
+        .await?
         .into_iter()
         .next()
-        .map(|model| model.id)
-        .ok_or_else(|| "llama.cpp has no available model".to_string())
+        .ok_or_else(|| "llama.cpp has no available model".to_string())?;
+    Ok(ExtractionModel {
+        context_tokens: model_context_tokens(&model),
+        id: model.id,
+    })
 }
 
 fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String> {
@@ -1530,7 +1607,7 @@ async fn process_extraction_job(
     app: &AppHandle,
     client: &reqwest::Client,
     config: &LlamaConfig,
-    model: &str,
+    model: &ExtractionModel,
     job: &ExtractionJob,
 ) -> Result<(), String> {
     let connection = open_database(app)?;
@@ -1552,14 +1629,23 @@ async fn process_extraction_job(
         return Ok(());
     }
 
-    let chunks = fit_chunks_to_context(client, config, model, &note.title, &content).await?;
+    let budget = extraction_budget(model.context_tokens);
+    let chunks =
+        fit_chunks_to_context(client, config, &model.id, budget, &note.title, &content).await?;
     let mut all_entities = Vec::new();
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         if !extraction_job_is_current(app, job)? {
             return Ok(());
         }
-        let entities =
-            extract_entities_adaptively(client, config, model, &note.title, chunk.clone()).await?;
+        let entities = extract_entities_adaptively(
+            client,
+            config,
+            &model.id,
+            budget,
+            &note.title,
+            chunk.clone(),
+        )
+        .await?;
         all_entities.extend(entities.into_iter().map(|entity| (chunk_index, entity)));
     }
     persist_extraction_results(app, job, all_entities)?;
@@ -2736,11 +2822,22 @@ mod tests {
     }
 
     #[test]
+    fn extraction_budget_scales_for_8192_context() {
+        let budget = extraction_budget(Some(8192));
+
+        assert_eq!(budget.input_tokens, 6336);
+        assert_eq!(budget.max_output_tokens, 1600);
+        assert_eq!(budget.initial_chars, 25344);
+        assert_eq!(budget.max_entities, 64);
+    }
+
+    #[test]
     fn paragraph_chunking_preserves_all_content() {
-        let first = "A".repeat(EXTRACTION_INITIAL_CHARS - 100);
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS));
+        let first = "A".repeat(budget.initial_chars - 100);
         let second = "B".repeat(250);
         let content = format!("{first}\n\n{second}");
-        let chunks = initial_note_chunks(&content);
+        let chunks = initial_note_chunks(&content, budget.initial_chars);
 
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0], first);
@@ -2749,12 +2846,14 @@ mod tests {
 
     #[test]
     fn dense_large_paragraph_is_split_before_inference() {
-        let content = "Entity-rich sentence. ".repeat(170);
-        let chunks = initial_note_chunks(&content);
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS));
+        let sentence = "Entity-rich sentence. ";
+        let content = sentence.repeat((budget.initial_chars / sentence.len()) + 20);
+        let chunks = initial_note_chunks(&content, budget.initial_chars);
 
         assert!(chunks.len() >= 2);
         assert!(chunks
             .iter()
-            .all(|chunk| chunk.chars().count() <= EXTRACTION_INITIAL_CHARS));
+            .all(|chunk| chunk.chars().count() <= budget.initial_chars));
     }
 }
