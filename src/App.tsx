@@ -884,7 +884,12 @@ function App() {
   return (
     <div className="app-shell">
       <header className="titlebar" data-tauri-drag-region>
-        <span className="wordmark">Smooth</span>
+        <span className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            S
+          </span>
+          <span className="wordmark">Smooth</span>
+        </span>
         <button
           className="palette-trigger"
           type="button"
