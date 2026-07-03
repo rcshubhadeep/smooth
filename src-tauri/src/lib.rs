@@ -22,7 +22,10 @@ use stt::{
     get_stt_config, get_stt_status, save_stt_config, transcribe_capture_file,
     transcribe_last_capture,
 };
-use system_audio::check_system_audio_permission;
+use system_audio::{
+    check_system_audio_permission, get_system_audio_capture_status, start_system_audio_capture,
+    stop_system_audio_capture, SystemAudioCaptureState,
+};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2731,6 +2734,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AudioCaptureState::default())
+        .manage(SystemAudioCaptureState::default())
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
@@ -2757,6 +2761,9 @@ pub fn run() {
             transcribe_capture_file,
             transcribe_last_capture,
             check_system_audio_permission,
+            get_system_audio_capture_status,
+            start_system_audio_capture,
+            stop_system_audio_capture,
             get_bank,
             create_note,
             get_note,

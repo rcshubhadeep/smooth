@@ -158,6 +158,23 @@ type SystemAudioPermissionStatus = {
   error: string | null;
 };
 
+type SystemAudioCapturePreview = {
+  path: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  samples: number;
+};
+
+type SystemAudioCaptureStatus = {
+  is_recording: boolean;
+  output_path: string | null;
+  elapsed_ms: number | null;
+  started_at_ms: number | null;
+  last_preview: SystemAudioCapturePreview | null;
+  last_error: string | null;
+};
+
 type SttConfig = {
   model_path: string;
   language: string | null;
@@ -907,10 +924,12 @@ function App() {
   }
 
   async function linkSelectedNotes() {
+    const count = selectedIds.length;
     try {
       setError(null);
       const bank = await invoke<BankSnapshot>("link_notes", { ids: selectedIds });
       setSnapshot(bank);
+      toast.success(`Linked ${count} notes`);
     } catch (linkError) {
       setError(String(linkError));
     }
@@ -941,6 +960,7 @@ function App() {
       setError(null);
       const bank = await invoke<BankSnapshot>("unlink_notes", { sourceId, targetId });
       setSnapshot(bank);
+      toast.success("Note unlinked");
     } catch (unlinkError) {
       setError(String(unlinkError));
     }
@@ -1461,6 +1481,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(null);
   const [systemAudioStatus, setSystemAudioStatus] =
     useState<SystemAudioPermissionStatus | null>(null);
+  const [systemCaptureStatus, setSystemCaptureStatus] =
+    useState<SystemAudioCaptureStatus | null>(null);
   const [sttConfig, setSttConfig] = useState<SttConfig>({
     model_path: "",
     language: "en",
@@ -1473,6 +1495,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isAudioBusy, setIsAudioBusy] = useState(false);
   const [isSystemAudioBusy, setIsSystemAudioBusy] = useState(false);
+  const [isSystemCaptureBusy, setIsSystemCaptureBusy] = useState(false);
   const [isSttBusy, setIsSttBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
@@ -1501,6 +1524,14 @@ function SettingsView({ onClose }: SettingsViewProps) {
     return nextAudioStatus;
   }, []);
 
+  const refreshSystemCaptureStatus = useCallback(async () => {
+    const nextStatus = await invoke<SystemAudioCaptureStatus>(
+      "get_system_audio_capture_status",
+    );
+    setSystemCaptureStatus(nextStatus);
+    return nextStatus;
+  }, []);
+
   const refreshSttStatus = useCallback(async () => {
     const nextStatus = await invoke<SttStatus>("get_stt_status");
     setSttStatus(nextStatus);
@@ -1523,6 +1554,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
       }),
       refreshQueueStatus(),
       refreshAudioStatus(),
+      refreshSystemCaptureStatus(),
       invoke<SttConfig>("get_stt_config").then((savedConfig) => {
         setSttConfig(savedConfig);
         return refreshSttStatus();
@@ -1530,7 +1562,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
     ])
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
-  }, [checkStatus, refreshAudioStatus, refreshQueueStatus, refreshSttStatus]);
+  }, [
+    checkStatus,
+    refreshAudioStatus,
+    refreshQueueStatus,
+    refreshSttStatus,
+    refreshSystemCaptureStatus,
+  ]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1549,6 +1587,17 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }, 500);
     return () => window.clearInterval(interval);
   }, [audioStatus?.is_recording, refreshAudioStatus]);
+
+  useEffect(() => {
+    if (!systemCaptureStatus?.is_recording) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshSystemCaptureStatus();
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [refreshSystemCaptureStatus, systemCaptureStatus?.is_recording]);
 
   async function saveAndTest() {
     setIsChecking(true);
@@ -1636,6 +1685,38 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function startSystemAudioCapture() {
+    setIsSystemCaptureBusy(true);
+    setSettingsError(null);
+    try {
+      const nextStatus = await invoke<SystemAudioCaptureStatus>(
+        "start_system_audio_capture",
+      );
+      setSystemCaptureStatus(nextStatus);
+    } catch (systemAudioError) {
+      setSettingsError(String(systemAudioError));
+      await refreshSystemCaptureStatus();
+    } finally {
+      setIsSystemCaptureBusy(false);
+    }
+  }
+
+  async function stopSystemAudioCapture() {
+    setIsSystemCaptureBusy(true);
+    setSettingsError(null);
+    try {
+      const nextStatus = await invoke<SystemAudioCaptureStatus>(
+        "stop_system_audio_capture",
+      );
+      setSystemCaptureStatus(nextStatus);
+    } catch (systemAudioError) {
+      setSettingsError(String(systemAudioError));
+      await refreshSystemCaptureStatus();
+    } finally {
+      setIsSystemCaptureBusy(false);
+    }
+  }
+
   async function saveAndCheckStt() {
     setIsSttBusy(true);
     setSettingsError(null);
@@ -1681,6 +1762,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const audioPreviewUrl = audioStatus?.last_preview
     ? convertFileSrc(audioStatus.last_preview.path)
     : null;
+  const systemAudioPreviewUrl = systemCaptureStatus?.last_preview
+    ? convertFileSrc(systemCaptureStatus.last_preview.path)
+    : null;
 
   return (
     <div className="settings-view">
@@ -1705,6 +1789,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
               void checkStatus();
               void refreshQueueStatus();
               void refreshAudioStatus();
+              void refreshSystemCaptureStatus();
               void refreshSttStatus();
             }}
             disabled={isChecking || isLoading}
@@ -1773,7 +1858,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
           <Monitor size={18} />
           <span>System audio</span>
           <small>
-            {systemAudioStatus
+            {systemCaptureStatus?.is_recording
+              ? "Recording"
+              : systemAudioStatus
               ? systemAudioStatus.granted
                 ? "Available"
                 : "Permission needed"
@@ -1821,6 +1908,65 @@ function SettingsView({ onClose }: SettingsViewProps) {
             {isSystemAudioBusy ? "Checking" : "Check Permission"}
           </button>
         </div>
+
+        <div
+          className={
+            systemCaptureStatus?.is_recording
+              ? "audio-capture-card recording"
+              : "audio-capture-card"
+          }
+        >
+          <div className="audio-capture-meter" aria-hidden="true">
+            <Monitor size={19} />
+          </div>
+          <div className="audio-capture-copy">
+            <strong>ScreenCaptureKit audio</strong>
+            <span>
+              {systemCaptureStatus?.is_recording
+                ? `${formatDuration(systemCaptureStatus.elapsed_ms)} · capturing desktop audio`
+                : systemCaptureStatus?.last_preview
+                  ? `${formatDuration(systemCaptureStatus.last_preview.duration_ms)} · ${systemCaptureStatus.last_preview.sample_rate.toLocaleString()} Hz`
+                  : "Ready after permission check"}
+            </span>
+          </div>
+          <div className="audio-capture-actions">
+            <button
+              type="button"
+              onClick={() => void startSystemAudioCapture()}
+              disabled={
+                isSystemCaptureBusy ||
+                systemCaptureStatus?.is_recording ||
+                !systemAudioStatus?.granted
+              }
+            >
+              <Monitor size={15} />
+              Start
+            </button>
+            <button
+              type="button"
+              onClick={() => void stopSystemAudioCapture()}
+              disabled={isSystemCaptureBusy || !systemCaptureStatus?.is_recording}
+            >
+              <Square size={14} />
+              Stop
+            </button>
+          </div>
+        </div>
+
+        {systemCaptureStatus?.last_error ? (
+          <p className="settings-help">{systemCaptureStatus.last_error}</p>
+        ) : null}
+
+        {systemAudioPreviewUrl && systemCaptureStatus?.last_preview ? (
+          <div className="audio-preview">
+            <div>
+              <Play size={15} />
+              <span>Last system capture</span>
+              <small>{formatDuration(systemCaptureStatus.last_preview.duration_ms)}</small>
+            </div>
+            <audio controls src={systemAudioPreviewUrl} />
+          </div>
+        ) : null}
       </section>
 
       <section className="settings-section">
