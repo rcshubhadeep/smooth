@@ -2459,78 +2459,109 @@ function ContextPanel({
   onExtractionStatusChange,
   onUnlink,
 }: ContextPanelProps) {
+  const [tab, setTab] = useState<"details" | "links">("details");
+  const linkCount = linkedNotes.length + linkSuggestions.length;
+
   return (
     <aside className="context-panel">
-      <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
-
-      <div className="context-section">
-        <div className="context-heading">
-          <span>Linked notes</span>
-          <small>{linkedNotes.length}</small>
+      <div className="panel-tabs">
+        <div className="segmented" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "details"}
+            className={tab === "details" ? "active" : ""}
+            onClick={() => setTab("details")}
+          >
+            Details
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "links"}
+            className={tab === "links" ? "active" : ""}
+            onClick={() => setTab("links")}
+          >
+            Links
+            {linkCount > 0 ? <small>{linkCount}</small> : null}
+          </button>
         </div>
-        {linkedNotes.length === 0 ? (
-          <p className="context-empty">No linked notes yet</p>
-        ) : (
-          <div className="context-links">
-            {linkedNotes.map((linked) => (
-              <div className="linked-row" key={linked.id}>
-                <button type="button" onClick={() => void onOpenNote(linked.id)}>
-                  <span>{linked.title || "Untitled"}</span>
-                  <small>{formatTime(linked.updated_at)}</small>
-                </button>
-                <button
-                  className="ghost-icon danger"
-                  type="button"
-                  onClick={() => void onUnlink(note.id, linked.id)}
-                  title="Unlink note"
-                >
-                  <Unlink size={15} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
-      <div className="context-section">
-        <div className="context-heading">
-          <span>Suggested links</span>
-          <small>{linkSuggestions.length}</small>
-        </div>
-        {linkSuggestions.length === 0 ? (
-          <p className="context-empty">No entity matches yet</p>
-        ) : (
-          <div className="context-links">
-            {linkSuggestions.map((suggestion) => (
-              <div className="suggested-row" key={suggestion.note.id}>
-                <button
-                  className="suggested-main"
-                  type="button"
-                  onClick={() => void onOpenNote(suggestion.note.id)}
-                >
-                  <span>{suggestion.note.title || "Untitled"}</span>
-                  <small>
-                    {suggestion.shared_entity_count} shared{" "}
-                    {suggestion.shared_entity_count === 1 ? "entity" : "entities"}
-                  </small>
-                  <span className="suggested-entities">
-                    {suggestion.shared_entities.map((entity) => (
-                      <b key={entity.id}>{entity.name}</b>
-                    ))}
-                  </span>
-                </button>
-                <button
-                  className="ghost-icon"
-                  type="button"
-                  onClick={() => void onLinkSuggestion(suggestion.note.id)}
-                  title="Link suggested note"
-                >
-                  <Link2 size={15} />
-                </button>
-              </div>
-            ))}
+      <div className="panel-pane" hidden={tab !== "details"}>
+        <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
+      </div>
+
+      <div className="panel-pane" hidden={tab !== "links"}>
+        <div className="context-section">
+          <div className="context-heading">
+            <span>Linked notes</span>
+            <small>{linkedNotes.length}</small>
           </div>
-        )}
+          {linkedNotes.length === 0 ? (
+            <p className="context-empty">No linked notes yet</p>
+          ) : (
+            <div className="context-links">
+              {linkedNotes.map((linked) => (
+                <div className="linked-row" key={linked.id}>
+                  <button type="button" onClick={() => void onOpenNote(linked.id)}>
+                    <span>{linked.title || "Untitled"}</span>
+                    <small>{formatTime(linked.updated_at)}</small>
+                  </button>
+                  <button
+                    className="ghost-icon danger"
+                    type="button"
+                    onClick={() => void onUnlink(note.id, linked.id)}
+                    title="Unlink note"
+                  >
+                    <Unlink size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="context-section">
+          <div className="context-heading">
+            <span>Suggested links</span>
+            <small>{linkSuggestions.length}</small>
+          </div>
+          {linkSuggestions.length === 0 ? (
+            <p className="context-empty">No entity matches yet</p>
+          ) : (
+            <div className="context-links">
+              {linkSuggestions.map((suggestion) => (
+                <div className="suggested-row" key={suggestion.note.id}>
+                  <button
+                    className="suggested-main"
+                    type="button"
+                    onClick={() => void onOpenNote(suggestion.note.id)}
+                  >
+                    <span>{suggestion.note.title || "Untitled"}</span>
+                    <small>
+                      {suggestion.shared_entity_count} shared{" "}
+                      {suggestion.shared_entity_count === 1 ? "entity" : "entities"}
+                    </small>
+                    <span className="suggested-entities">
+                      {suggestion.shared_entities.map((entity) => (
+                        <b key={entity.id}>{entity.name}</b>
+                      ))}
+                    </span>
+                  </button>
+                  <button
+                    className="ghost-icon"
+                    type="button"
+                    onClick={() => void onLinkSuggestion(suggestion.note.id)}
+                    title="Link suggested note"
+                  >
+                    <Link2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </aside>
   );

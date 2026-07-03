@@ -1,6 +1,5 @@
 /* ============================================================
-   Fonts — self-hosted for offline Tauri use
-   Geist  → UI chrome      Literata → note body (editorial serif)
+   Fonts — self-hosted for offline Tauri use (Geist, all-sans)
    ============================================================ */
 @font-face {
   font-family: "Geist";
@@ -30,63 +29,36 @@
   font-display: swap;
   src: url("./assets/fonts/geist-700.woff2") format("woff2");
 }
-@font-face {
-  font-family: "Literata";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./assets/fonts/literata-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Literata";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("./assets/fonts/literata-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Literata";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("./assets/fonts/literata-600.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Literata";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./assets/fonts/literata-italic-400.woff2") format("woff2");
-}
 
 /* ============================================================
-   Design tokens
+   Design tokens — cool, near-monochrome (Geist / native-slick)
    ============================================================ */
 :root {
   color-scheme: light dark;
 
-  /* Warm, paper-like light theme with the original sage accent */
-  --bg: #f3f0e8;
-  --panel: #faf8f2;
+  --bg: #ececee;
+  --panel: #f5f5f7;
   --panel-strong: #ffffff;
-  --text: #211f1a;
-  --text-soft: #4a473f;
-  --muted: #767164;
-  --faint: #9b9686;
-  --border: #e6e1d4;
-  --border-strong: #d8d2c2;
-  --accent: #2f6f5e;
-  --accent-strong: #245749;
-  --accent-soft: #e2ece6;
-  --danger: #b0463f;
-  --danger-soft: #f3ddd7;
-  --selection: color-mix(in srgb, var(--accent) 18%, transparent);
+  --text: #1d1d1f;
+  --text-soft: #48484a;
+  --muted: #86868b;
+  --faint: #aeaeb2;
+  --border: #e6e6e9;
+  --border-strong: #d7d7db;
+  /* Single ink accent — primary actions, selection, active states */
+  --accent: #1d1d1f;
+  --accent-strong: #000000;
+  --accent-soft: #ececef;
+  --on-accent: #ffffff;
+  --danger: #e5484d;
+  --danger-soft: #fdecec;
+  --selection: color-mix(in srgb, var(--accent) 12%, transparent);
 
-  /* Elevation — softer & warmer than before */
-  --shadow-sm: 0 1px 2px rgba(40, 34, 22, 0.05);
-  --shadow: 0 6px 20px rgba(40, 34, 22, 0.08), 0 1px 3px rgba(40, 34, 22, 0.05);
-  --shadow-lg: 0 18px 48px rgba(40, 34, 22, 0.13);
-  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  /* Elevation — soft, cool, diffuse */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 16px 44px rgba(0, 0, 0, 0.13);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 
   /* Layout */
   --titlebar-h: 38px;
@@ -95,10 +67,10 @@
   --control-h: 34px;
   --control-h-lg: 38px;
 
-  /* Radii */
-  --r-sm: 8px;
-  --r: 10px;
-  --r-lg: 14px;
+  /* Radii — rounder, softer */
+  --r-sm: 9px;
+  --r: 12px;
+  --r-lg: 16px;
 
   /* Motion */
   --t: 140ms;
@@ -106,58 +78,61 @@
 
   --font-ui: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
-  --font-serif: "Literata", Georgia, "Iowan Old Style", "Times New Roman", serif;
+  /* Kept as an alias so any stray reference still renders sans */
+  --font-serif: var(--font-ui);
 
   font-family: var(--font-ui);
   color: var(--text);
   background: var(--bg);
-  font-synthesis: none;
+  font-synthesis: style;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 :root[data-theme="dark"] {
-  --bg: #1a1916;
-  --panel: #211f1b;
-  --panel-strong: #2a2823;
-  --text: #f1ede3;
-  --text-soft: #d4cfc2;
-  --muted: #a6a08f;
-  --faint: #79735f;
-  --border: #383530;
-  --border-strong: #46423a;
-  --accent: #82c1a5;
-  --accent-strong: #9fd6bb;
-  --accent-soft: #243029;
-  --danger: #e88b83;
-  --danger-soft: #3d2723;
-  --selection: color-mix(in srgb, var(--accent) 24%, transparent);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 6px 20px rgba(0, 0, 0, 0.32), 0 1px 3px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.46);
+  --bg: #141416;
+  --panel: #1a1a1c;
+  --panel-strong: #202022;
+  --text: #f5f5f7;
+  --text-soft: #c7c7cc;
+  --muted: #8e8e93;
+  --faint: #5c5c60;
+  --border: #2a2a2d;
+  --border-strong: #3a3a3e;
+  --accent: #f5f5f7;
+  --accent-strong: #ffffff;
+  --accent-soft: #2c2c30;
+  --on-accent: #1d1d1f;
+  --danger: #ff6b6b;
+  --danger-soft: #3a2223;
+  --selection: color-mix(in srgb, var(--accent) 20%, transparent);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 16px 44px rgba(0, 0, 0, 0.55);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg: #1a1916;
-    --panel: #211f1b;
-    --panel-strong: #2a2823;
-    --text: #f1ede3;
-    --text-soft: #d4cfc2;
-    --muted: #a6a08f;
-    --faint: #79735f;
-    --border: #383530;
-    --border-strong: #46423a;
-    --accent: #82c1a5;
-    --accent-strong: #9fd6bb;
-    --accent-soft: #243029;
-    --danger: #e88b83;
-    --danger-soft: #3d2723;
-    --selection: color-mix(in srgb, var(--accent) 24%, transparent);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow: 0 6px 20px rgba(0, 0, 0, 0.32), 0 1px 3px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.46);
+    --bg: #141416;
+    --panel: #1a1a1c;
+    --panel-strong: #202022;
+    --text: #f5f5f7;
+    --text-soft: #c7c7cc;
+    --muted: #8e8e93;
+    --faint: #5c5c60;
+    --border: #2a2a2d;
+    --border-strong: #3a3a3e;
+    --accent: #f5f5f7;
+    --accent-strong: #ffffff;
+    --accent-soft: #2c2c30;
+    --on-accent: #1d1d1f;
+    --danger: #ff6b6b;
+    --danger-soft: #3a2223;
+    --selection: color-mix(in srgb, var(--accent) 20%, transparent);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 16px 44px rgba(0, 0, 0, 0.55);
   }
 }
 
@@ -761,36 +736,29 @@ select {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
-  min-height: 46px;
+  gap: 10px;
+  min-height: 48px;
   margin-bottom: 2px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
+  padding: 8px 10px;
+  border: 0;
   border-radius: var(--r);
   transition:
     background var(--t) var(--ease),
-    border-color var(--t) var(--ease),
-    opacity var(--t) var(--ease),
-    box-shadow var(--t) var(--ease);
+    opacity var(--t) var(--ease);
 }
 
 .note-row:hover,
 .linked-row:hover,
 .suggested-row:hover {
-  background: var(--panel-strong);
-  box-shadow: var(--shadow-sm);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .note-row.active {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  background: var(--panel-strong);
-  box-shadow:
-    inset 3px 0 0 var(--accent),
-    var(--shadow-sm);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .note-row.selected:not(.active) {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   background: var(--accent-soft);
 }
 
@@ -890,7 +858,7 @@ select {
   left: 4px;
   width: 4px;
   height: 8px;
-  border: solid #ffffff;
+  border: solid var(--on-accent);
   border-width: 0 2px 2px 0;
   content: "";
   opacity: 0;
@@ -1072,14 +1040,14 @@ select {
 .icon-button.primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   box-shadow: var(--shadow-sm);
 }
 
 .icon-button.primary:hover:not(:disabled) {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
-  color: #ffffff;
+  color: var(--on-accent);
 }
 
 .icon-button.active {
@@ -1172,7 +1140,7 @@ select {
   border: 1px solid var(--accent);
   border-radius: var(--r);
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   cursor: pointer;
   font-size: 14px;
   font-weight: 550;
@@ -1296,7 +1264,7 @@ select {
   border: 1px solid var(--accent);
   border-radius: var(--r-sm);
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   cursor: pointer;
   font-weight: 550;
   transition:
@@ -1528,11 +1496,11 @@ select {
 }
 
 .title-input {
-  font-family: var(--font-serif);
-  font-size: 30px;
-  font-weight: 600;
-  line-height: 1.18;
-  letter-spacing: -0.015em;
+  font-family: var(--font-ui);
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .title-input:disabled {
@@ -1848,17 +1816,80 @@ select {
   animation: panel-in 200ms var(--ease);
 }
 
-.context-panel > .context-section,
-.context-panel > .entity-strip {
-  animation: section-in 260ms var(--ease) both;
+.panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
 }
 
-.context-panel > *:nth-child(2) {
-  animation-delay: 40ms;
+.segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
 }
 
-.context-panel > *:nth-child(3) {
-  animation-delay: 80ms;
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 550;
+  transition:
+    background var(--t) var(--ease),
+    color var(--t) var(--ease),
+    box-shadow var(--t) var(--ease);
+}
+
+.segmented button:hover:not(.active) {
+  color: var(--text);
+}
+
+.segmented button.active {
+  background: var(--panel-strong);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.segmented button small {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented button.active small {
+  background: var(--accent-soft);
+  color: var(--text-soft);
+}
+
+.panel-pane {
+  animation: section-in 200ms var(--ease);
+}
+
+.panel-pane[hidden] {
+  display: none;
+}
+
+.panel-pane > *:first-child {
+  border-top: 0;
 }
 
 .context-panel::-webkit-scrollbar {
@@ -1957,23 +1988,24 @@ select {
 
 .editor-surface {
   min-height: 100%;
-  max-width: 760px;
+  max-width: 720px;
   margin: 0 auto;
-  padding: 36px clamp(28px, 6vw, 72px) 80px;
+  padding: 32px clamp(28px, 6vw, 64px) 80px;
   outline: 0;
-  color: var(--text);
-  font-family: var(--font-serif);
-  font-size: 18px;
-  line-height: 1.72;
+  color: var(--text-soft);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.7;
 }
 
 .editor-surface h1,
 .editor-surface h2,
 .editor-surface h3 {
   margin: 1.3em 0 0.45em;
-  font-weight: 600;
+  color: var(--text);
+  font-weight: 650;
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .editor-surface h1 {
