@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -23,15 +23,18 @@ import {
   Italic,
   Link2,
   List,
+  Mic,
   Monitor,
   Moon,
   PanelRight,
+  Play,
   Plus,
   RefreshCw,
   Search,
   Server,
   Settings,
   Sparkles,
+  Square,
   Strikethrough,
   Sun,
   Trash2,
@@ -127,6 +130,26 @@ type ExtractionQueueStatus = {
   not_indexed: number;
 };
 
+type AudioCapturePreview = {
+  path: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  samples: number;
+};
+
+type AudioCaptureStatus = {
+  is_recording: boolean;
+  device_name: string | null;
+  sample_rate: number | null;
+  channels: number | null;
+  captured_samples: number;
+  dropped_samples: number;
+  elapsed_ms: number | null;
+  started_at_ms: number | null;
+  last_preview: AudioCapturePreview | null;
+};
+
 type NoteEntity = {
   id: number;
   name: string;
@@ -206,6 +229,17 @@ function formatLargeValue(value: number | null, suffix = "") {
     return `${(value / 1_000_000).toFixed(1)}M${suffix}`;
   }
   return `${value.toLocaleString()}${suffix}`;
+}
+
+function formatDuration(ms: number | null | undefined) {
+  if (ms === null || ms === undefined) {
+    return "0:00";
+  }
+
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function sortNotes(notes: NoteListItem[], mode: SortMode) {
@@ -1361,9 +1395,11 @@ function SettingsView({ onClose }: SettingsViewProps) {
   });
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(null);
+  const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isChecking, setIsChecking] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
+  const [isAudioBusy, setIsAudioBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
       toast.error(message);
@@ -1385,6 +1421,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }
   }, []);
 
+  const refreshAudioStatus = useCallback(async () => {
+    const nextAudioStatus = await invoke<AudioCaptureStatus>("get_audio_capture_status");
+    setAudioStatus(nextAudioStatus);
+    return nextAudioStatus;
+  }, []);
+
   const refreshQueueStatus = useCallback(async () => {
     const nextQueueStatus = await invoke<ExtractionQueueStatus>(
       "get_extraction_queue_status",
@@ -1400,10 +1442,11 @@ function SettingsView({ onClose }: SettingsViewProps) {
         return checkStatus();
       }),
       refreshQueueStatus(),
+      refreshAudioStatus(),
     ])
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
-  }, [checkStatus, refreshQueueStatus]);
+  }, [checkStatus, refreshAudioStatus, refreshQueueStatus]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1411,6 +1454,17 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }, 3000);
     return () => window.clearInterval(interval);
   }, [refreshQueueStatus]);
+
+  useEffect(() => {
+    if (!audioStatus?.is_recording) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshAudioStatus();
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [audioStatus?.is_recording, refreshAudioStatus]);
 
   async function saveAndTest() {
     setIsChecking(true);
@@ -1457,12 +1511,41 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function startAudioCapture() {
+    setIsAudioBusy(true);
+    setSettingsError(null);
+    try {
+      const nextAudioStatus = await invoke<AudioCaptureStatus>("start_audio_capture");
+      setAudioStatus(nextAudioStatus);
+    } catch (audioError) {
+      setSettingsError(String(audioError));
+    } finally {
+      setIsAudioBusy(false);
+    }
+  }
+
+  async function stopAudioCapture() {
+    setIsAudioBusy(true);
+    setSettingsError(null);
+    try {
+      const nextAudioStatus = await invoke<AudioCaptureStatus>("stop_audio_capture");
+      setAudioStatus(nextAudioStatus);
+    } catch (audioError) {
+      setSettingsError(String(audioError));
+    } finally {
+      setIsAudioBusy(false);
+    }
+  }
+
   const StatusIcon =
     status?.state === "ready"
       ? CheckCircle2
       : status?.state === "loading"
         ? RefreshCw
         : CircleAlert;
+  const audioPreviewUrl = audioStatus?.last_preview
+    ? convertFileSrc(audioStatus.last_preview.path)
+    : null;
 
   return (
     <div className="settings-view">
@@ -1486,6 +1569,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
             onClick={() => {
               void checkStatus();
               void refreshQueueStatus();
+              void refreshAudioStatus();
             }}
             disabled={isChecking || isLoading}
             title="Refresh connection status"
@@ -1494,6 +1578,59 @@ function SettingsView({ onClose }: SettingsViewProps) {
           </button>
         </div>
       </header>
+
+      <section className="settings-section">
+        <div className="section-heading">
+          <Mic size={18} />
+          <span>Audio capture</span>
+          <small>{audioStatus?.is_recording ? "Recording" : "Idle"}</small>
+        </div>
+
+        <div className={audioStatus?.is_recording ? "audio-capture-card recording" : "audio-capture-card"}>
+          <div className="audio-capture-meter" aria-hidden="true">
+            <Mic size={19} />
+          </div>
+          <div className="audio-capture-copy">
+            <strong>{audioStatus?.device_name ?? "Default microphone"}</strong>
+            <span>
+              {audioStatus?.is_recording
+                ? `${formatDuration(audioStatus.elapsed_ms)} · ${audioStatus.captured_samples.toLocaleString()} samples`
+                : audioStatus?.last_preview
+                  ? `${formatDuration(audioStatus.last_preview.duration_ms)} · ${audioStatus.last_preview.sample_rate.toLocaleString()} Hz`
+                  : "Ready"}
+            </span>
+          </div>
+          <div className="audio-capture-actions">
+            <button
+              type="button"
+              onClick={() => void startAudioCapture()}
+              disabled={isAudioBusy || audioStatus?.is_recording}
+            >
+              <Mic size={15} />
+              Start
+            </button>
+            <button
+              type="button"
+              onClick={() => void stopAudioCapture()}
+              disabled={isAudioBusy || !audioStatus?.is_recording}
+            >
+              <Square size={14} />
+              Stop
+            </button>
+          </div>
+        </div>
+
+        {audioPreviewUrl && audioStatus?.last_preview ? (
+          <div className="audio-preview">
+            <div>
+              <Play size={15} />
+              <span>Last capture</span>
+              <small>{formatDuration(audioStatus.last_preview.duration_ms)}</small>
+            </div>
+            <audio controls src={audioPreviewUrl} />
+          </div>
+        ) : null}
+      </section>
 
       <section className="settings-section">
         <div className="section-heading">

@@ -1,3 +1,8 @@
+mod audio_capture;
+
+use audio_capture::{
+    get_audio_capture_status, start_audio_capture, stop_audio_capture, AudioCaptureState,
+};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -2716,6 +2721,7 @@ fn unlink_notes(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(AudioCaptureState::default())
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
@@ -2732,6 +2738,9 @@ pub fn run() {
             enqueue_note_extraction,
             enqueue_all_note_extractions,
             retry_failed_extractions,
+            get_audio_capture_status,
+            start_audio_capture,
+            stop_audio_capture,
             get_bank,
             create_note,
             get_note,
