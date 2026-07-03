@@ -1324,6 +1324,13 @@ select:hover {
   opacity: 0.55;
 }
 
+.settings-help {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .connection-status {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

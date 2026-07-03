@@ -151,6 +151,13 @@ type AudioCaptureStatus = {
   last_preview: AudioCapturePreview | null;
 };
 
+type SystemAudioPermissionStatus = {
+  granted: boolean;
+  message: string;
+  displays: number;
+  error: string | null;
+};
+
 type SttConfig = {
   model_path: string;
   language: string | null;
@@ -1452,6 +1459,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(null);
   const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(null);
+  const [systemAudioStatus, setSystemAudioStatus] =
+    useState<SystemAudioPermissionStatus | null>(null);
   const [sttConfig, setSttConfig] = useState<SttConfig>({
     model_path: "",
     language: "en",
@@ -1463,6 +1472,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isChecking, setIsChecking] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isAudioBusy, setIsAudioBusy] = useState(false);
+  const [isSystemAudioBusy, setIsSystemAudioBusy] = useState(false);
   const [isSttBusy, setIsSttBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
@@ -1611,6 +1621,21 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function checkSystemAudioPermission() {
+    setIsSystemAudioBusy(true);
+    setSettingsError(null);
+    try {
+      const nextStatus = await invoke<SystemAudioPermissionStatus>(
+        "check_system_audio_permission",
+      );
+      setSystemAudioStatus(nextStatus);
+    } catch (systemAudioError) {
+      setSettingsError(String(systemAudioError));
+    } finally {
+      setIsSystemAudioBusy(false);
+    }
+  }
+
   async function saveAndCheckStt() {
     setIsSttBusy(true);
     setSettingsError(null);
@@ -1741,6 +1766,61 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <audio controls src={audioPreviewUrl} />
           </div>
         ) : null}
+      </section>
+
+      <section className="settings-section">
+        <div className="section-heading">
+          <Monitor size={18} />
+          <span>System audio</span>
+          <small>
+            {systemAudioStatus
+              ? systemAudioStatus.granted
+                ? "Available"
+                : "Permission needed"
+              : "ScreenCaptureKit"}
+          </small>
+        </div>
+
+        <div
+          className={`connection-status ${systemAudioStatus?.granted ? "ready" : "offline"}`}
+        >
+          {systemAudioStatus?.granted ? (
+            <CheckCircle2 size={19} />
+          ) : (
+            <CircleAlert size={19} />
+          )}
+          <div>
+            <strong>
+              {systemAudioStatus
+                ? systemAudioStatus.granted
+                  ? "ready"
+                  : "not allowed"
+                : "not checked"}
+            </strong>
+            <span>
+              {systemAudioStatus?.message ??
+                "Check macOS Screen & System Audio Recording access before capture."}
+            </span>
+          </div>
+          <small>{systemAudioStatus?.displays ?? 0} displays</small>
+        </div>
+
+        {systemAudioStatus && !systemAudioStatus.granted ? (
+          <p className="settings-help">
+            Enable Smooth in System Settings, Privacy & Security, Screen & System
+            Audio Recording, then restart the app.
+          </p>
+        ) : null}
+
+        <div className="settings-actions stt-actions">
+          <button
+            type="button"
+            onClick={() => void checkSystemAudioPermission()}
+            disabled={isSystemAudioBusy}
+          >
+            {isSystemAudioBusy ? "Checking" : "Check Permission"}
+          </button>
+        </div>
       </section>
 
       <section className="settings-section">

@@ -1,6 +1,7 @@
 mod audio_capture;
 mod audio_preprocess;
 mod stt;
+mod system_audio;
 
 use audio_capture::{
     flush_audio_capture_chunk, get_audio_capture_status, start_audio_capture, stop_audio_capture,
@@ -21,6 +22,7 @@ use stt::{
     get_stt_config, get_stt_status, save_stt_config, transcribe_capture_file,
     transcribe_last_capture,
 };
+use system_audio::check_system_audio_permission;
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2754,6 +2756,7 @@ pub fn run() {
             get_stt_status,
             transcribe_capture_file,
             transcribe_last_capture,
+            check_system_audio_permission,
             get_bank,
             create_note,
             get_note,
