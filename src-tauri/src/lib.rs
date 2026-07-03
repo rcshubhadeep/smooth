@@ -274,6 +274,10 @@ fn default_extraction_status() -> String {
     "not_indexed".to_string()
 }
 
+fn disabled_extraction_status() -> String {
+    "disabled".to_string()
+}
+
 fn now_string() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2326,6 +2330,9 @@ fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueue
     if note.deleted_at.is_some() {
         return Err("Trashed notes cannot be queued for extraction".to_string());
     }
+    if note.extraction_status == "disabled" {
+        return Err("Entity extraction is disabled for this note".to_string());
+    }
 
     let content = read_note_content(&app, &id)?;
     let transaction = connection.transaction().map_err(db_error)?;
@@ -2354,11 +2361,21 @@ fn enqueue_all_note_extractions(app: AppHandle) -> Result<ExtractionQueueStatus,
     };
     let contents = note_ids
         .iter()
-        .map(|id| Ok((id.clone(), read_note_content(&app, id)?)))
+        .map(|id| {
+            let note = load_note_meta(&connection, id)?;
+            Ok((
+                id.clone(),
+                note.extraction_status,
+                read_note_content(&app, id)?,
+            ))
+        })
         .collect::<Result<Vec<_>, String>>()?;
 
     let transaction = connection.transaction().map_err(db_error)?;
-    for (id, content) in contents {
+    for (id, extraction_status, content) in contents {
+        if extraction_status == "disabled" {
+            continue;
+        }
         if content.trim().is_empty() {
             clear_extraction_job(&transaction, &id)?;
         } else {
@@ -2419,6 +2436,24 @@ fn create_note(
     title: Option<String>,
     folder_id: Option<String>,
 ) -> Result<NoteWithContent, String> {
+    create_note_with_extraction_status(app, title, folder_id, default_extraction_status())
+}
+
+#[tauri::command]
+fn create_meeting_note(
+    app: AppHandle,
+    title: Option<String>,
+    folder_id: Option<String>,
+) -> Result<NoteWithContent, String> {
+    create_note_with_extraction_status(app, title, folder_id, disabled_extraction_status())
+}
+
+fn create_note_with_extraction_status(
+    app: AppHandle,
+    title: Option<String>,
+    folder_id: Option<String>,
+    extraction_status: String,
+) -> Result<NoteWithContent, String> {
     let connection = open_database(&app)?;
     let now = now_string();
     let note = NoteMeta {
@@ -2430,21 +2465,22 @@ fn create_note(
         created_at: now.clone(),
         updated_at: now,
         deleted_at: None,
-        extraction_status: default_extraction_status(),
+        extraction_status,
     };
 
     write_note_content(&app, &note.id, "")?;
     if let Err(error) = connection.execute(
         "
-        INSERT INTO notes (id, title, folder_id, created_at, updated_at, deleted_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+        INSERT INTO notes (id, title, folder_id, created_at, updated_at, deleted_at, extraction_status)
+        VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
         ",
         params![
             note.id,
             note.title,
             note.folder_id,
             note.created_at,
-            note.updated_at
+            note.updated_at,
+            note.extraction_status
         ],
     ) {
         let _ = fs::remove_file(note_path(&app, &note.id)?);
@@ -2480,8 +2516,30 @@ fn save_note(
     content: String,
     folder_id: Option<String>,
 ) -> Result<NoteWithContent, String> {
+    save_note_internal(app, id, title, content, folder_id, false)
+}
+
+#[tauri::command]
+fn save_meeting_note(
+    app: AppHandle,
+    id: String,
+    title: String,
+    content: String,
+    folder_id: Option<String>,
+) -> Result<NoteWithContent, String> {
+    save_note_internal(app, id, title, content, folder_id, true)
+}
+
+fn save_note_internal(
+    app: AppHandle,
+    id: String,
+    title: String,
+    content: String,
+    folder_id: Option<String>,
+    force_disable_extraction: bool,
+) -> Result<NoteWithContent, String> {
     let mut connection = open_database(&app)?;
-    load_note_meta(&connection, &id)?;
+    let note = load_note_meta(&connection, &id)?;
 
     let clean_title = title.trim();
     let saved_title = if clean_title.is_empty() {
@@ -2494,19 +2552,41 @@ fn save_note(
 
     write_note_content(&app, &id, &content)?;
     let transaction = connection.transaction().map_err(db_error)?;
+    let extraction_disabled = force_disable_extraction || note.extraction_status == "disabled";
     transaction
         .execute(
             "
             UPDATE notes
             SET title = ?1,
                 folder_id = ?2,
-                updated_at = ?3
+                updated_at = ?3,
+                extraction_status = CASE WHEN ?5 THEN 'disabled' ELSE extraction_status END,
+                extraction_error = CASE WHEN ?5 THEN NULL ELSE extraction_error END
             WHERE id = ?4
             ",
-            params![saved_title, folder_id, updated_at, id],
+            params![saved_title, folder_id, updated_at, id, extraction_disabled],
         )
         .map_err(db_error)?;
-    if content.trim().is_empty() {
+    if extraction_disabled {
+        transaction
+            .execute(
+                "DELETE FROM extraction_jobs WHERE note_id = ?1",
+                params![id],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "
+                UPDATE notes
+                SET content_hash = NULL,
+                    extraction_status = 'disabled',
+                    extraction_error = NULL
+                WHERE id = ?1
+                ",
+                params![id],
+            )
+            .map_err(db_error)?;
+    } else if content.trim().is_empty() {
         clear_extraction_job(&transaction, &id)?;
     } else {
         enqueue_extraction(&transaction, &id, &hash)?;
@@ -2768,6 +2848,8 @@ pub fn run() {
             create_note,
             get_note,
             save_note,
+            create_meeting_note,
+            save_meeting_note,
             create_folder,
             delete_folder,
             move_note,

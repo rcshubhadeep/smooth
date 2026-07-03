@@ -1523,6 +1523,11 @@ select:hover {
   margin-top: 12px;
 }
 
+.system-audio-actions {
+  margin-top: 12px;
+  margin-bottom: 14px;
+}
+
 .transcript-preview {
   display: grid;
   gap: 8px;
@@ -1957,6 +1962,10 @@ select:hover {
   color: #9a7b1f;
 }
 
+.entity-status.disabled {
+  color: var(--faint);
+}
+
 .entity-chips {
   display: flex;
   flex-wrap: wrap;
@@ -2160,6 +2169,116 @@ select:hover {
 .context-panel > .context-section:first-child,
 .context-panel > .entity-strip:first-child {
   border-top: 0;
+}
+
+.meeting-capsule {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(620px, calc(100vw - 32px));
+  min-height: 48px;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+  backdrop-filter: blur(18px);
+}
+
+.meeting-capsule-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.meeting-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--faint);
+}
+
+.meeting-capsule.recording .meeting-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.meeting-capsule.paused .meeting-dot {
+  background: #9a7b1f;
+}
+
+.meeting-capsule-status > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.meeting-capsule strong,
+.meeting-capsule small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-capsule strong {
+  max-width: 260px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.meeting-capsule small {
+  max-width: 300px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.meeting-capsule-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.meeting-capsule button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.meeting-capsule button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.meeting-capsule button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.meeting-capsule button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .context-heading {

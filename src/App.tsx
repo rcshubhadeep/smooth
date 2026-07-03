@@ -27,6 +27,7 @@ import {
   Monitor,
   Moon,
   PanelRight,
+  Pause,
   Play,
   Plus,
   RefreshCw,
@@ -60,6 +61,7 @@ type ViewMode = "notes" | "settings";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SortMode = "updated-desc" | "updated-asc" | "created-desc" | "created-asc";
 type DictationState = "idle" | "recording" | "transcribing";
+type MeetingState = "idle" | "starting" | "recording" | "paused" | "stopping";
 
 type Folder = {
   id: string;
@@ -249,6 +251,7 @@ const emptySnapshot: BankSnapshot = {
 
 const ENTITY_PREVIEW_LIMIT = 12;
 const DICTATION_CHUNK_MS = 5_000;
+const MEETING_CHUNK_MS = 10_000;
 
 function markdownToHtml(markdown: string) {
   return marked.parse(markdown || "", { async: false }) as string;
@@ -314,6 +317,28 @@ function formatDb(value: number | null | undefined) {
     return "silent";
   }
   return `${value.toFixed(1)} dB`;
+}
+
+function meetingTitleNow() {
+  const date = new Date();
+  const parts = new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `Meeting ${value("year")}-${value("month")}-${value("day")} ${value("hour")}:${value("minute")}`;
+}
+
+function meetingInitialContent(title: string) {
+  return `# ${title}\n\nStarted: ${new Date().toLocaleString()}\n\n## Transcript\n`;
+}
+
+function meetingTranscriptLine(source: "Mic" | "System", text: string) {
+  return `- ${new Date().toLocaleTimeString()} · **${source}:** ${text.trim()}`;
 }
 
 function wait(ms: number) {
@@ -523,7 +548,20 @@ function App() {
   const [panelWidth, setPanelWidth] = useState(
     () => Number(localStorage.getItem("smooth-panel-width")) || 308,
   );
+  const [meetingState, setMeetingState] = useState<MeetingState>("idle");
+  const [meetingNoteTitle, setMeetingNoteTitle] = useState("");
+  const [meetingDetail, setMeetingDetail] = useState("Ready");
+  const [meetingContentRevision, setMeetingContentRevision] = useState(0);
+  const [meetingNoteId, setMeetingNoteId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const meetingLoopActiveRef = useRef(false);
+  const meetingNoteIdRef = useRef<string | null>(null);
+  const meetingTitleRef = useRef("");
+  const meetingFolderIdRef = useRef<string | null>(null);
+  const meetingContentRef = useRef("");
+  const meetingLoopRef = useRef<Promise<void> | null>(null);
+  const meetingChunkRef = useRef<Promise<void> | null>(null);
+  const lastSystemCapturePathRef = useRef<string | null>(null);
 
   const MIN_EDITOR = 360;
 
@@ -733,6 +771,38 @@ function App() {
     }
   }
 
+  async function createMeetingNote(title: string) {
+    setError(null);
+    const note = await invoke<NoteWithContent>("create_meeting_note", {
+      title,
+      folderId: null,
+    });
+    await loadBank();
+    setActiveNote(note);
+    setSelectedIds([note.id]);
+    setView("notes");
+    return note;
+  }
+
+  const applySavedNote = useCallback((saved: NoteWithContent) => {
+    setActiveNote((current) => (current?.id === saved.id ? saved : current));
+    setSnapshot((current) => ({
+      ...current,
+      notes: current.notes.map((note) =>
+        note.id === saved.id
+          ? {
+              ...note,
+              title: saved.title,
+              folder_id: saved.folder_id,
+              updated_at: saved.updated_at,
+              excerpt: markdownToExcerpt(saved.content),
+              extraction_status: saved.extraction_status,
+            }
+          : note,
+      ),
+    }));
+  }, []);
+
   const saveNote = useCallback(async (
     id: string,
     title: string,
@@ -745,24 +815,243 @@ function App() {
       content,
       folderId,
     });
-    setActiveNote((current) => (current?.id === id ? saved : current));
-    setSnapshot((current) => ({
-      ...current,
-      notes: current.notes.map((note) =>
-        note.id === id
-          ? {
-              ...note,
-              title: saved.title,
-              folder_id: saved.folder_id,
-              updated_at: saved.updated_at,
-              excerpt: markdownToExcerpt(saved.content),
-              extraction_status: saved.extraction_status,
-            }
-          : note,
-      ),
-    }));
+    applySavedNote(saved);
     return saved;
-  }, []);
+  }, [applySavedNote]);
+
+  const saveMeetingNote = useCallback(async (
+    id: string,
+    title: string,
+    content: string,
+    folderId: string | null,
+  ) => {
+    const saved = await invoke<NoteWithContent>("save_meeting_note", {
+      id,
+      title,
+      content,
+      folderId,
+    });
+    applySavedNote(saved);
+    setMeetingContentRevision((revision) => revision + 1);
+    return saved;
+  }, [applySavedNote]);
+
+  async function startMeetingMode() {
+    if (meetingState !== "idle") {
+      return;
+    }
+
+    setMeetingState("starting");
+    setMeetingDetail("Creating note");
+    try {
+      const title = meetingTitleNow();
+      const note = await createMeetingNote(title);
+      const content = meetingInitialContent(title);
+
+      meetingNoteIdRef.current = note.id;
+      setMeetingNoteId(note.id);
+      meetingTitleRef.current = title;
+      meetingFolderIdRef.current = note.folder_id;
+      meetingContentRef.current = content;
+      lastSystemCapturePathRef.current = null;
+      setMeetingNoteTitle(title);
+      await saveMeetingNote(note.id, title, content, note.folder_id);
+
+      setMeetingDetail("Starting audio");
+      await startMeetingSources();
+      meetingLoopActiveRef.current = true;
+      setMeetingState("recording");
+      setMeetingDetail("Listening");
+      meetingLoopRef.current = runMeetingLoop();
+    } catch (meetingError) {
+      meetingLoopActiveRef.current = false;
+      await stopMeetingSources();
+      setMeetingState("idle");
+      setMeetingDetail("Ready");
+      toast.error(meetingError);
+    }
+  }
+
+  async function pauseMeetingMode() {
+    if (meetingState !== "recording") {
+      return;
+    }
+
+    setMeetingState("stopping");
+    setMeetingDetail("Pausing");
+    meetingLoopActiveRef.current = false;
+    await meetingLoopRef.current;
+    await processMeetingChunk(250, false);
+    await stopMeetingSources();
+    setMeetingState("paused");
+    setMeetingDetail("Paused");
+  }
+
+  async function resumeMeetingMode() {
+    if (meetingState !== "paused") {
+      return;
+    }
+
+    try {
+      setMeetingState("starting");
+      setMeetingDetail("Resuming");
+      await startMeetingSources();
+      meetingLoopActiveRef.current = true;
+      setMeetingState("recording");
+      setMeetingDetail("Listening");
+      meetingLoopRef.current = runMeetingLoop();
+    } catch (meetingError) {
+      meetingLoopActiveRef.current = false;
+      await stopMeetingSources();
+      setMeetingState("paused");
+      setMeetingDetail("Paused");
+      toast.error(meetingError);
+    }
+  }
+
+  async function stopMeetingMode() {
+    if (meetingState === "idle") {
+      return;
+    }
+
+    setMeetingState("stopping");
+    setMeetingDetail("Stopping");
+    meetingLoopActiveRef.current = false;
+    await meetingLoopRef.current;
+    await processMeetingChunk(250, false);
+    await stopMeetingSources();
+    meetingLoopRef.current = null;
+    meetingChunkRef.current = null;
+    meetingNoteIdRef.current = null;
+    setMeetingNoteId(null);
+    setMeetingState("idle");
+    setMeetingDetail("Ready");
+  }
+
+  async function startMeetingSources() {
+    await invoke<AudioCaptureStatus>("start_audio_capture");
+    try {
+      await invoke<SystemAudioCaptureStatus>("start_system_audio_capture");
+    } catch (systemAudioError) {
+      await invoke<AudioCaptureStatus>("stop_audio_capture").catch(() => undefined);
+      throw systemAudioError;
+    }
+  }
+
+  async function stopMeetingSources() {
+    await Promise.allSettled([
+      invoke<AudioCaptureStatus>("stop_audio_capture"),
+      invoke<SystemAudioCaptureStatus>("stop_system_audio_capture"),
+    ]);
+  }
+
+  async function runMeetingLoop() {
+    while (meetingLoopActiveRef.current) {
+      const shouldContinue = await waitForMeetingChunk();
+      if (!shouldContinue || !meetingLoopActiveRef.current) {
+        break;
+      }
+      await processMeetingChunk(MEETING_CHUNK_MS - 750, true);
+    }
+  }
+
+  async function waitForMeetingChunk() {
+    let elapsed = 0;
+    while (elapsed < MEETING_CHUNK_MS) {
+      if (!meetingLoopActiveRef.current) {
+        return false;
+      }
+      await wait(250);
+      elapsed += 250;
+    }
+    return true;
+  }
+
+  async function processMeetingChunk(minDurationMs: number, restartSystemCapture: boolean) {
+    if (meetingChunkRef.current) {
+      await meetingChunkRef.current;
+      return;
+    }
+
+    const chunkPromise = processMeetingChunkInner(minDurationMs, restartSystemCapture);
+    meetingChunkRef.current = chunkPromise;
+    try {
+      await chunkPromise;
+    } finally {
+      if (meetingChunkRef.current === chunkPromise) {
+        meetingChunkRef.current = null;
+      }
+    }
+  }
+
+  async function processMeetingChunkInner(
+    minDurationMs: number,
+    restartSystemCapture: boolean,
+  ) {
+    const noteId = meetingNoteIdRef.current;
+    if (!noteId) {
+      return;
+    }
+
+    setMeetingDetail("Transcribing");
+    const previews: Array<{ source: "Mic" | "System"; preview: AudioCapturePreview | SystemAudioCapturePreview }> = [];
+
+    const micPreview = await invoke<AudioCapturePreview | null>("flush_audio_capture_chunk", {
+      minDurationMs,
+    }).catch(() => null);
+    if (micPreview) {
+      previews.push({ source: "Mic", preview: micPreview });
+    }
+
+    const systemStatus = await invoke<SystemAudioCaptureStatus>(
+      "stop_system_audio_capture",
+    ).catch(() => null);
+    const systemPreview = systemStatus?.last_preview ?? null;
+    if (
+      systemPreview &&
+      systemPreview.path !== lastSystemCapturePathRef.current &&
+      systemPreview.samples > 0
+    ) {
+      lastSystemCapturePathRef.current = systemPreview.path;
+      previews.push({ source: "System", preview: systemPreview });
+    }
+
+    if (restartSystemCapture && meetingLoopActiveRef.current) {
+      await invoke<SystemAudioCaptureStatus>("start_system_audio_capture").catch((error) => {
+        setMeetingDetail(`System audio paused: ${String(error)}`);
+      });
+    }
+
+    const transcriptLines: string[] = [];
+    for (const item of previews) {
+      const result = await invoke<SttTranscription>("transcribe_capture_file", {
+        path: item.preview.path,
+      }).catch((error) => {
+        setMeetingDetail(`Transcription skipped: ${String(error)}`);
+        return null;
+      });
+      const text = result?.text.trim();
+      if (text) {
+        transcriptLines.push(meetingTranscriptLine(item.source, text));
+      }
+    }
+
+    if (transcriptLines.length === 0) {
+      setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
+      return;
+    }
+
+    const nextContent = `${meetingContentRef.current.trimEnd()}\n${transcriptLines.join("\n")}\n`;
+    meetingContentRef.current = nextContent;
+    const saved = await saveMeetingNote(
+      noteId,
+      meetingTitleRef.current,
+      nextContent,
+      meetingFolderIdRef.current,
+    );
+    meetingFolderIdRef.current = saved.folder_id;
+    setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
+  }
 
   async function createFolder() {
     if (!newFolderName.trim()) {
@@ -1248,6 +1537,8 @@ function App() {
               note={activeNote}
               folders={snapshot.folders}
               panelOpen={panelOpen}
+              externalRevision={meetingContentRevision}
+              externalNoteId={meetingNoteId}
               onTogglePanel={() => setPanelOpen((open) => !open)}
               onCreate={createNote}
               onSave={saveNote}
@@ -1312,7 +1603,83 @@ function App() {
         />
       ) : null}
 
+      <MeetingCapsule
+        detail={meetingDetail}
+        noteTitle={meetingNoteTitle}
+        state={meetingState}
+        onPause={() => void pauseMeetingMode()}
+        onResume={() => void resumeMeetingMode()}
+        onStart={() => void startMeetingMode()}
+        onStop={() => void stopMeetingMode()}
+      />
+
       <ToastViewport />
+    </div>
+  );
+}
+
+type MeetingCapsuleProps = {
+  detail: string;
+  noteTitle: string;
+  state: MeetingState;
+  onPause: () => void;
+  onResume: () => void;
+  onStart: () => void;
+  onStop: () => void;
+};
+
+function MeetingCapsule({
+  detail,
+  noteTitle,
+  state,
+  onPause,
+  onResume,
+  onStart,
+  onStop,
+}: MeetingCapsuleProps) {
+  const isBusy = state === "starting" || state === "stopping";
+  const isActive = state === "recording";
+  const isPaused = state === "paused";
+
+  return (
+    <div className={`meeting-capsule ${state}`}>
+      <div className="meeting-capsule-status">
+        <span className="meeting-dot" aria-hidden="true" />
+        <div>
+          <strong>{isActive || isPaused || isBusy ? noteTitle || "Meeting" : "Meeting mode"}</strong>
+          <small>{isBusy ? state : detail}</small>
+        </div>
+      </div>
+      <div className="meeting-capsule-actions">
+        {state === "idle" ? (
+          <button type="button" onClick={onStart} title="Start meeting mode">
+            <Play size={15} />
+            Start
+          </button>
+        ) : isPaused ? (
+          <button type="button" onClick={onResume} disabled={isBusy} title="Resume meeting mode">
+            <Play size={15} />
+            Resume
+          </button>
+        ) : (
+          <button type="button" onClick={onPause} disabled={!isActive} title="Pause meeting mode">
+            <Pause size={15} />
+            Pause
+          </button>
+        )}
+        {state !== "idle" ? (
+          <button
+            className="danger"
+            type="button"
+            onClick={onStop}
+            disabled={isBusy}
+            title="Stop meeting mode"
+          >
+            <Square size={14} />
+            Stop
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1899,7 +2266,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
           </p>
         ) : null}
 
-        <div className="settings-actions stt-actions">
+        <div className="settings-actions system-audio-actions">
           <button
             type="button"
             onClick={() => void checkSystemAudioPermission()}
@@ -2689,6 +3056,19 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
   }
 
   const statusLabel = extraction.status.replace("_", " ");
+  if (extraction.status === "disabled") {
+    return (
+      <section className="entity-strip">
+        <div className="entity-strip-header">
+          <Sparkles size={14} />
+          <span>Entities</span>
+          <small className="entity-status disabled">disabled</small>
+        </div>
+        <p className="entity-empty">Entity extraction is off for meeting notes.</p>
+      </section>
+    );
+  }
+
   const canQueue =
     !note.deleted_at &&
     !["queued", "processing"].includes(extraction.status) &&
@@ -2749,6 +3129,8 @@ type NoteEditorProps = {
   note: NoteWithContent | null;
   folders: Folder[];
   panelOpen: boolean;
+  externalRevision: number;
+  externalNoteId: string | null;
   onTogglePanel: () => void;
   onCreate: () => Promise<void>;
   onSave: (
@@ -2767,6 +3149,8 @@ function NoteEditor({
   note,
   folders,
   panelOpen,
+  externalRevision,
+  externalNoteId,
   onTogglePanel,
   onCreate,
   onSave,
@@ -2833,6 +3217,27 @@ function NoteEditor({
       isLoadingNoteRef.current = false;
     });
   }, [editor, note?.deleted_at, note?.id]);
+
+  useEffect(() => {
+    if (
+      !externalRevision ||
+      !editor ||
+      editor.isDestroyed ||
+      !note ||
+      note.id !== externalNoteId
+    ) {
+      return;
+    }
+
+    isLoadingNoteRef.current = true;
+    hasUnsavedChangesRef.current = false;
+    setDraftTitle(note.title);
+    setDraftFolderId(note.folder_id ?? "");
+    editor.commands.setContent(markdownToHtml(note.content));
+    window.queueMicrotask(() => {
+      isLoadingNoteRef.current = false;
+    });
+  }, [editor, externalNoteId, externalRevision, note]);
 
   useEffect(() => {
     if (!note || note.deleted_at || !editor || editor.isDestroyed) {
