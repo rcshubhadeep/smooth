@@ -17,6 +17,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+metal = ["whisper-rs/metal"]
+coreml = ["whisper-rs/coreml"]
+cuda = ["whisper-rs/cuda"]
+hipblas = ["whisper-rs/hipblas"]
+openblas = ["whisper-rs/openblas"]
+openmp = ["whisper-rs/openmp"]
+vulkan = ["whisper-rs/vulkan"]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
@@ -28,3 +38,4 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["time"] }
 cpal = "0.15"
 hound = "3.5"
+whisper-rs = { version = "0.16", default-features = false }

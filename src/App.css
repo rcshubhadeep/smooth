@@ -1263,6 +1263,7 @@ select:hover {
   font-weight: 600;
 }
 
+.settings-field > input,
 .settings-field > select,
 .settings-input-row input {
   height: var(--control-h-lg);
@@ -1276,9 +1277,16 @@ select:hover {
     box-shadow var(--t) var(--ease);
 }
 
+.settings-field > input,
 .settings-field > select {
   width: 100%;
   padding: 0 11px;
+}
+
+.settings-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 12px;
 }
 
 .settings-input-row {
@@ -1502,6 +1510,51 @@ select:hover {
 .audio-preview audio {
   width: 100%;
   height: 34px;
+}
+
+.stt-actions {
+  margin-top: 12px;
+}
+
+.transcript-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel);
+}
+
+.transcript-preview > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transcript-preview strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.transcript-preview small {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.transcript-diagnostics {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transcript-preview p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .model-row {

@@ -1,4 +1,6 @@
 mod audio_capture;
+mod audio_preprocess;
+mod stt;
 
 use audio_capture::{
     get_audio_capture_status, start_audio_capture, stop_audio_capture, AudioCaptureState,
@@ -14,6 +16,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use stt::{get_stt_config, get_stt_status, save_stt_config, transcribe_last_capture};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2741,6 +2744,10 @@ pub fn run() {
             get_audio_capture_status,
             start_audio_capture,
             stop_audio_capture,
+            get_stt_config,
+            save_stt_config,
+            get_stt_status,
+            transcribe_last_capture,
             get_bank,
             create_note,
             get_note,

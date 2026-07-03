@@ -69,29 +69,35 @@ struct CaptureBuffer {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AudioCaptureStatus {
-    is_recording: bool,
-    device_name: Option<String>,
-    sample_rate: Option<u32>,
-    channels: Option<u16>,
-    captured_samples: u64,
-    dropped_samples: u64,
-    elapsed_ms: Option<u128>,
-    started_at_ms: Option<u128>,
-    last_preview: Option<AudioCapturePreview>,
+    pub is_recording: bool,
+    pub device_name: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u16>,
+    pub captured_samples: u64,
+    pub dropped_samples: u64,
+    pub elapsed_ms: Option<u128>,
+    pub started_at_ms: Option<u128>,
+    pub last_preview: Option<AudioCapturePreview>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AudioCapturePreview {
-    path: String,
-    duration_ms: u128,
-    sample_rate: u32,
-    channels: u16,
-    samples: u64,
+    pub path: String,
+    pub duration_ms: u128,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub samples: u64,
 }
 
 #[tauri::command]
 pub fn get_audio_capture_status(
     state: State<'_, AudioCaptureState>,
+) -> Result<AudioCaptureStatus, String> {
+    current_audio_capture_status(&state)
+}
+
+pub fn current_audio_capture_status(
+    state: &AudioCaptureState,
 ) -> Result<AudioCaptureStatus, String> {
     request_worker(&state.commands, |reply| AudioCaptureCommand::GetStatus {
         reply,

@@ -59,6 +59,7 @@ type ThemeMode = "light" | "dark" | "system";
 type ViewMode = "notes" | "settings";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SortMode = "updated-desc" | "updated-asc" | "created-desc" | "created-asc";
+type DictationState = "idle" | "recording" | "transcribing";
 
 type Folder = {
   id: string;
@@ -148,6 +149,47 @@ type AudioCaptureStatus = {
   elapsed_ms: number | null;
   started_at_ms: number | null;
   last_preview: AudioCapturePreview | null;
+};
+
+type SttConfig = {
+  model_path: string;
+  language: string | null;
+  threads: number;
+};
+
+type SttStatus = {
+  state: "not_configured" | "ready" | "error";
+  message: string;
+  model_path: string;
+  language: string | null;
+  threads: number;
+  acceleration: string[];
+};
+
+type SttSegment = {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+};
+
+type SttTranscription = {
+  text: string;
+  segments: SttSegment[];
+  raw_segment_count: number;
+  language_id: number;
+  language: string | null;
+  audio: {
+    source_sample_rate: number;
+    source_channels: number;
+    sample_rate: number;
+    channels: number;
+    duration_ms: number;
+    samples: number;
+    rms_db: number | null;
+    peak_db: number | null;
+  };
+  elapsed_ms: number;
+  model_path: string;
 };
 
 type NoteEntity = {
@@ -240,6 +282,13 @@ function formatDuration(ms: number | null | undefined) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatDb(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "silent";
+  }
+  return `${value.toFixed(1)} dB`;
 }
 
 function sortNotes(notes: NoteListItem[], mode: SortMode) {
@@ -1396,10 +1445,18 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(null);
   const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(null);
+  const [sttConfig, setSttConfig] = useState<SttConfig>({
+    model_path: "",
+    language: "en",
+    threads: 4,
+  });
+  const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
+  const [transcription, setTranscription] = useState<SttTranscription | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isChecking, setIsChecking] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isAudioBusy, setIsAudioBusy] = useState(false);
+  const [isSttBusy, setIsSttBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
       toast.error(message);
@@ -1427,6 +1484,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
     return nextAudioStatus;
   }, []);
 
+  const refreshSttStatus = useCallback(async () => {
+    const nextStatus = await invoke<SttStatus>("get_stt_status");
+    setSttStatus(nextStatus);
+    return nextStatus;
+  }, []);
+
   const refreshQueueStatus = useCallback(async () => {
     const nextQueueStatus = await invoke<ExtractionQueueStatus>(
       "get_extraction_queue_status",
@@ -1443,10 +1506,14 @@ function SettingsView({ onClose }: SettingsViewProps) {
       }),
       refreshQueueStatus(),
       refreshAudioStatus(),
+      invoke<SttConfig>("get_stt_config").then((savedConfig) => {
+        setSttConfig(savedConfig);
+        return refreshSttStatus();
+      }),
     ])
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
-  }, [checkStatus, refreshAudioStatus, refreshQueueStatus]);
+  }, [checkStatus, refreshAudioStatus, refreshQueueStatus, refreshSttStatus]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1537,12 +1604,48 @@ function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function saveAndCheckStt() {
+    setIsSttBusy(true);
+    setSettingsError(null);
+    try {
+      const savedConfig = await invoke<SttConfig>("save_stt_config", {
+        config: sttConfig,
+      });
+      setSttConfig(savedConfig);
+      const nextStatus = await invoke<SttStatus>("get_stt_status");
+      setSttStatus(nextStatus);
+    } catch (sttError) {
+      setSettingsError(String(sttError));
+    } finally {
+      setIsSttBusy(false);
+    }
+  }
+
+  async function transcribeLastCapture() {
+    setIsSttBusy(true);
+    setSettingsError(null);
+    try {
+      const savedConfig = await invoke<SttConfig>("save_stt_config", {
+        config: sttConfig,
+      });
+      setSttConfig(savedConfig);
+      const result = await invoke<SttTranscription>("transcribe_last_capture");
+      setTranscription(result);
+      await refreshSttStatus();
+    } catch (sttError) {
+      setSettingsError(String(sttError));
+    } finally {
+      setIsSttBusy(false);
+    }
+  }
+
   const StatusIcon =
     status?.state === "ready"
       ? CheckCircle2
       : status?.state === "loading"
         ? RefreshCw
         : CircleAlert;
+  const SttStatusIcon = sttStatus?.state === "ready" ? CheckCircle2 : CircleAlert;
   const audioPreviewUrl = audioStatus?.last_preview
     ? convertFileSrc(audioStatus.last_preview.path)
     : null;
@@ -1570,6 +1673,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
               void checkStatus();
               void refreshQueueStatus();
               void refreshAudioStatus();
+              void refreshSttStatus();
             }}
             disabled={isChecking || isLoading}
             title="Refresh connection status"
@@ -1628,6 +1732,106 @@ function SettingsView({ onClose }: SettingsViewProps) {
               <small>{formatDuration(audioStatus.last_preview.duration_ms)}</small>
             </div>
             <audio controls src={audioPreviewUrl} />
+          </div>
+        ) : null}
+      </section>
+
+      <section className="settings-section">
+        <div className="section-heading">
+          <Sparkles size={18} />
+          <span>Speech to text</span>
+          <small>{sttStatus?.acceleration.join(", ") ?? "cpu"}</small>
+        </div>
+
+        <label className="settings-field">
+          <span>Whisper model path</span>
+          <div className="settings-input-row">
+            <input
+              value={sttConfig.model_path}
+              onChange={(event) =>
+                setSttConfig((current) => ({
+                  ...current,
+                  model_path: event.currentTarget.value,
+                }))
+              }
+              placeholder="Path to ggml-base.en.bin"
+            />
+            <button
+              type="button"
+              onClick={() => void saveAndCheckStt()}
+              disabled={isSttBusy || isLoading}
+            >
+              Save
+            </button>
+          </div>
+        </label>
+
+        <div className="settings-split-row">
+          <label className="settings-field">
+            <span>Language</span>
+            <input
+              value={sttConfig.language ?? ""}
+              onChange={(event) =>
+                setSttConfig((current) => ({
+                  ...current,
+                  language: event.currentTarget.value || null,
+                }))
+              }
+              placeholder="en or auto"
+            />
+          </label>
+          <label className="settings-field">
+            <span>Threads</span>
+            <input
+              min={1}
+              max={32}
+              type="number"
+              value={sttConfig.threads}
+              onChange={(event) =>
+                setSttConfig((current) => ({
+                  ...current,
+                  threads: Number(event.currentTarget.value) || 1,
+                }))
+              }
+            />
+          </label>
+        </div>
+
+        <div className={`connection-status ${sttStatus?.state === "ready" ? "ready" : "offline"}`}>
+          <SttStatusIcon size={19} />
+          <div>
+            <strong>{sttStatus?.state?.replace("_", " ") ?? "not configured"}</strong>
+            <span>{sttStatus?.message ?? "Choose a Whisper ggml model file"}</span>
+          </div>
+          <small>{sttStatus?.threads ?? sttConfig.threads} threads</small>
+        </div>
+
+        <div className="settings-actions stt-actions">
+          <button
+            type="button"
+            onClick={() => void transcribeLastCapture()}
+            disabled={isSttBusy || audioStatus?.is_recording}
+          >
+            {isSttBusy ? "Transcribing" : "Transcribe Last Capture"}
+          </button>
+        </div>
+
+        {transcription ? (
+          <div className="transcript-preview">
+            <div>
+              <strong>Transcript</strong>
+              <small>
+                {formatDuration(transcription.audio.duration_ms)} audio ·{" "}
+                {(transcription.elapsed_ms / 1000).toFixed(1)}s ·{" "}
+                {transcription.raw_segment_count} segments
+              </small>
+            </div>
+            <small className="transcript-diagnostics">
+              language {transcription.language ?? `auto:${transcription.language_id}`} · rms{" "}
+              {formatDb(transcription.audio.rms_db)} · peak{" "}
+              {formatDb(transcription.audio.peak_db)}
+            </small>
+            <p>{transcription.text || "No speech detected"}</p>
           </div>
         ) : null}
       </section>
@@ -2342,6 +2546,7 @@ function NoteEditor({
   const [draftFolderId, setDraftFolderId] = useState("");
   const [editorRevision, setEditorRevision] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [dictationState, setDictationState] = useState<DictationState>("idle");
   const hasUnsavedChangesRef = useRef(false);
   const isLoadingNoteRef = useRef(false);
   const turndown = useMemo(
@@ -2423,6 +2628,44 @@ function NoteEditor({
     onSave,
     turndown,
   ]);
+
+  async function toggleDictation() {
+    if (!editor || editor.isDestroyed || !note || note.deleted_at) {
+      return;
+    }
+
+    if (dictationState === "recording") {
+      setDictationState("transcribing");
+      try {
+        await invoke<AudioCaptureStatus>("stop_audio_capture");
+        const result = await invoke<SttTranscription>("transcribe_last_capture");
+        const text = result.text.trim();
+        if (!text) {
+          toast.info("No speech detected");
+          return;
+        }
+
+        editor.chain().focus().insertContent(text).run();
+        hasUnsavedChangesRef.current = true;
+        setEditorRevision((revision) => revision + 1);
+        toast.success("Dictation inserted");
+      } catch (dictationError) {
+        toast.error(dictationError);
+      } finally {
+        setDictationState("idle");
+      }
+      return;
+    }
+
+    setDictationState("recording");
+    try {
+      await invoke<AudioCaptureStatus>("start_audio_capture");
+      toast.info("Dictation started");
+    } catch (dictationError) {
+      setDictationState("idle");
+      toast.error(dictationError);
+    }
+  }
 
   if (!note) {
     return (
@@ -2529,6 +2772,28 @@ function NoteEditor({
       </header>
 
       <div className={note.deleted_at ? "editor-toolbar disabled" : "editor-toolbar"}>
+        <button
+          className={dictationState === "recording" ? "active" : ""}
+          disabled={Boolean(note.deleted_at) || dictationState === "transcribing"}
+          type="button"
+          onClick={() => void toggleDictation()}
+          title={
+            dictationState === "recording"
+              ? "Stop dictation"
+              : dictationState === "transcribing"
+                ? "Transcribing"
+                : "Start dictation"
+          }
+        >
+          {dictationState === "recording" ? (
+            <Square size={15} />
+          ) : dictationState === "transcribing" ? (
+            <RefreshCw className="spin" size={16} />
+          ) : (
+            <Mic size={16} />
+          )}
+        </button>
+        <span className="toolbar-divider" aria-hidden="true" />
         <button
           className={editor?.isActive("bold") ? "active" : ""}
           disabled={Boolean(note.deleted_at)}
