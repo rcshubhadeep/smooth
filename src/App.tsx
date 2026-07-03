@@ -224,6 +224,7 @@ const emptySnapshot: BankSnapshot = {
 };
 
 const ENTITY_PREVIEW_LIMIT = 12;
+const DICTATION_CHUNK_MS = 5_000;
 
 function markdownToHtml(markdown: string) {
   return marked.parse(markdown || "", { async: false }) as string;
@@ -289,6 +290,12 @@ function formatDb(value: number | null | undefined) {
     return "silent";
   }
   return `${value.toFixed(1)} dB`;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function sortNotes(notes: NoteListItem[], mode: SortMode) {
@@ -2547,8 +2554,12 @@ function NoteEditor({
   const [editorRevision, setEditorRevision] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
+  const [streamingTranscript, setStreamingTranscript] = useState("");
   const hasUnsavedChangesRef = useRef(false);
   const isLoadingNoteRef = useRef(false);
+  const dictationActiveRef = useRef(false);
+  const dictationChunkRef = useRef<Promise<void> | null>(null);
+  const insertedDictationRef = useRef(false);
   const turndown = useMemo(
     () =>
       new TurndownService({
@@ -2629,42 +2640,124 @@ function NoteEditor({
     turndown,
   ]);
 
+  useEffect(() => {
+    return () => {
+      if (dictationActiveRef.current) {
+        dictationActiveRef.current = false;
+        void invoke<AudioCaptureStatus>("stop_audio_capture");
+      }
+    };
+  }, []);
+
   async function toggleDictation() {
     if (!editor || editor.isDestroyed || !note || note.deleted_at) {
       return;
     }
 
     if (dictationState === "recording") {
-      setDictationState("transcribing");
-      try {
-        await invoke<AudioCaptureStatus>("stop_audio_capture");
-        const result = await invoke<SttTranscription>("transcribe_last_capture");
-        const text = result.text.trim();
-        if (!text) {
-          toast.info("No speech detected");
-          return;
-        }
-
-        editor.chain().focus().insertContent(text).run();
-        hasUnsavedChangesRef.current = true;
-        setEditorRevision((revision) => revision + 1);
-        toast.success("Dictation inserted");
-      } catch (dictationError) {
-        toast.error(dictationError);
-      } finally {
-        setDictationState("idle");
-      }
+      await stopStreamingDictation();
       return;
     }
 
+    await startStreamingDictation();
+  }
+
+  async function startStreamingDictation() {
+    if (!editor || editor.isDestroyed) {
+      return;
+    }
+
+    insertedDictationRef.current = false;
+    dictationActiveRef.current = true;
+    setStreamingTranscript("");
     setDictationState("recording");
     try {
       await invoke<AudioCaptureStatus>("start_audio_capture");
       toast.info("Dictation started");
+      void runDictationLoop();
     } catch (dictationError) {
+      dictationActiveRef.current = false;
       setDictationState("idle");
       toast.error(dictationError);
     }
+  }
+
+  async function stopStreamingDictation() {
+    dictationActiveRef.current = false;
+    setDictationState("transcribing");
+    try {
+      await dictationChunkRef.current;
+      await flushAndTranscribeDictationChunk(250);
+      await invoke<AudioCaptureStatus>("stop_audio_capture");
+      if (!insertedDictationRef.current) {
+        toast.info("No speech detected");
+      }
+    } catch (dictationError) {
+      toast.error(dictationError);
+      try {
+        await invoke<AudioCaptureStatus>("stop_audio_capture");
+      } catch {
+        // The capture worker will report the meaningful error through the first failure.
+      }
+    } finally {
+      setDictationState("idle");
+    }
+  }
+
+  async function runDictationLoop() {
+    while (dictationActiveRef.current) {
+      await wait(DICTATION_CHUNK_MS);
+      if (!dictationActiveRef.current) {
+        break;
+      }
+      await flushAndTranscribeDictationChunk(DICTATION_CHUNK_MS - 500);
+    }
+  }
+
+  async function flushAndTranscribeDictationChunk(minDurationMs: number) {
+    if (dictationChunkRef.current) {
+      await dictationChunkRef.current;
+      return;
+    }
+
+    const chunkPromise = (async () => {
+      const preview = await invoke<AudioCapturePreview | null>("flush_audio_capture_chunk", {
+        minDurationMs,
+      });
+      if (!preview) {
+        return;
+      }
+
+      const result = await invoke<SttTranscription>("transcribe_capture_file", {
+        path: preview.path,
+      });
+      insertDictationText(result.text);
+    })();
+
+    dictationChunkRef.current = chunkPromise;
+    try {
+      await chunkPromise;
+    } finally {
+      if (dictationChunkRef.current === chunkPromise) {
+        dictationChunkRef.current = null;
+      }
+    }
+  }
+
+  function insertDictationText(text: string) {
+    const cleanText = text.trim();
+    if (!cleanText || !editor || editor.isDestroyed) {
+      return;
+    }
+
+    const prefix = insertedDictationRef.current ? " " : "";
+    editor.chain().focus().insertContent(`${prefix}${cleanText}`).run();
+    insertedDictationRef.current = true;
+    setStreamingTranscript((current) =>
+      `${current}${prefix}${cleanText}`.trim().slice(-240),
+    );
+    hasUnsavedChangesRef.current = true;
+    setEditorRevision((revision) => revision + 1);
   }
 
   if (!note) {
@@ -2794,6 +2887,16 @@ function NoteEditor({
           )}
         </button>
         <span className="toolbar-divider" aria-hidden="true" />
+        {dictationState !== "idle" ? (
+          <span className="dictation-status">
+            {dictationState === "recording"
+              ? streamingTranscript || "Listening..."
+              : "Transcribing..."}
+          </span>
+        ) : null}
+        {dictationState !== "idle" ? (
+          <span className="toolbar-divider" aria-hidden="true" />
+        ) : null}
         <button
           className={editor?.isActive("bold") ? "active" : ""}
           disabled={Boolean(note.deleted_at)}

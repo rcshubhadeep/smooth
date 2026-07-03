@@ -133,6 +133,40 @@ pub async fn transcribe_last_capture(
         .map_err(|error| format!("STT worker failed: {error}"))?
 }
 
+#[tauri::command]
+pub async fn transcribe_capture_file(
+    app: AppHandle,
+    path: String,
+) -> Result<SttTranscription, String> {
+    let audio_path = validate_capture_audio_path(&app, path)?;
+    let config = {
+        let connection = open_database(&app)?;
+        load_stt_config(&app, &connection)?
+    };
+
+    tauri::async_runtime::spawn_blocking(move || transcribe_wav(config, audio_path))
+        .await
+        .map_err(|error| format!("STT worker failed: {error}"))?
+}
+
+fn validate_capture_audio_path(app: &AppHandle, path: String) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(path);
+    let capture_dir = app_data_dir(app)?.join("audio-captures");
+    let canonical_dir = capture_dir
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve audio capture directory: {error}"))?;
+    let canonical_path = requested
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve audio capture file: {error}"))?;
+    if !canonical_path.starts_with(&canonical_dir) {
+        return Err("Audio capture file is outside the capture directory".to_string());
+    }
+    if canonical_path.extension().and_then(|value| value.to_str()) != Some("wav") {
+        return Err("Audio capture file must be a WAV file".to_string());
+    }
+    Ok(canonical_path)
+}
+
 fn load_stt_config(
     app: &AppHandle,
     connection: &rusqlite::Connection,

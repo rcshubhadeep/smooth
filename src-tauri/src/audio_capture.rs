@@ -37,6 +37,11 @@ enum AudioCaptureCommand {
     Start {
         reply: Sender<Result<AudioCaptureStatus, String>>,
     },
+    Flush {
+        capture_dir: PathBuf,
+        min_duration_ms: u64,
+        reply: Sender<Result<Option<AudioCapturePreview>, String>>,
+    },
     Stop {
         capture_dir: PathBuf,
         reply: Sender<Result<AudioCaptureStatus, String>>,
@@ -114,6 +119,25 @@ pub fn start_audio_capture(
 }
 
 #[tauri::command]
+pub fn flush_audio_capture_chunk(
+    app: AppHandle,
+    state: State<'_, AudioCaptureState>,
+    min_duration_ms: Option<u64>,
+) -> Result<Option<AudioCapturePreview>, String> {
+    let capture_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?
+        .join("audio-captures");
+
+    request_worker_preview(&state.commands, |reply| AudioCaptureCommand::Flush {
+        capture_dir,
+        min_duration_ms: min_duration_ms.unwrap_or(1_500),
+        reply,
+    })
+}
+
+#[tauri::command]
 pub fn stop_audio_capture(
     app: AppHandle,
     state: State<'_, AudioCaptureState>,
@@ -143,6 +167,19 @@ fn request_worker(
         .map_err(|_| "audio capture worker did not respond".to_string())?
 }
 
+fn request_worker_preview(
+    commands: &Sender<AudioCaptureCommand>,
+    build: impl FnOnce(Sender<Result<Option<AudioCapturePreview>, String>>) -> AudioCaptureCommand,
+) -> Result<Option<AudioCapturePreview>, String> {
+    let (reply, receiver) = mpsc::channel();
+    commands
+        .send(build(reply))
+        .map_err(|_| "audio capture worker is unavailable".to_string())?;
+    receiver
+        .recv_timeout(WORKER_REPLY_TIMEOUT)
+        .map_err(|_| "audio capture worker did not respond".to_string())?
+}
+
 fn run_audio_worker(receiver: Receiver<AudioCaptureCommand>) {
     let mut worker = AudioWorker::default();
 
@@ -154,6 +191,14 @@ fn run_audio_worker(receiver: Receiver<AudioCaptureCommand>) {
             AudioCaptureCommand::Start { reply } => {
                 let result =
                     start_worker_capture(&mut worker).map(|()| status_from_worker(&worker));
+                let _ = reply.send(result);
+            }
+            AudioCaptureCommand::Flush {
+                capture_dir,
+                min_duration_ms,
+                reply,
+            } => {
+                let result = flush_worker_capture(&mut worker, &capture_dir, min_duration_ms);
                 let _ = reply.send(result);
             }
             AudioCaptureCommand::Stop { capture_dir, reply } => {
@@ -216,17 +261,48 @@ fn stop_worker_capture(worker: &mut AudioWorker, capture_dir: &Path) -> Result<(
     };
 
     let elapsed_ms = active.started_at.elapsed().as_millis();
-    let captured = snapshot_capture_buffer(&active.buffer)?;
+    let captured = drain_capture_buffer(&active.buffer)?;
+    if !captured.samples.is_empty() {
+        let preview = write_preview_wav(
+            capture_dir,
+            &captured.samples,
+            active.sample_rate,
+            active.channels,
+            elapsed_ms,
+        )?;
+        worker.last_preview = Some(preview);
+    }
+
+    Ok(())
+}
+
+fn flush_worker_capture(
+    worker: &mut AudioWorker,
+    capture_dir: &Path,
+    min_duration_ms: u64,
+) -> Result<Option<AudioCapturePreview>, String> {
+    let Some(active) = &worker.active else {
+        return Err("Audio capture is not recording".to_string());
+    };
+
+    let min_samples =
+        duration_to_samples(min_duration_ms as u128, active.sample_rate, active.channels);
+    let captured = drain_capture_buffer_if_ready(&active.buffer, min_samples)?;
+    if captured.samples.is_empty() {
+        return Ok(None);
+    }
+
+    let duration_ms =
+        samples_to_duration_ms(captured.samples.len(), active.sample_rate, active.channels);
     let preview = write_preview_wav(
         capture_dir,
         &captured.samples,
         active.sample_rate,
         active.channels,
-        elapsed_ms,
+        duration_ms,
     )?;
-    worker.last_preview = Some(preview);
-
-    Ok(())
+    worker.last_preview = Some(preview.clone());
+    Ok(Some(preview))
 }
 
 fn build_input_stream(
@@ -294,13 +370,25 @@ where
     }
 }
 
-fn snapshot_capture_buffer(buffer: &SharedCaptureBuffer) -> Result<CaptureBufferSnapshot, String> {
-    let capture = buffer
+fn drain_capture_buffer(buffer: &SharedCaptureBuffer) -> Result<CaptureBufferSnapshot, String> {
+    drain_capture_buffer_if_ready(buffer, 0)
+}
+
+fn drain_capture_buffer_if_ready(
+    buffer: &SharedCaptureBuffer,
+    min_samples: usize,
+) -> Result<CaptureBufferSnapshot, String> {
+    let mut capture = buffer
         .lock()
         .map_err(|_| "audio capture buffer is unavailable")?;
-    Ok(CaptureBufferSnapshot {
-        samples: capture.samples.clone(),
-    })
+    if capture.samples.len() < min_samples {
+        return Ok(CaptureBufferSnapshot {
+            samples: Vec::new(),
+        });
+    }
+    let capacity = capture.samples.capacity().max(min_samples);
+    let samples = std::mem::replace(&mut capture.samples, Vec::with_capacity(capacity));
+    Ok(CaptureBufferSnapshot { samples })
 }
 
 struct CaptureBufferSnapshot {
@@ -352,6 +440,15 @@ fn write_i16_wav(
     writer
         .finalize()
         .map_err(|error| format!("Failed to finalize WAV preview: {error}"))
+}
+
+fn duration_to_samples(duration_ms: u128, sample_rate: u32, channels: u16) -> usize {
+    ((duration_ms * sample_rate as u128 * channels as u128) / 1000) as usize
+}
+
+fn samples_to_duration_ms(samples: usize, sample_rate: u32, channels: u16) -> u128 {
+    let frames = samples as u128 / channels.max(1) as u128;
+    (frames * 1000) / sample_rate.max(1) as u128
 }
 
 fn status_from_worker(worker: &AudioWorker) -> AudioCaptureStatus {

@@ -1852,6 +1852,23 @@ select:hover {
   background: var(--border);
 }
 
+.dictation-status {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(360px, 40vw);
+  height: 28px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .editor-toolbar.disabled {
   opacity: 0.5;
 }

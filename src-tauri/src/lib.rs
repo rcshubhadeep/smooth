@@ -3,7 +3,8 @@ mod audio_preprocess;
 mod stt;
 
 use audio_capture::{
-    get_audio_capture_status, start_audio_capture, stop_audio_capture, AudioCaptureState,
+    flush_audio_capture_chunk, get_audio_capture_status, start_audio_capture, stop_audio_capture,
+    AudioCaptureState,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,10 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use stt::{get_stt_config, get_stt_status, save_stt_config, transcribe_last_capture};
+use stt::{
+    get_stt_config, get_stt_status, save_stt_config, transcribe_capture_file,
+    transcribe_last_capture,
+};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2743,10 +2747,12 @@ pub fn run() {
             retry_failed_extractions,
             get_audio_capture_status,
             start_audio_capture,
+            flush_audio_capture_chunk,
             stop_audio_capture,
             get_stt_config,
             save_stt_config,
             get_stt_status,
+            transcribe_capture_file,
             transcribe_last_capture,
             get_bank,
             create_note,
