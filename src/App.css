@@ -2281,6 +2281,143 @@ select:hover {
   opacity: 0.55;
 }
 
+.meeting-source-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 28px;
+  background: rgb(17 24 39 / 0.28);
+}
+
+.meeting-source-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 56px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.meeting-source-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meeting-source-dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 720;
+}
+
+.meeting-source-dialog p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.meeting-source-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.meeting-source-list button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.meeting-source-list button:hover {
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+.meeting-source-empty {
+  margin: 18px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.meeting-source-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.meeting-source-list strong,
+.meeting-source-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-source-list strong {
+  max-width: min(480px, calc(100vw - 156px));
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.meeting-source-list small {
+  max-width: min(480px, calc(100vw - 156px));
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.meeting-source-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.meeting-source-dialog footer button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.meeting-source-dialog footer button:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .context-heading {
   display: flex;
   align-items: center;
@@ -2419,6 +2556,20 @@ select:hover {
 .editor-surface a {
   color: var(--accent-strong);
   text-underline-offset: 2px;
+}
+
+.editor-surface img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 14px 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.editor-surface img.ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .editor-surface p.is-editor-empty:first-child::before {

@@ -1,4 +1,5 @@
 import Darwin
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -14,6 +15,10 @@ struct SmoothSystemAudio {
             await checkPermission()
         case "capture":
             await captureSystemAudio()
+        case "list-sources":
+            await listVisualSources()
+        case "snapshot":
+            await captureVisualSnapshot()
         default:
             writeJSON([
                 "type": "error",
@@ -69,6 +74,84 @@ struct SmoothSystemAudio {
         }
     }
 
+    private static func listVisualSources() async {
+        if #available(macOS 12.3, *) {
+            do {
+                let content = try await SCShareableContent.current
+                writeJSON([
+                    "type": "sources",
+                    "sources": visualSources(from: content)
+                ])
+                exit(0)
+            } catch {
+                writeJSON([
+                    "type": "error",
+                    "message": "Unable to list ScreenCaptureKit sources.",
+                    "error": String(describing: error),
+                    "sources": []
+                ])
+                exit(1)
+            }
+        } else {
+            writeJSON([
+                "type": "error",
+                "message": "ScreenCaptureKit requires macOS 12.3 or newer.",
+                "error": "unsupported_macos_version",
+                "sources": []
+            ])
+            exit(2)
+        }
+    }
+
+    private static func captureVisualSnapshot() async {
+        guard #available(macOS 14.0, *) else {
+            writeJSON([
+                "type": "error",
+                "message": "Visual snapshots require macOS 14.0 or newer.",
+                "error": "unsupported_macos_version"
+            ])
+            exit(2)
+        }
+
+        guard let sourceID = argumentValue("--source-id") else {
+            writeJSON([
+                "type": "error",
+                "message": "Missing required --source-id value.",
+                "error": "missing_source_id"
+            ])
+            exit(64)
+        }
+
+        guard let outputPath = argumentValue("--output") else {
+            writeJSON([
+                "type": "error",
+                "message": "Missing required --output path.",
+                "error": "missing_output"
+            ])
+            exit(64)
+        }
+
+        do {
+            let result = try await SnapshotCapture.capture(sourceID: sourceID, outputPath: outputPath)
+            writeJSON([
+                "type": "snapshot",
+                "path": outputPath,
+                "source_id": sourceID,
+                "width": result.width,
+                "height": result.height
+            ])
+            exit(0)
+        } catch {
+            writeJSON([
+                "type": "error",
+                "message": "Failed to capture visual snapshot.",
+                "source_id": sourceID,
+                "error": String(describing: error)
+            ])
+            exit(1)
+        }
+    }
+
     private static func checkPermission() async {
         if #available(macOS 12.3, *) {
             do {
@@ -97,6 +180,61 @@ struct SmoothSystemAudio {
             ])
             exit(2)
         }
+    }
+
+    @available(macOS 12.3, *)
+    private static func visualSources(from content: SCShareableContent) -> [[String: Any]] {
+        var sources: [[String: Any]] = []
+
+        for (index, display) in content.displays.enumerated() {
+            sources.append([
+                "id": "display:\(display.displayID)",
+                "kind": "display",
+                "name": "Display \(index + 1)",
+                "display_id": Int(display.displayID),
+                "window_id": NSNull(),
+                "app_name": NSNull(),
+                "width": display.width,
+                "height": display.height
+            ])
+        }
+
+        for window in content.windows {
+            let title = (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let appName = (window.owningApplication?.applicationName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let width = Int(window.frame.width.rounded())
+            let height = Int(window.frame.height.rounded())
+
+            guard window.isOnScreen, window.windowLayer == 0, width >= 80, height >= 60 else {
+                continue
+            }
+
+            guard !title.isEmpty || !appName.isEmpty else {
+                continue
+            }
+
+            let name: String
+            if title.isEmpty {
+                name = appName
+            } else if appName.isEmpty || title == appName {
+                name = title
+            } else {
+                name = "\(appName) - \(title)"
+            }
+
+            sources.append([
+                "id": "window:\(window.windowID)",
+                "kind": "window",
+                "name": name,
+                "display_id": NSNull(),
+                "window_id": Int(window.windowID),
+                "app_name": appName.isEmpty ? NSNull() : appName,
+                "width": width,
+                "height": height
+            ])
+        }
+
+        return sources
     }
 
     fileprivate static func writeJSON(_ object: [String: Any]) {
@@ -131,6 +269,227 @@ struct SmoothSystemAudio {
                     await capture.stop()
                 }
             }
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+private enum SnapshotCapture {
+    struct Result {
+        let width: Int
+        let height: Int
+    }
+
+    private struct FilterCapture {
+        let label: String
+        let filter: SCContentFilter
+        let sourceRect: CGRect?
+    }
+
+    static func capture(sourceID: String, outputPath: String) async throws -> Result {
+        let content = try await SCShareableContent.current
+        let target = try captureTarget(sourceID: sourceID, content: content)
+        let image = try await captureImage(using: target.captures, fallbackRect: target.fallbackRect)
+
+        let outputURL = URL(fileURLWithPath: outputPath)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        guard let data = bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]) else {
+            throw SnapshotError.pngEncodingFailed
+        }
+        try data.write(to: outputURL, options: Data.WritingOptions.atomic)
+
+        return Result(width: image.width, height: image.height)
+    }
+
+    private static func captureImage(
+        using captures: [FilterCapture],
+        fallbackRect: CGRect?
+    ) async throws -> CGImage {
+        var lastError: Error?
+        var failures: [String] = []
+
+        for capture in captures {
+            do {
+                return try await captureImage(using: capture)
+            } catch {
+                lastError = error
+                failures.append("\(capture.label): \(String(describing: error))")
+            }
+        }
+
+        if let fallbackRect, #available(macOS 15.2, *) {
+            do {
+                return try await captureImage(in: fallbackRect)
+            } catch {
+                lastError = error
+                failures.append("screen-rect: \(String(describing: error))")
+            }
+        }
+
+        if !failures.isEmpty {
+            throw SnapshotError.allAttemptsFailed(failures)
+        }
+
+        throw lastError ?? SnapshotError.emptyImage
+    }
+
+    @available(macOS 15.2, *)
+    private static func captureImage(in rect: CGRect) async throws -> CGImage {
+        let normalizedRect = CGRect(
+            x: rect.origin.x.rounded(.down),
+            y: rect.origin.y.rounded(.down),
+            width: max(1, rect.width.rounded(.up)),
+            height: max(1, rect.height.rounded(.up))
+        )
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CGImage, Error>) in
+            SCScreenshotManager.captureImage(in: normalizedRect) { image, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let image else {
+                    continuation.resume(throwing: SnapshotError.emptyImage)
+                    return
+                }
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private static func captureImage(using capture: FilterCapture) async throws -> CGImage {
+        let filter = capture.filter
+        let config = SCStreamConfiguration()
+        let scale = CGFloat(max(filter.pointPixelScale, 1))
+        let rect = capture.sourceRect ?? filter.contentRect
+        config.width = max(1, Int((rect.width * scale).rounded(.up)))
+        config.height = max(1, Int((rect.height * scale).rounded(.up)))
+        if let sourceRect = capture.sourceRect {
+            config.sourceRect = sourceRect
+            config.ignoreShadowsDisplay = true
+        } else {
+            config.ignoreShadowsSingleWindow = true
+        }
+        config.queueDepth = 3
+        config.showsCursor = true
+        config.capturesAudio = false
+        config.scalesToFit = true
+        config.shouldBeOpaque = true
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CGImage, Error>) in
+            SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let image else {
+                    continuation.resume(throwing: SnapshotError.emptyImage)
+                    return
+                }
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private static func captureTarget(
+        sourceID: String,
+        content: SCShareableContent
+    ) throws -> (captures: [FilterCapture], fallbackRect: CGRect?) {
+        if let displayID = idValue(sourceID, prefix: "display:") {
+            guard let display = content.displays.first(where: { Int($0.displayID) == displayID }) else {
+                throw SnapshotError.sourceNotFound(sourceID)
+            }
+
+            return ([
+                FilterCapture(
+                    label: "display",
+                    filter: SCContentFilter(display: display, excludingWindows: []),
+                    sourceRect: nil
+                )
+            ], nil)
+        }
+
+        if let windowID = idValue(sourceID, prefix: "window:") {
+            guard let window = content.windows.first(where: { Int($0.windowID) == windowID }) else {
+                throw SnapshotError.sourceNotFound(sourceID)
+            }
+
+            var captures: [FilterCapture] = []
+            if let display = displayContaining(window: window, displays: content.displays) {
+                if let cropRect = sourceRect(for: window, on: display) {
+                    captures.append(FilterCapture(
+                        label: "display-crop",
+                        filter: SCContentFilter(
+                            display: display,
+                            excludingApplications: [],
+                            exceptingWindows: []
+                        ),
+                        sourceRect: cropRect
+                    ))
+                }
+            }
+            return (captures, window.frame)
+        }
+
+        throw SnapshotError.invalidSourceID(sourceID)
+    }
+
+    private static func sourceRect(for window: SCWindow, on display: SCDisplay) -> CGRect? {
+        let intersection = window.frame.intersection(display.frame)
+        guard !intersection.isNull, intersection.width >= 1, intersection.height >= 1 else {
+            return nil
+        }
+
+        return CGRect(
+            x: max(0, intersection.origin.x - display.frame.origin.x),
+            y: max(0, intersection.origin.y - display.frame.origin.y),
+            width: intersection.width,
+            height: intersection.height
+        )
+    }
+
+    private static func displayContaining(window: SCWindow, displays: [SCDisplay]) -> SCDisplay? {
+        let windowMidX = window.frame.midX
+        let windowMidY = window.frame.midY
+        if let display = displays.first(where: { $0.frame.contains(CGPoint(x: windowMidX, y: windowMidY)) }) {
+            return display
+        }
+
+        return displays.first(where: { $0.frame.intersects(window.frame) })
+    }
+
+    private static func idValue(_ sourceID: String, prefix: String) -> Int? {
+        guard sourceID.hasPrefix(prefix) else {
+            return nil
+        }
+        return Int(sourceID.dropFirst(prefix.count))
+    }
+}
+
+private enum SnapshotError: Error, CustomStringConvertible {
+    case invalidSourceID(String)
+    case sourceNotFound(String)
+    case emptyImage
+    case pngEncodingFailed
+    case allAttemptsFailed([String])
+
+    var description: String {
+        switch self {
+        case .invalidSourceID(let sourceID):
+            return "Invalid visual source id: \(sourceID)."
+        case .sourceNotFound(let sourceID):
+            return "Visual source is no longer available: \(sourceID)."
+        case .emptyImage:
+            return "ScreenCaptureKit returned an empty image."
+        case .pngEncodingFailed:
+            return "Failed to encode snapshot as PNG."
+        case .allAttemptsFailed(let failures):
+            return "All snapshot attempts failed: \(failures.joined(separator: " | "))"
         }
     }
 }

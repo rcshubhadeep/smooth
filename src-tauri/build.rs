@@ -30,6 +30,8 @@ fn build_system_audio_helper() {
         .arg("-parse-as-library")
         .arg(&source)
         .arg("-framework")
+        .arg("AppKit")
+        .arg("-framework")
         .arg("Foundation")
         .arg("-framework")
         .arg("AVFoundation")

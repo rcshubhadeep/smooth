@@ -23,8 +23,9 @@ use stt::{
     transcribe_last_capture,
 };
 use system_audio::{
-    check_system_audio_permission, get_system_audio_capture_status, start_system_audio_capture,
-    stop_system_audio_capture, SystemAudioCaptureState,
+    capture_meeting_snapshot, check_system_audio_permission, get_system_audio_capture_status,
+    list_meeting_visual_sources, start_system_audio_capture, stop_system_audio_capture,
+    SystemAudioCaptureState,
 };
 use tauri::{AppHandle, Manager};
 
@@ -2841,6 +2842,8 @@ pub fn run() {
             transcribe_capture_file,
             transcribe_last_capture,
             check_system_audio_permission,
+            list_meeting_visual_sources,
+            capture_meeting_snapshot,
             get_system_audio_capture_status,
             start_system_audio_capture,
             stop_system_audio_capture,

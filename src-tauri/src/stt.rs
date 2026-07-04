@@ -6,9 +6,11 @@ use crate::{
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, time::Instant};
+use std::{fs, path::PathBuf, sync::Once, time::Instant};
 use tauri::{AppHandle, State};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+static WHISPER_LOG_HOOKS: Once = Once::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SttConfig {
@@ -286,6 +288,8 @@ fn acceleration_features() -> Vec<String> {
 }
 
 fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscription, String> {
+    WHISPER_LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
+
     let status = stt_status(config.clone());
     if !matches!(status.state, SttState::Ready) {
         return Err(status.message);

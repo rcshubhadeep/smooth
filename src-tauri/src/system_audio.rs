@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager, State};
 
 const HELPER_BASE_NAME: &str = "smooth-system-audio";
 const HELPER_TIMEOUT: Duration = Duration::from_secs(20);
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
 const CAPTURE_START_SETTLE: Duration = Duration::from_millis(650);
 const CAPTURE_STOP_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -74,6 +75,27 @@ pub struct SystemAudioCapturePreview {
     pub samples: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MeetingVisualSource {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub display_id: Option<u32>,
+    pub window_id: Option<u32>,
+    pub app_name: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MeetingSnapshot {
+    pub path: String,
+    pub source_id: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub captured_at_ms: u128,
+}
+
 #[derive(Debug, Deserialize)]
 struct HelperCaptureEvent {
     #[serde(rename = "type")]
@@ -83,6 +105,28 @@ struct HelperCaptureEvent {
     sample_rate: Option<u32>,
     channels: Option<u16>,
     samples: Option<u64>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HelperVisualSourceList {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    sources: Vec<MeetingVisualSource>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HelperSnapshotEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    path: Option<String>,
+    source_id: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
     message: Option<String>,
     error: Option<String>,
 }
@@ -105,6 +149,37 @@ pub fn check_system_audio_permission(
             displays: 0,
             error: Some("unsupported_platform".to_string()),
         })
+    }
+}
+
+#[tauri::command]
+pub fn list_meeting_visual_sources(app: AppHandle) -> Result<Vec<MeetingVisualSource>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        list_meeting_visual_sources_macos(&app)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+pub fn capture_meeting_snapshot(
+    app: AppHandle,
+    source_id: String,
+) -> Result<MeetingSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        capture_meeting_snapshot_macos(&app, &source_id)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, source_id);
+        Err("Meeting visual snapshots are only supported on macOS.".to_string())
     }
 }
 
@@ -211,6 +286,85 @@ pub fn stop_system_audio_capture(
     finish_capture_from_output(&mut worker, &active.output_path, active.started_at, output)?;
 
     Ok(status_from_worker(&worker))
+}
+
+#[cfg(target_os = "macos")]
+fn list_meeting_visual_sources_macos(app: &AppHandle) -> Result<Vec<MeetingVisualSource>, String> {
+    let helper = system_audio_helper_path(app)?;
+    let output = run_helper_command(
+        &helper,
+        &["list-sources"],
+        HELPER_TIMEOUT,
+        "listing meeting visual sources",
+    )?;
+
+    if let Some(parsed) = parse_helper_visual_sources(&output.stdout) {
+        if parsed.kind == "sources" {
+            return Ok(parsed.sources);
+        }
+
+        return Err(parsed
+            .error
+            .or(parsed.message)
+            .unwrap_or_else(|| "Visual source helper did not return sources.".to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(format!(
+        "Visual source helper did not return a valid response. stdout: {stdout}; stderr: {stderr}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn capture_meeting_snapshot_macos(
+    app: &AppHandle,
+    source_id: &str,
+) -> Result<MeetingSnapshot, String> {
+    let snapshot_dir = meeting_snapshot_dir(app)?;
+    fs::create_dir_all(&snapshot_dir)
+        .map_err(|error| format!("Failed to create meeting snapshot directory: {error}"))?;
+
+    let captured_at_ms = now_ms();
+    let output_path = snapshot_dir.join(format!("snapshot-{captured_at_ms}.png"));
+    let output_string = output_path.to_string_lossy().into_owned();
+    let helper = system_audio_helper_path(app)?;
+    let output = run_helper_command_output(
+        &helper,
+        &[
+            "snapshot",
+            "--source-id",
+            source_id,
+            "--output",
+            &output_string,
+        ],
+        SNAPSHOT_TIMEOUT,
+        "capturing meeting snapshot",
+    )?;
+    append_snapshot_debug(app, source_id, &output);
+
+    if let Some(parsed) = parse_helper_snapshot(&output.stdout) {
+        if parsed.kind == "snapshot" {
+            return Ok(MeetingSnapshot {
+                path: parsed.path.unwrap_or(output_string),
+                source_id: parsed.source_id.unwrap_or_else(|| source_id.to_string()),
+                width: parsed.width,
+                height: parsed.height,
+                captured_at_ms,
+            });
+        }
+
+        return Err(parsed
+            .error
+            .or(parsed.message)
+            .unwrap_or_else(|| "Snapshot helper did not return a snapshot.".to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(format!(
+        "Snapshot helper did not return a valid response. stdout: {stdout}; stderr: {stderr}"
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -454,6 +608,41 @@ fn audio_capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .join("audio-captures"))
 }
 
+fn meeting_snapshot_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?
+        .join("meeting-snapshots"))
+}
+
+fn append_snapshot_debug(app: &AppHandle, source_id: &str, output: &Output) {
+    let Ok(snapshot_dir) = meeting_snapshot_dir(app) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&snapshot_dir);
+    let log_path = snapshot_dir.join("snapshot-debug.log");
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    else {
+        return;
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let _ = writeln!(
+        file,
+        "[{}] source_id={} status={} stdout={} stderr={}",
+        now_ms(),
+        source_id,
+        output.status.code().unwrap_or(-1),
+        stdout,
+        stderr
+    );
+}
+
 fn samples_to_duration_ms(samples: u128, sample_rate: u32, channels: u16) -> u128 {
     let frames = samples / channels.max(1) as u128;
     (frames * 1000) / sample_rate.max(1) as u128
@@ -464,6 +653,91 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+#[cfg(target_os = "macos")]
+fn run_helper_command(
+    helper: &PathBuf,
+    args: &[&str],
+    timeout: Duration,
+    action: &str,
+) -> Result<Output, String> {
+    let mut child = Command::new(helper)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "Failed to run system audio helper at {} while {action}: {error}",
+                helper.display()
+            )
+        })?;
+
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| error.to_string())?;
+                if output.status.success() {
+                    return Ok(output);
+                }
+                return Err(helper_capture_error(&output));
+            }
+            Ok(None) if started_at.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait_with_output();
+                return Err(format!("Timed out while {action}."));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_helper_command_output(
+    helper: &PathBuf,
+    args: &[&str],
+    timeout: Duration,
+    action: &str,
+) -> Result<Output, String> {
+    let mut child = Command::new(helper)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "Failed to run system audio helper at {} while {action}: {error}",
+                helper.display()
+            )
+        })?;
+
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().map_err(|error| error.to_string()),
+            Ok(None) if started_at.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let output = child.wait_with_output().map_err(|error| {
+                    format!("Timed out while {action} and failed to read output: {error}")
+                })?;
+                return Err(format!(
+                    "Timed out while {action}. {}",
+                    helper_capture_error(&output)
+                ));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -497,6 +771,30 @@ fn run_helper_check(helper: &PathBuf) -> Result<Output, String> {
             Err(error) => return Err(error.to_string()),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_helper_visual_sources(output: &[u8]) -> Option<HelperVisualSourceList> {
+    let stdout = String::from_utf8_lossy(output);
+    stdout.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<HelperVisualSourceList>(trimmed).ok()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_helper_snapshot(output: &[u8]) -> Option<HelperSnapshotEvent> {
+    let stdout = String::from_utf8_lossy(output);
+    stdout.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<HelperSnapshotEvent>(trimmed).ok()
+    })
 }
 
 #[cfg(target_os = "macos")]
