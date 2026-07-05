@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { ArrowUp, Sparkles, Trash2 } from "lucide-react";
+import { ArrowUp, Check, Copy, FilePlus, Sparkles, Trash2 } from "lucide-react";
 import { marked } from "marked";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -36,9 +36,11 @@ function tempId() {
 export default function NoteChat({
   noteId,
   noteContent,
+  onCreateNote,
 }: {
   noteId: string;
   noteContent: string;
+  onCreateNote: (content: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -46,6 +48,7 @@ export default function NoteChat({
   const [status, setStatus] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const noteContentRef = useRef(noteContent);
   noteContentRef.current = noteContent;
@@ -141,6 +144,16 @@ export default function NoteChat({
     }
   }
 
+  async function copyMessage(id: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      window.setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
+    } catch {
+      setError("Couldn't copy to the clipboard");
+    }
+  }
+
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -182,6 +195,24 @@ export default function NoteChat({
                     className="chat-bubble markdown"
                     dangerouslySetInnerHTML={renderMarkdown(message.content)}
                   />
+                  <div className="chat-actions">
+                    <button
+                      type="button"
+                      className="chat-action"
+                      title={copiedId === message.id ? "Copied" : "Copy to clipboard"}
+                      onClick={() => void copyMessage(message.id, message.content)}
+                    >
+                      {copiedId === message.id ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-action"
+                      title="Create a note from this"
+                      onClick={() => onCreateNote(message.content)}
+                    >
+                      <FilePlus size={14} />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="chat-msg user" key={message.id}>

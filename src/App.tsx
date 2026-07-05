@@ -803,6 +803,31 @@ function App() {
     }
   }
 
+  // Create a normal note seeded with content (e.g. a chat summary). Saving as a
+  // regular note enqueues entity extraction automatically.
+  async function createNoteFromContent(content: string) {
+    try {
+      setError(null);
+      const note = await invoke<NoteWithContent>("create_note", {
+        title: null,
+        folderId: null,
+      });
+      const saved = await invoke<NoteWithContent>("save_note", {
+        id: note.id,
+        title: "",
+        content,
+        folderId: null,
+      });
+      await loadBank();
+      setActiveNote(saved);
+      setSelectedIds([saved.id]);
+      setView("notes");
+      toast.success("Note created — extracting entities");
+    } catch (createError) {
+      toast.error(createError);
+    }
+  }
+
   async function createMeetingNote(title: string) {
     setError(null);
     const note = await invoke<NoteWithContent>("create_meeting_note", {
@@ -1674,6 +1699,7 @@ function App() {
                   onOpenNote={openNote}
                   onLinkSuggestion={linkSuggestedNote}
                   onExtractionStatusChange={updateNoteExtractionStatus}
+                  onCreateNoteFromContent={createNoteFromContent}
                   onUnlink={unlinkNotes}
                 />
               </>
@@ -3785,6 +3811,7 @@ type ContextPanelProps = {
   onOpenNote: (id: string) => Promise<void>;
   onLinkSuggestion: (targetId: string) => Promise<void>;
   onExtractionStatusChange: (noteId: string, status: string) => void;
+  onCreateNoteFromContent: (content: string) => void;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
@@ -3795,6 +3822,7 @@ function ContextPanel({
   onOpenNote,
   onLinkSuggestion,
   onExtractionStatusChange,
+  onCreateNoteFromContent,
   onUnlink,
 }: ContextPanelProps) {
   const [tab, setTab] = useState<"details" | "links" | "chat">("details");
@@ -3840,7 +3868,12 @@ function ContextPanel({
       </div>
 
       <div className="panel-pane chat" hidden={tab !== "chat"}>
-        <NoteChat key={note.id} noteId={note.id} noteContent={note.content} />
+        <NoteChat
+          key={note.id}
+          noteId={note.id}
+          noteContent={note.content}
+          onCreateNote={onCreateNoteFromContent}
+        />
       </div>
 
       <div className="panel-pane" hidden={tab !== "links"}>
