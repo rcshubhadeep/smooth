@@ -1,5 +1,6 @@
 mod audio_capture;
 mod audio_preprocess;
+mod chat;
 mod stt;
 mod system_audio;
 
@@ -279,7 +280,7 @@ fn disabled_extraction_status() -> String {
     "disabled".to_string()
 }
 
-fn now_string() -> String {
+pub(crate) fn now_string() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -287,7 +288,7 @@ fn now_string() -> String {
         .to_string()
 }
 
-fn new_id(prefix: &str) -> String {
+pub(crate) fn new_id(prefix: &str) -> String {
     format!("{}-{}", prefix, now_string())
 }
 
@@ -314,7 +315,7 @@ fn note_path(app: &AppHandle, note_id: &str) -> Result<PathBuf, String> {
         .join(format!("{note_id}.md")))
 }
 
-fn open_database(app: &AppHandle) -> Result<Connection, String> {
+pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     let mut connection = Connection::open(database_path(app)?).map_err(db_error)?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -422,8 +423,27 @@ fn open_database(app: &AppHandle) -> Result<Connection, String> {
         )
         .map_err(db_error)?;
 
+    chat::init_schema(&connection)?;
     migrate_legacy_store(app, &mut connection)?;
     Ok(connection)
+}
+
+/// Note title + full markdown body, for use as chat context.
+pub(crate) fn note_context(app: &AppHandle, note_id: &str) -> Result<(String, String), String> {
+    let connection = open_database(app)?;
+    let meta = load_note_meta(&connection, note_id)?;
+    if meta.deleted_at.is_some() {
+        return Err("This note is in the trash".to_string());
+    }
+    let content = read_note_content(app, note_id)?;
+    Ok((meta.title, content))
+}
+
+/// llama.cpp base URL and the user's preferred model (if any).
+pub(crate) fn chat_llama_target(app: &AppHandle) -> Result<(String, Option<String>), String> {
+    let connection = open_database(app)?;
+    let config = load_llama_config(&connection)?;
+    Ok((config.base_url, config.preferred_model))
 }
 
 fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<(), String> {
@@ -540,7 +560,7 @@ fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<
     transaction.commit().map_err(db_error)
 }
 
-fn db_error(error: rusqlite::Error) -> String {
+pub(crate) fn db_error(error: rusqlite::Error) -> String {
     error.to_string()
 }
 
@@ -1254,7 +1274,7 @@ fn validate_llama_base_url(value: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
-fn llama_endpoint(base_url: &str, path: &str) -> String {
+pub(crate) fn llama_endpoint(base_url: &str, path: &str) -> String {
     format!(
         "{}/{}",
         base_url.trim_end_matches('/'),
@@ -2858,6 +2878,9 @@ pub fn run() {
             finalize_meeting_extraction,
             enqueue_all_note_extractions,
             retry_failed_extractions,
+            chat::get_chat_messages,
+            chat::send_chat_message,
+            chat::clear_chat,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,

@@ -55,6 +55,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import TurndownService from "turndown";
+import NoteChat from "./Chat";
 import "./App.css";
 
 type ThemeMode = "light" | "dark" | "system";
@@ -3796,7 +3797,7 @@ function ContextPanel({
   onExtractionStatusChange,
   onUnlink,
 }: ContextPanelProps) {
-  const [tab, setTab] = useState<"details" | "links">("details");
+  const [tab, setTab] = useState<"details" | "links" | "chat">("details");
   const linkCount = linkedNotes.length + linkSuggestions.length;
 
   return (
@@ -3822,11 +3823,24 @@ function ContextPanel({
             Links
             {linkCount > 0 ? <small>{linkCount}</small> : null}
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "chat"}
+            className={tab === "chat" ? "active" : ""}
+            onClick={() => setTab("chat")}
+          >
+            Chat
+          </button>
         </div>
       </div>
 
       <div className="panel-pane" hidden={tab !== "details"}>
         <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
+      </div>
+
+      <div className="panel-pane chat" hidden={tab !== "chat"}>
+        <NoteChat key={note.id} noteId={note.id} />
       </div>
 
       <div className="panel-pane" hidden={tab !== "links"}>
