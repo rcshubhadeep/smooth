@@ -2,11 +2,12 @@
 //! local llama.cpp server. History is persisted per note; replies stream back
 //! to the frontend over a Tauri channel.
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::{ipc::Channel, AppHandle};
 
 use crate::{
@@ -15,11 +16,13 @@ use crate::{
 
 /// Assumed context window (tokens) when the model doesn't report one.
 const DEFAULT_CTX_TOKENS: usize = 4096;
-/// Conservative chars-per-token estimate — we deliberately undershoot so prompts
-/// never overflow the model's context (an overflow makes llama.cpp return empty).
-const CHARS_PER_TOKEN: usize = 3;
-/// Safety bound on recursive summarization depth.
-const MAX_SUMMARY_PASSES: usize = 5;
+/// Conservative fallback when llama.cpp's token counter is unavailable.
+const FALLBACK_CHARS_PER_TOKEN: usize = 3;
+/// Safety bound on hierarchical summary reduction.
+const MAX_SUMMARY_LEVELS: usize = 8;
+const MAX_ANSWER_CONTINUATIONS: usize = 4;
+const MIN_SPLIT_CHARS: usize = 600;
+const INPUT_RESERVE_TOKENS: usize = 300;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChatMessage {
@@ -35,10 +38,18 @@ pub(crate) struct ChatMessage {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum ChatStreamEvent {
     /// Transient progress (e.g. while summarizing a long note before answering).
-    Status { message: String },
-    Delta { delta: String },
-    Done { message: ChatMessage },
-    Error { message: String },
+    Status {
+        message: String,
+    },
+    Delta {
+        delta: String,
+    },
+    Done {
+        message: ChatMessage,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
@@ -55,6 +66,23 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS chat_messages_note_idx
                 ON chat_messages(note_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS note_summaries (
+                note_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                model TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    note_id, content_hash, model, level, chunk_index, source_hash
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS note_summaries_lookup_idx
+                ON note_summaries(note_id, content_hash, model, level, chunk_index);
             ",
         )
         .map_err(db_error)
@@ -165,7 +193,18 @@ pub(crate) async fn send_chat_message(
 
     // Run the streaming completion; report any failure through the channel so the
     // frontend has a single event stream to listen to.
-    match stream_completion(&on_event, &base_url, preferred_model, &title, &body, &history).await {
+    match stream_completion(
+        &app,
+        &on_event,
+        &note_id,
+        &base_url,
+        preferred_model,
+        &title,
+        &body,
+        &history,
+    )
+    .await
+    {
         Ok(answer) if !answer.trim().is_empty() => {
             let assistant = ChatMessage {
                 id: new_id("msg"),
@@ -226,6 +265,8 @@ struct StreamChunk {
 struct StreamChoice {
     #[serde(default)]
     delta: StreamDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -242,7 +283,11 @@ async fn resolve_model(
 ) -> Result<(String, Option<usize>), String> {
     let preferred = preferred.filter(|model| !model.trim().is_empty());
 
-    let models = match client.get(llama_endpoint(base_url, "/v1/models")).send().await {
+    let models = match client
+        .get(llama_endpoint(base_url, "/v1/models"))
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => response
             .json::<ModelsResponse>()
             .await
@@ -284,27 +329,35 @@ async fn resolve_model(
 
 /// Character / token budgets derived from the model's context window.
 struct Budget {
-    /// Note content up to this many chars is sent directly (no summarization).
-    direct_chars: usize,
-    /// Raw content consumed per summarization request.
-    chunk_chars: usize,
+    context_tokens: usize,
+    note_input_tokens: usize,
+    chunk_input_tokens: usize,
     summary_max_tokens: u32,
     answer_max_tokens: u32,
+    initial_chunk_chars: usize,
 }
 
 fn budget_for(context_tokens: Option<usize>) -> Budget {
     let ctx = context_tokens.unwrap_or(DEFAULT_CTX_TOKENS).max(1024);
-    let answer = (ctx / 3).clamp(256, 1024);
-    let summary = (ctx / 4).clamp(224, 640);
-    // Reserve room for the output + the fixed prompt/instructions/history.
-    let direct_tokens = ctx.saturating_sub(answer + 350).max(400);
-    let chunk_tokens = ctx.saturating_sub(summary as usize + 250).max(400);
+    let answer = (ctx / 4).clamp(256, 1024);
+    let summary = (ctx / 5).clamp(256, 900);
+    let note_input_tokens = ctx.saturating_sub(answer + INPUT_RESERVE_TOKENS).max(400);
+    let chunk_input_tokens = ctx
+        .saturating_sub(summary as usize + INPUT_RESERVE_TOKENS)
+        .max(400);
     Budget {
-        direct_chars: direct_tokens * CHARS_PER_TOKEN,
-        chunk_chars: chunk_tokens * CHARS_PER_TOKEN,
+        context_tokens: ctx,
+        note_input_tokens,
+        chunk_input_tokens,
         summary_max_tokens: summary as u32,
         answer_max_tokens: answer as u32,
+        initial_chunk_chars: chunk_input_tokens * FALLBACK_CHARS_PER_TOKEN,
     }
+}
+
+#[derive(Deserialize)]
+struct InputTokensResponse {
+    input_tokens: usize,
 }
 
 #[derive(Deserialize)]
@@ -371,6 +424,252 @@ fn split_chunks(text: &str, size: usize) -> Vec<String> {
     chunks
 }
 
+fn hash_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn summary_prompt(chunk: &str) -> String {
+    format!(
+        "Summarize the section of a note or meeting transcript below, preserving key facts, \
+names, numbers, decisions, open questions, action items, and chronological order. Be \
+comprehensive but concise. Do not add anything that is not present.\n\n---\n{chunk}"
+    )
+}
+
+fn reduce_prompt(chunk: &str) -> String {
+    format!(
+        "Combine the partial summaries below into one faithful summary. Preserve concrete \
+details, decisions, action items, unresolved questions, names, numbers, dates, and chronology. \
+Remove duplication, but do not drop unique facts.\n\n---\n{chunk}"
+    )
+}
+
+fn summary_cache_lookup(
+    app: &AppHandle,
+    note_id: &str,
+    content_hash: &str,
+    model: &str,
+    level: usize,
+    chunk_index: usize,
+    source_hash: &str,
+) -> Result<Option<String>, String> {
+    let connection = open_database(app)?;
+    connection
+        .query_row(
+            "
+            SELECT summary
+            FROM note_summaries
+            WHERE note_id = ?1
+              AND content_hash = ?2
+              AND model = ?3
+              AND level = ?4
+              AND chunk_index = ?5
+              AND source_hash = ?6
+            ",
+            params![
+                note_id,
+                content_hash,
+                model,
+                level as i64,
+                chunk_index as i64,
+                source_hash
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error)
+}
+
+fn summary_cache_store(
+    app: &AppHandle,
+    note_id: &str,
+    content_hash: &str,
+    model: &str,
+    level: usize,
+    chunk_index: usize,
+    source_hash: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let connection = open_database(app)?;
+    connection
+        .execute(
+            "
+            INSERT INTO note_summaries (
+                note_id, content_hash, model, level, chunk_index, source_hash,
+                summary, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(note_id, content_hash, model, level, chunk_index, source_hash)
+            DO UPDATE SET summary = excluded.summary, created_at = excluded.created_at
+            ",
+            params![
+                note_id,
+                content_hash,
+                model,
+                level as i64,
+                chunk_index as i64,
+                source_hash,
+                summary,
+                now_string()
+            ],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+async fn count_input_tokens(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+) -> Option<usize> {
+    let response = client
+        .post(llama_endpoint(
+            base_url,
+            "/v1/chat/completions/input_tokens",
+        ))
+        .json(&json!({
+            "model": model,
+            "messages": messages
+        }))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response
+        .json::<InputTokensResponse>()
+        .await
+        .ok()
+        .map(|result| result.input_tokens)
+}
+
+fn estimate_tokens(messages: &[serde_json::Value]) -> usize {
+    let content_chars = messages
+        .iter()
+        .filter_map(|message| message.get("content").and_then(|value| value.as_str()))
+        .map(|content| content.chars().count())
+        .sum::<usize>();
+    (content_chars / FALLBACK_CHARS_PER_TOKEN) + (messages.len() * 12) + 32
+}
+
+async fn messages_fit(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+    input_budget: usize,
+) -> bool {
+    count_input_tokens(client, base_url, model, messages)
+        .await
+        .unwrap_or_else(|| estimate_tokens(messages))
+        <= input_budget
+}
+
+async fn text_fits_as_note_context(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    title: &str,
+    text: &str,
+    summarized: bool,
+    budget: &Budget,
+) -> bool {
+    let messages = [json!({
+        "role": "system",
+        "content": build_system_prompt(title, text, summarized),
+    })];
+    messages_fit(client, base_url, model, &messages, budget.note_input_tokens).await
+}
+
+fn split_text_near_middle(text: &str) -> Option<(String, String)> {
+    let total_chars = text.chars().count();
+    if total_chars < 2 {
+        return None;
+    }
+    let midpoint = total_chars / 2;
+    let char_indices = text.char_indices().collect::<Vec<_>>();
+    let mid_byte = char_indices
+        .get(midpoint)
+        .map(|(index, _)| *index)
+        .unwrap_or(text.len());
+
+    let search_radius = text.len() / 4;
+    let start = mid_byte.saturating_sub(search_radius);
+    let end = (mid_byte + search_radius).min(text.len());
+    let window = &text[start..end];
+    let split_byte = window
+        .match_indices("\n\n")
+        .map(|(index, _)| start + index + 2)
+        .min_by_key(|index| index.abs_diff(mid_byte))
+        .or_else(|| {
+            window
+                .match_indices('\n')
+                .map(|(index, _)| start + index + 1)
+                .min_by_key(|index| index.abs_diff(mid_byte))
+        })
+        .unwrap_or(mid_byte);
+
+    let (first, second) = text.split_at(split_byte);
+    let first = first.trim().to_string();
+    let second = second.trim().to_string();
+    if first.is_empty() || second.is_empty() {
+        None
+    } else {
+        Some((first, second))
+    }
+}
+
+async fn fit_summary_chunks(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    text: &str,
+    budget: &Budget,
+    reduce: bool,
+) -> Result<Vec<String>, String> {
+    let mut pending = VecDeque::from(split_chunks(text, budget.initial_chunk_chars));
+    let mut chunks = Vec::new();
+
+    while let Some(chunk) = pending.pop_front() {
+        let prompt = if reduce {
+            reduce_prompt(&chunk)
+        } else {
+            summary_prompt(&chunk)
+        };
+        let messages = [json!({ "role": "user", "content": prompt })];
+        let fits = messages_fit(
+            client,
+            base_url,
+            model,
+            &messages,
+            budget.chunk_input_tokens,
+        )
+        .await;
+        if fits {
+            chunks.push(chunk);
+            continue;
+        }
+
+        if chunk.chars().count() <= MIN_SPLIT_CHARS {
+            return Err(format!(
+                "A note segment cannot fit within the {} token summarization budget",
+                budget.chunk_input_tokens
+            ));
+        }
+        let Some((first, second)) = split_text_near_middle(&chunk) else {
+            return Err("Unable to split an oversized note segment".to_string());
+        };
+        pending.push_front(second);
+        pending.push_front(first);
+    }
+
+    Ok(chunks)
+}
+
 /// Non-streaming completion, used for summarization passes.
 async fn complete_once(
     client: &reqwest::Client,
@@ -430,110 +729,184 @@ async fn summarize_chunk(
     chunk: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    // Instruction lives in the user turn (no system role) for cross-template safety.
-    let prompt = format!(
-        "Summarize the section of a note or meeting transcript below, preserving key facts, \
-names, numbers, decisions, open questions, and action items. Be comprehensive but concise, \
-and do not add anything that isn't present.\n\n---\n{chunk}"
-    );
+    let prompt = summary_prompt(chunk);
     complete_once(client, base_url, model, "", &prompt, max_tokens).await
 }
 
-/// Fit the whole note into the model's context: send it directly if small enough,
-/// otherwise recursively summarize chunk-by-chunk until it fits. Never returns
-/// empty when the note has content — falls back to raw slices if summaries fail.
-async fn prepare_context(
+async fn reduce_summary_chunk(
     client: &reqwest::Client,
     base_url: &str,
     model: &str,
+    chunk: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let prompt = reduce_prompt(chunk);
+    complete_once(client, base_url, model, "", &prompt, max_tokens).await
+}
+
+/// Build a model-fit note memory. Long notes are summarized in cached levels:
+/// raw chunks -> chunk summaries -> reduced summaries, until the final memory fits.
+async fn prepare_note_memory(
+    app: &AppHandle,
+    note_id: &str,
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    title: &str,
     content: &str,
     budget: &Budget,
     on_event: &Channel<ChatStreamEvent>,
 ) -> Result<(String, bool), String> {
-    if content.chars().count() <= budget.direct_chars {
+    if text_fits_as_note_context(client, base_url, model, title, content, false, budget).await {
         return Ok((content.to_string(), false));
     }
 
+    let content_hash = hash_text(content);
     let _ = on_event.send(ChatStreamEvent::Status {
         message: "Reading the full note…".to_string(),
     });
 
     let mut current = content.to_string();
-    let mut pass = 0;
-    while current.chars().count() > budget.direct_chars && pass < MAX_SUMMARY_PASSES {
-        let chunks = split_chunks(&current, budget.chunk_chars);
+    for level in 0..MAX_SUMMARY_LEVELS {
+        let reduce = level > 0;
+        let chunks = fit_summary_chunks(client, base_url, model, &current, budget, reduce).await?;
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
+
         for (index, chunk) in chunks.into_iter().enumerate() {
+            let source_hash = hash_text(&chunk);
+            if let Some(summary) = summary_cache_lookup(
+                app,
+                note_id,
+                &content_hash,
+                model,
+                level,
+                index,
+                &source_hash,
+            )? {
+                summaries.push(summary);
+                continue;
+            }
+
             let _ = on_event.send(ChatStreamEvent::Status {
-                message: format!("Summarizing long note… ({}/{})", index + 1, total),
+                message: if reduce {
+                    format!(
+                        "Reducing note summary… pass {} ({}/{})",
+                        level + 1,
+                        index + 1,
+                        total
+                    )
+                } else {
+                    format!("Summarizing long note… ({}/{})", index + 1, total)
+                },
             });
-            // If a summary fails or comes back empty (e.g. the chunk still didn't
-            // leave the model room to respond), keep a raw slice so the section
-            // isn't lost — this guarantees a non-empty final context.
-            let summary = summarize_chunk(client, base_url, model, &chunk, budget.summary_max_tokens)
-                .await
-                .unwrap_or_default();
-            let summary = if summary.trim().is_empty() {
-                chunk.chars().take(budget.chunk_chars / 3).collect()
+
+            let summary = if reduce {
+                reduce_summary_chunk(client, base_url, model, &chunk, budget.summary_max_tokens)
+                    .await?
             } else {
-                summary
+                summarize_chunk(client, base_url, model, &chunk, budget.summary_max_tokens).await?
             };
+            let summary = summary.trim().to_string();
+            if summary.is_empty() {
+                return Err(format!(
+                    "The model returned an empty summary for chunk {} of {}",
+                    index + 1,
+                    total
+                ));
+            }
+
+            summary_cache_store(
+                app,
+                note_id,
+                &content_hash,
+                model,
+                level,
+                index,
+                &source_hash,
+                &summary,
+            )?;
             summaries.push(summary);
         }
 
-        let joined = summaries.join("\n\n");
-        // Stop if summarization isn't shrinking the content (avoids spinning).
-        if joined.chars().count() >= current.chars().count() {
-            current = joined;
-            break;
+        current = summaries
+            .into_iter()
+            .enumerate()
+            .map(|(index, summary)| format!("## Summary part {}\n{}", index + 1, summary))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        if text_fits_as_note_context(client, base_url, model, title, &current, true, budget).await {
+            return Ok((current, true));
         }
-        current = joined;
-        pass += 1;
     }
 
-    if current.trim().is_empty() {
-        // Absolute fallback: use the head of the original note.
-        current = content.chars().take(budget.direct_chars).collect();
-    } else if current.chars().count() > budget.direct_chars {
-        current = current.chars().take(budget.direct_chars).collect();
-    }
-    Ok((current, true))
+    Err(format!(
+        "Could not reduce this note enough to fit the {} token context window after {} passes",
+        budget.context_tokens, MAX_SUMMARY_LEVELS
+    ))
 }
 
-async fn stream_completion(
-    on_event: &Channel<ChatStreamEvent>,
+async fn select_history_messages(
+    client: &reqwest::Client,
     base_url: &str,
-    preferred_model: Option<String>,
-    title: &str,
-    note_content: &str,
+    model: &str,
+    system_message: serde_json::Value,
     history: &[ChatMessage],
-) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|error| error.to_string())?;
+    budget: &Budget,
+) -> Result<Vec<serde_json::Value>, String> {
+    let max_input_tokens = budget
+        .context_tokens
+        .saturating_sub(budget.answer_max_tokens as usize + INPUT_RESERVE_TOKENS)
+        .max(400);
+    let Some(latest) = history.last() else {
+        return Ok(vec![system_message]);
+    };
 
-    let (model, context_tokens) = resolve_model(&client, base_url, preferred_model).await?;
-    let budget = budget_for(context_tokens);
-    let (context, summarized) =
-        prepare_context(&client, base_url, &model, note_content, &budget, on_event).await?;
-
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": build_system_prompt(title, &context, summarized),
-    })];
-    for message in history {
-        messages.push(json!({ "role": message.role, "content": message.content }));
+    let latest_message = json!({ "role": latest.role, "content": latest.content });
+    let required = vec![system_message.clone(), latest_message.clone()];
+    if !messages_fit(client, base_url, model, &required, max_input_tokens).await {
+        return Err(
+            "The note memory plus your latest question still exceeds the model context. Try a shorter question or a larger-context model."
+                .to_string(),
+        );
     }
 
+    let mut selected = vec![latest_message];
+    for message in history[..history.len().saturating_sub(1)].iter().rev() {
+        let candidate_message = json!({ "role": message.role, "content": message.content });
+        let mut candidate = Vec::with_capacity(selected.len() + 2);
+        candidate.push(system_message.clone());
+        candidate.push(candidate_message.clone());
+        candidate.extend(selected.iter().cloned().rev());
+
+        if messages_fit(client, base_url, model, &candidate, max_input_tokens).await {
+            selected.push(candidate_message);
+        } else {
+            break;
+        }
+    }
+
+    let mut messages = Vec::with_capacity(selected.len() + 1);
+    messages.push(system_message);
+    messages.extend(selected.into_iter().rev());
+    Ok(messages)
+}
+
+async fn stream_chat_once(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+    max_tokens: u32,
+    on_event: &Channel<ChatStreamEvent>,
+) -> Result<(String, Option<String>), String> {
     let payload = json!({
         "model": model,
         "messages": messages,
         "stream": true,
         "temperature": 0.4,
-        "max_tokens": budget.answer_max_tokens,
+        "max_tokens": max_tokens,
     });
 
     let mut response = client
@@ -553,10 +926,11 @@ async fn stream_completion(
         ));
     }
 
-    // Buffer raw bytes and only decode complete lines — a network chunk can split
+    // Buffer raw bytes and only decode complete lines. A network chunk can split
     // a multi-byte character or an SSE line, which would corrupt/drop deltas.
     let mut byte_buffer: Vec<u8> = Vec::new();
     let mut full = String::new();
+    let mut finish_reason = None;
 
     while let Some(chunk) = response
         .chunk()
@@ -580,6 +954,9 @@ async fn stream_completion(
                 continue;
             };
             if let Some(choice) = parsed.choices.first() {
+                if let Some(reason) = &choice.finish_reason {
+                    finish_reason = Some(reason.clone());
+                }
                 if let Some(delta) = &choice.delta.content {
                     if !delta.is_empty() {
                         full.push_str(delta);
@@ -592,6 +969,78 @@ async fn stream_completion(
                 }
             }
         }
+    }
+
+    Ok((full, finish_reason))
+}
+
+async fn stream_completion(
+    app: &AppHandle,
+    on_event: &Channel<ChatStreamEvent>,
+    note_id: &str,
+    base_url: &str,
+    preferred_model: Option<String>,
+    title: &str,
+    note_content: &str,
+    history: &[ChatMessage],
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let (model, context_tokens) = resolve_model(&client, base_url, preferred_model).await?;
+    let budget = budget_for(context_tokens);
+    let (context, summarized) = prepare_note_memory(
+        app,
+        note_id,
+        &client,
+        base_url,
+        &model,
+        title,
+        note_content,
+        &budget,
+        on_event,
+    )
+    .await?;
+
+    let system_message = json!({
+        "role": "system",
+        "content": build_system_prompt(title, &context, summarized),
+    });
+    let mut messages =
+        select_history_messages(&client, base_url, &model, system_message, history, &budget)
+            .await?;
+    let mut full = String::new();
+    for continuation in 0..=MAX_ANSWER_CONTINUATIONS {
+        let (part, finish_reason) = stream_chat_once(
+            &client,
+            base_url,
+            &model,
+            &messages,
+            budget.answer_max_tokens,
+            on_event,
+        )
+        .await?;
+        full.push_str(&part);
+
+        if finish_reason.as_deref() != Some("length") {
+            return Ok(full);
+        }
+
+        if continuation == MAX_ANSWER_CONTINUATIONS {
+            return Ok(full);
+        }
+
+        let _ = on_event.send(ChatStreamEvent::Status {
+            message: "Continuing answer…".to_string(),
+        });
+        messages.push(json!({ "role": "assistant", "content": part }));
+        messages.push(json!({
+            "role": "user",
+            "content": "Continue exactly where you stopped. Do not restart or repeat previous sections."
+        }));
     }
 
     Ok(full)
