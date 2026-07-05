@@ -3840,7 +3840,7 @@ function ContextPanel({
       </div>
 
       <div className="panel-pane chat" hidden={tab !== "chat"}>
-        <NoteChat key={note.id} noteId={note.id} />
+        <NoteChat key={note.id} noteId={note.id} noteContent={note.content} />
       </div>
 
       <div className="panel-pane" hidden={tab !== "links"}>

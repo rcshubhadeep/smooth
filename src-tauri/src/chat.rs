@@ -13,9 +13,13 @@ use crate::{
     chat_llama_target, db_error, llama_endpoint, new_id, note_context, now_string, open_database,
 };
 
-/// Cap the note content injected into the prompt so we stay within the model's
-/// context window (long transcripts get truncated).
-const MAX_CONTEXT_CHARS: usize = 16_000;
+/// Assumed context window (tokens) when the model doesn't report one.
+const DEFAULT_CTX_TOKENS: usize = 4096;
+/// Conservative chars-per-token estimate — we deliberately undershoot so prompts
+/// never overflow the model's context (an overflow makes llama.cpp return empty).
+const CHARS_PER_TOKEN: usize = 3;
+/// Safety bound on recursive summarization depth.
+const MAX_SUMMARY_PASSES: usize = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChatMessage {
@@ -30,6 +34,8 @@ pub(crate) struct ChatMessage {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum ChatStreamEvent {
+    /// Transient progress (e.g. while summarizing a long note before answering).
+    Status { message: String },
     Delta { delta: String },
     Done { message: ChatMessage },
     Error { message: String },
@@ -126,6 +132,7 @@ pub(crate) async fn send_chat_message(
     app: AppHandle,
     note_id: String,
     content: String,
+    note_content: String,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
     let question = content.trim().to_string();
@@ -133,8 +140,14 @@ pub(crate) async fn send_chat_message(
         return Err("Message is empty".to_string());
     }
 
-    // Note context + prior history + persist the new user message (sync, no await).
-    let (title, note_content) = note_context(&app, &note_id)?;
+    // Prefer the live content the frontend is showing (avoids any disk/save-timing
+    // lag, e.g. right after a meeting); fall back to what's on disk.
+    let (title, disk_content) = note_context(&app, &note_id)?;
+    let body = if note_content.trim().is_empty() {
+        disk_content
+    } else {
+        note_content
+    };
     let history = {
         let connection = open_database(&app)?;
         let user_message = ChatMessage {
@@ -152,9 +165,7 @@ pub(crate) async fn send_chat_message(
 
     // Run the streaming completion; report any failure through the channel so the
     // frontend has a single event stream to listen to.
-    match stream_completion(&on_event, &base_url, preferred_model, &title, &note_content, &history)
-        .await
-    {
+    match stream_completion(&on_event, &base_url, preferred_model, &title, &body, &history).await {
         Ok(answer) if !answer.trim().is_empty() => {
             let assistant = ChatMessage {
                 id: new_id("msg"),
@@ -194,6 +205,16 @@ struct ModelsResponse {
 #[derive(Deserialize)]
 struct ModelEntry {
     id: String,
+    #[serde(default)]
+    meta: Option<ModelMeta>,
+}
+
+#[derive(Default, Deserialize)]
+struct ModelMeta {
+    #[serde(default)]
+    n_ctx: Option<u64>,
+    #[serde(default)]
+    n_ctx_train: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -213,59 +234,271 @@ struct StreamDelta {
     content: Option<String>,
 }
 
+/// Resolve the model id and its context window (tokens), so we can size prompts.
 async fn resolve_model(
     client: &reqwest::Client,
     base_url: &str,
     preferred: Option<String>,
-) -> Result<String, String> {
-    if let Some(model) = preferred {
-        if !model.trim().is_empty() {
-            return Ok(model);
-        }
-    }
+) -> Result<(String, Option<usize>), String> {
+    let preferred = preferred.filter(|model| !model.trim().is_empty());
 
-    let response = client
-        .get(llama_endpoint(base_url, "/v1/models"))
-        .send()
-        .await
-        .map_err(|error| format!("Could not reach llama.cpp: {error}"))?;
-    if !response.status().is_success() {
-        return Err("llama.cpp has no model available. Check Settings.".to_string());
-    }
-    let parsed = response
-        .json::<ModelsResponse>()
-        .await
-        .map_err(|error| format!("Invalid model list from llama.cpp: {error}"))?;
-    parsed
-        .data
-        .into_iter()
-        .next()
-        .map(|entry| entry.id)
-        .ok_or_else(|| "No model is loaded in llama.cpp.".to_string())
+    let models = match client.get(llama_endpoint(base_url, "/v1/models")).send().await {
+        Ok(response) if response.status().is_success() => response
+            .json::<ModelsResponse>()
+            .await
+            .map(|parsed| parsed.data)
+            .unwrap_or_default(),
+        Ok(_) => Vec::new(),
+        Err(error) => {
+            // If the user pinned a model we can still proceed without context info.
+            if let Some(model) = preferred {
+                return Ok((model, None));
+            }
+            return Err(format!("Could not reach llama.cpp: {error}"));
+        }
+    };
+
+    let entry = if let Some(model) = preferred {
+        models
+            .into_iter()
+            .find(|entry| entry.id == model)
+            .unwrap_or(ModelEntry {
+                id: model,
+                meta: None,
+            })
+    } else {
+        models
+            .into_iter()
+            .next()
+            .ok_or_else(|| "No model is loaded in llama.cpp. Check Settings.".to_string())?
+    };
+
+    let context_tokens = entry
+        .meta
+        .and_then(|meta| meta.n_ctx.or(meta.n_ctx_train))
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0);
+
+    Ok((entry.id, context_tokens))
 }
 
-fn build_system_prompt(title: &str, content: &str) -> String {
-    let trimmed: String = if content.chars().count() > MAX_CONTEXT_CHARS {
-        let mut truncated: String = content.chars().take(MAX_CONTEXT_CHARS).collect();
-        truncated.push_str("\n\n…[note truncated]");
-        truncated
+/// Character / token budgets derived from the model's context window.
+struct Budget {
+    /// Note content up to this many chars is sent directly (no summarization).
+    direct_chars: usize,
+    /// Raw content consumed per summarization request.
+    chunk_chars: usize,
+    summary_max_tokens: u32,
+    answer_max_tokens: u32,
+}
+
+fn budget_for(context_tokens: Option<usize>) -> Budget {
+    let ctx = context_tokens.unwrap_or(DEFAULT_CTX_TOKENS).max(1024);
+    let answer = (ctx / 3).clamp(256, 1024);
+    let summary = (ctx / 4).clamp(224, 640);
+    // Reserve room for the output + the fixed prompt/instructions/history.
+    let direct_tokens = ctx.saturating_sub(answer + 350).max(400);
+    let chunk_tokens = ctx.saturating_sub(summary as usize + 250).max(400);
+    Budget {
+        direct_chars: direct_tokens * CHARS_PER_TOKEN,
+        chunk_chars: chunk_tokens * CHARS_PER_TOKEN,
+        summary_max_tokens: summary as u32,
+        answer_max_tokens: answer as u32,
+    }
+}
+
+#[derive(Deserialize)]
+struct CompletionResponse {
+    choices: Vec<CompletionChoice>,
+}
+
+#[derive(Deserialize)]
+struct CompletionChoice {
+    message: CompletionMessage,
+}
+
+#[derive(Deserialize)]
+struct CompletionMessage {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+fn build_system_prompt(title: &str, content: &str, summarized: bool) -> String {
+    let body = if content.trim().is_empty() {
+        "(This note is currently empty.)".to_string()
     } else {
         content.to_string()
     };
 
-    let body = if trimmed.trim().is_empty() {
-        "(This note is currently empty.)".to_string()
+    let summary_note = if summarized {
+        " The content below is a condensed summary of a longer note, produced to fit the \
+model's context — key facts, decisions, and action items are preserved."
     } else {
-        trimmed
+        ""
     };
 
     format!(
         "You are Smooth's assistant. Answer the user's questions about the note below, \
 titled \"{title}\". Base your answers on the note's content — if the note is a meeting \
 transcript, treat it as the conversation so far. If the answer is not in the note, say so \
-plainly instead of guessing. Keep answers concise and use Markdown when helpful.\n\n\
---- NOTE CONTENT ---\n{body}\n--- END NOTE CONTENT ---"
+plainly instead of guessing. Keep answers concise and format them with Markdown when \
+helpful.{summary_note}\n\n--- NOTE CONTENT ---\n{body}\n--- END NOTE CONTENT ---"
     )
+}
+
+/// Split text into chunks of roughly `size` characters, preferring line breaks.
+fn split_chunks(text: &str, size: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in text.split_inclusive('\n') {
+        if !current.is_empty() && current.chars().count() + line.chars().count() > size {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if line.chars().count() > size {
+            for ch in line.chars() {
+                current.push(ch);
+                if current.chars().count() >= size {
+                    chunks.push(std::mem::take(&mut current));
+                }
+            }
+        } else {
+            current.push_str(line);
+        }
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// Non-streaming completion, used for summarization passes.
+async fn complete_once(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    // Some chat templates (e.g. Gemma) have no system role — only include one
+    // when provided, otherwise everything goes in the user turn.
+    let mut messages = Vec::new();
+    if !system.trim().is_empty() {
+        messages.push(json!({ "role": "system", "content": system }));
+    }
+    messages.push(json!({ "role": "user", "content": user }));
+
+    let payload = json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    });
+
+    let response = client
+        .post(llama_endpoint(base_url, "/v1/chat/completions"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("llama.cpp request failed: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "llama.cpp returned HTTP {}: {}",
+            status.as_u16(),
+            body.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let parsed = response
+        .json::<CompletionResponse>()
+        .await
+        .map_err(|error| format!("Invalid llama.cpp response: {error}"))?;
+    parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .ok_or_else(|| "llama.cpp returned no summary content".to_string())
+}
+
+async fn summarize_chunk(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    chunk: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    // Instruction lives in the user turn (no system role) for cross-template safety.
+    let prompt = format!(
+        "Summarize the section of a note or meeting transcript below, preserving key facts, \
+names, numbers, decisions, open questions, and action items. Be comprehensive but concise, \
+and do not add anything that isn't present.\n\n---\n{chunk}"
+    );
+    complete_once(client, base_url, model, "", &prompt, max_tokens).await
+}
+
+/// Fit the whole note into the model's context: send it directly if small enough,
+/// otherwise recursively summarize chunk-by-chunk until it fits. Never returns
+/// empty when the note has content — falls back to raw slices if summaries fail.
+async fn prepare_context(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    content: &str,
+    budget: &Budget,
+    on_event: &Channel<ChatStreamEvent>,
+) -> Result<(String, bool), String> {
+    if content.chars().count() <= budget.direct_chars {
+        return Ok((content.to_string(), false));
+    }
+
+    let _ = on_event.send(ChatStreamEvent::Status {
+        message: "Reading the full note…".to_string(),
+    });
+
+    let mut current = content.to_string();
+    let mut pass = 0;
+    while current.chars().count() > budget.direct_chars && pass < MAX_SUMMARY_PASSES {
+        let chunks = split_chunks(&current, budget.chunk_chars);
+        let total = chunks.len();
+        let mut summaries = Vec::with_capacity(total);
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let _ = on_event.send(ChatStreamEvent::Status {
+                message: format!("Summarizing long note… ({}/{})", index + 1, total),
+            });
+            // If a summary fails or comes back empty (e.g. the chunk still didn't
+            // leave the model room to respond), keep a raw slice so the section
+            // isn't lost — this guarantees a non-empty final context.
+            let summary = summarize_chunk(client, base_url, model, &chunk, budget.summary_max_tokens)
+                .await
+                .unwrap_or_default();
+            let summary = if summary.trim().is_empty() {
+                chunk.chars().take(budget.chunk_chars / 3).collect()
+            } else {
+                summary
+            };
+            summaries.push(summary);
+        }
+
+        let joined = summaries.join("\n\n");
+        // Stop if summarization isn't shrinking the content (avoids spinning).
+        if joined.chars().count() >= current.chars().count() {
+            current = joined;
+            break;
+        }
+        current = joined;
+        pass += 1;
+    }
+
+    if current.trim().is_empty() {
+        // Absolute fallback: use the head of the original note.
+        current = content.chars().take(budget.direct_chars).collect();
+    } else if current.chars().count() > budget.direct_chars {
+        current = current.chars().take(budget.direct_chars).collect();
+    }
+    Ok((current, true))
 }
 
 async fn stream_completion(
@@ -282,11 +515,14 @@ async fn stream_completion(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let model = resolve_model(&client, base_url, preferred_model).await?;
+    let (model, context_tokens) = resolve_model(&client, base_url, preferred_model).await?;
+    let budget = budget_for(context_tokens);
+    let (context, summarized) =
+        prepare_context(&client, base_url, &model, note_content, &budget, on_event).await?;
 
     let mut messages = vec![json!({
         "role": "system",
-        "content": build_system_prompt(title, note_content),
+        "content": build_system_prompt(title, &context, summarized),
     })];
     for message in history {
         messages.push(json!({ "role": message.role, "content": message.content }));
@@ -297,7 +533,7 @@ async fn stream_completion(
         "messages": messages,
         "stream": true,
         "temperature": 0.4,
-        "max_tokens": 1024,
+        "max_tokens": budget.answer_max_tokens,
     });
 
     let mut response = client
@@ -317,7 +553,9 @@ async fn stream_completion(
         ));
     }
 
-    let mut buffer = String::new();
+    // Buffer raw bytes and only decode complete lines — a network chunk can split
+    // a multi-byte character or an SSE line, which would corrupt/drop deltas.
+    let mut byte_buffer: Vec<u8> = Vec::new();
     let mut full = String::new();
 
     while let Some(chunk) = response
@@ -325,10 +563,11 @@ async fn stream_completion(
         .await
         .map_err(|error| format!("Stream error: {error}"))?
     {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        byte_buffer.extend_from_slice(&chunk);
 
-        while let Some(newline) = buffer.find('\n') {
-            let line: String = buffer.drain(..=newline).collect();
+        while let Some(newline) = byte_buffer.iter().position(|&byte| byte == b'\n') {
+            let line_bytes: Vec<u8> = byte_buffer.drain(..=newline).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim();
             let Some(data) = line.strip_prefix("data:") else {
                 continue;

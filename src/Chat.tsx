@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Sparkles, Trash2 } from "lucide-react";
+import { marked } from "marked";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type ChatMessage = {
@@ -11,9 +12,14 @@ type ChatMessage = {
 };
 
 type ChatStreamEvent =
+  | { type: "status"; message: string }
   | { type: "delta"; delta: string }
   | { type: "done"; message: ChatMessage }
   | { type: "error"; message: string };
+
+function renderMarkdown(text: string) {
+  return { __html: marked.parse(text, { async: false }) as string };
+}
 
 const SUGGESTIONS = [
   "Summarize this note",
@@ -27,13 +33,22 @@ function tempId() {
   return `local-${tempCounter}`;
 }
 
-export default function NoteChat({ noteId }: { noteId: string }) {
+export default function NoteChat({
+  noteId,
+  noteContent,
+}: {
+  noteId: string;
+  noteContent: string;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const noteContentRef = useRef(noteContent);
+  noteContentRef.current = noteContent;
 
   useEffect(() => {
     let active = true;
@@ -65,7 +80,8 @@ export default function NoteChat({ noteId }: { noteId: string }) {
       setError(null);
       setInput("");
       setIsSending(true);
-      setStreaming("");
+      setStreaming(null);
+      setStatus(null);
       setMessages((current) => [
         ...current,
         {
@@ -79,24 +95,35 @@ export default function NoteChat({ noteId }: { noteId: string }) {
 
       const channel = new Channel<ChatStreamEvent>();
       channel.onmessage = (event) => {
-        if (event.type === "delta") {
+        if (event.type === "status") {
+          setStatus(event.message);
+        } else if (event.type === "delta") {
+          setStatus(null);
           setStreaming((current) => (current ?? "") + event.delta);
         } else if (event.type === "done") {
           setMessages((current) => [...current, event.message]);
           setStreaming(null);
+          setStatus(null);
           setIsSending(false);
         } else {
           setError(event.message);
           setStreaming(null);
+          setStatus(null);
           setIsSending(false);
         }
       };
 
       try {
-        await invoke("send_chat_message", { noteId, content: question, onEvent: channel });
+        await invoke("send_chat_message", {
+          noteId,
+          content: question,
+          noteContent: noteContentRef.current,
+          onEvent: channel,
+        });
       } catch (invokeError) {
         setError(String(invokeError));
         setStreaming(null);
+        setStatus(null);
         setIsSending(false);
       }
     },
@@ -121,7 +148,8 @@ export default function NoteChat({ noteId }: { noteId: string }) {
     }
   }
 
-  const isEmpty = messages.length === 0 && streaming === null;
+  const pending = status ?? (isSending && streaming === null ? "Thinking…" : null);
+  const isEmpty = messages.length === 0 && streaming === null && !isSending;
 
   return (
     <div className="chat-pane">
@@ -147,16 +175,37 @@ export default function NoteChat({ noteId }: { noteId: string }) {
           </div>
         ) : (
           <>
-            {messages.map((message) => (
-              <div className={`chat-msg ${message.role}`} key={message.id}>
-                <div className="chat-bubble">{message.content}</div>
-              </div>
-            ))}
+            {messages.map((message) =>
+              message.role === "assistant" ? (
+                <div className="chat-msg assistant" key={message.id}>
+                  <div
+                    className="chat-bubble markdown"
+                    dangerouslySetInnerHTML={renderMarkdown(message.content)}
+                  />
+                </div>
+              ) : (
+                <div className="chat-msg user" key={message.id}>
+                  <div className="chat-bubble">{message.content}</div>
+                </div>
+              ),
+            )}
             {streaming !== null ? (
               <div className="chat-msg assistant">
                 <div className="chat-bubble">
                   {streaming}
                   <span className="chat-caret" />
+                </div>
+              </div>
+            ) : null}
+            {pending ? (
+              <div className="chat-msg assistant">
+                <div className="chat-status">
+                  <span className="chat-status-dots">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  {pending}
                 </div>
               </div>
             ) : null}
