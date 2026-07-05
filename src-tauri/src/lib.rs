@@ -61,6 +61,10 @@ struct NoteLink {
     source_id: String,
     target_id: String,
     created_at: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default = "default_link_kind")]
+    link_kind: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -276,6 +280,10 @@ fn default_extraction_status() -> String {
     "not_indexed".to_string()
 }
 
+fn default_link_kind() -> String {
+    "manual".to_string()
+}
+
 fn disabled_extraction_status() -> String {
     "disabled".to_string()
 }
@@ -358,6 +366,9 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 source_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
                 target_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
+                label TEXT,
+                link_kind TEXT NOT NULL DEFAULT 'manual'
+                    CHECK (link_kind IN ('manual', 'entity_sharing')),
                 PRIMARY KEY (source_id, target_id),
                 CHECK (source_id < target_id)
             );
@@ -424,8 +435,40 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
         .map_err(db_error)?;
 
     chat::init_schema(&connection)?;
+    migrate_note_links_schema(&connection)?;
     migrate_legacy_store(app, &mut connection)?;
     Ok(connection)
+}
+
+fn migrate_note_links_schema(connection: &Connection) -> Result<(), String> {
+    let existing_columns = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(note_links)")
+            .map_err(db_error)?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(db_error)?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(db_error)?;
+        columns
+    };
+
+    if !existing_columns.contains("label") {
+        connection
+            .execute("ALTER TABLE note_links ADD COLUMN label TEXT", [])
+            .map_err(db_error)?;
+    }
+
+    if !existing_columns.contains("link_kind") {
+        connection
+            .execute(
+                "ALTER TABLE note_links ADD COLUMN link_kind TEXT NOT NULL DEFAULT 'manual'",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+
+    Ok(())
 }
 
 /// Note title + full markdown body, for use as chat context.
@@ -529,10 +572,16 @@ fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<
         transaction
             .execute(
                 "
-                INSERT OR IGNORE INTO note_links (source_id, target_id, created_at)
-                VALUES (?1, ?2, ?3)
+                INSERT OR IGNORE INTO note_links (source_id, target_id, created_at, label, link_kind)
+                VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
-                params![source_id, target_id, link.created_at],
+                params![
+                    source_id,
+                    target_id,
+                    link.created_at,
+                    normalize_link_label(link.label),
+                    normalize_link_kind(Some(link.link_kind))?,
+                ],
             )
             .map_err(db_error)?;
     }
@@ -1855,6 +1904,20 @@ fn normalize_pair(first_id: &str, second_id: &str) -> Option<(String, String)> {
     }
 }
 
+fn normalize_link_label(label: Option<String>) -> Option<String> {
+    label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_link_kind(link_kind: Option<String>) -> Result<String, String> {
+    match link_kind.as_deref().unwrap_or("manual") {
+        "manual" => Ok("manual".to_string()),
+        "entity_sharing" => Ok("entity_sharing".to_string()),
+        _ => Err("Unsupported note link type".to_string()),
+    }
+}
+
 fn load_note_meta(connection: &Connection, id: &str) -> Result<NoteMeta, String> {
     connection
         .query_row(
@@ -1933,7 +1996,7 @@ fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankSnapshot, St
         let mut statement = connection
             .prepare(
                 "
-                SELECT source_id, target_id, created_at
+                SELECT source_id, target_id, created_at, label, link_kind
                 FROM note_links
                 ORDER BY created_at ASC
                 ",
@@ -1945,6 +2008,8 @@ fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankSnapshot, St
                     source_id: row.get(0)?,
                     target_id: row.get(1)?,
                     created_at: row.get(2)?,
+                    label: row.get(3)?,
+                    link_kind: row.get(4)?,
                 })
             })
             .map_err(db_error)?
@@ -2788,8 +2853,19 @@ fn permanent_delete_note(app: AppHandle, id: String) -> Result<BankSnapshot, Str
 }
 
 #[tauri::command]
-fn link_notes(app: AppHandle, ids: Vec<String>) -> Result<BankSnapshot, String> {
+fn link_notes(
+    app: AppHandle,
+    ids: Vec<String>,
+    label: Option<String>,
+    link_kind: Option<String>,
+) -> Result<BankSnapshot, String> {
     let mut connection = open_database(&app)?;
+    let link_kind = normalize_link_kind(link_kind)?;
+    let label = if link_kind == "entity_sharing" {
+        Some("Entity Sharing".to_string())
+    } else {
+        normalize_link_label(label)
+    };
     let valid_ids = {
         let mut statement = connection
             .prepare("SELECT id FROM notes WHERE deleted_at IS NULL")
@@ -2819,16 +2895,66 @@ fn link_notes(app: AppHandle, ids: Vec<String>) -> Result<BankSnapshot, String> 
                 transaction
                     .execute(
                         "
-                        INSERT OR IGNORE INTO note_links (source_id, target_id, created_at)
-                        VALUES (?1, ?2, ?3)
+                        INSERT OR IGNORE INTO note_links
+                            (source_id, target_id, created_at, label, link_kind)
+                        VALUES (?1, ?2, ?3, ?4, ?5)
                         ",
-                        params![source_id, target_id, now_string()],
+                        params![
+                            &source_id,
+                            &target_id,
+                            now_string(),
+                            label.as_deref(),
+                            link_kind.as_str()
+                        ],
                     )
                     .map_err(db_error)?;
             }
         }
     }
     transaction.commit().map_err(db_error)?;
+    snapshot(&app, &connection)
+}
+
+#[tauri::command]
+fn rename_note_link(
+    app: AppHandle,
+    source_id: String,
+    target_id: String,
+    label: Option<String>,
+) -> Result<BankSnapshot, String> {
+    let Some((source_id, target_id)) = normalize_pair(&source_id, &target_id) else {
+        return Err("Cannot rename a link to the same note".to_string());
+    };
+
+    let connection = open_database(&app)?;
+    let link_kind = connection
+        .query_row(
+            "
+            SELECT link_kind
+            FROM note_links
+            WHERE source_id = ?1 AND target_id = ?2
+            ",
+            params![&source_id, &target_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error)?
+        .ok_or_else(|| "Note link not found".to_string())?;
+
+    if link_kind == "entity_sharing" {
+        return Err("Entity Sharing links cannot be renamed".to_string());
+    }
+
+    connection
+        .execute(
+            "
+            UPDATE note_links
+            SET label = ?3
+            WHERE source_id = ?1 AND target_id = ?2
+            ",
+            params![&source_id, &target_id, normalize_link_label(label)],
+        )
+        .map_err(db_error)?;
     snapshot(&app, &connection)
 }
 
@@ -2909,6 +3035,7 @@ pub fn run() {
             restore_note,
             permanent_delete_note,
             link_notes,
+            rename_note_link,
             unlink_notes
         ])
         .run(tauri::generate_context!())

@@ -97,6 +97,8 @@ type NoteLink = {
   source_id: string;
   target_id: string;
   created_at: string;
+  label: string | null;
+  link_kind: "manual" | "entity_sharing" | string;
 };
 
 type BankSnapshot = {
@@ -257,6 +259,11 @@ type LinkSuggestion = {
   shared_entities: NoteEntity[];
   shared_entity_count: number;
   shared_mention_count: number;
+};
+
+type LinkedNote = {
+  note: NoteListItem;
+  link: NoteLink;
 };
 
 type DropTarget = {
@@ -743,19 +750,21 @@ function App() {
           ? selectedIds
           : [];
 
-    const linkedIds = new Set<string>();
+    const linkByNoteId = new Map<string, NoteLink>();
     for (const link of snapshot.links) {
       if (sourceIds.length === 0) {
-        linkedIds.add(link.source_id);
-        linkedIds.add(link.target_id);
+        linkByNoteId.set(link.source_id, link);
+        linkByNoteId.set(link.target_id, link);
       } else if (sourceIds.includes(link.source_id)) {
-        linkedIds.add(link.target_id);
+        linkByNoteId.set(link.target_id, link);
       } else if (sourceIds.includes(link.target_id)) {
-        linkedIds.add(link.source_id);
+        linkByNoteId.set(link.source_id, link);
       }
     }
 
-    return snapshot.notes.filter((note) => linkedIds.has(note.id) && !note.deleted_at);
+    return snapshot.notes
+      .filter((note) => linkByNoteId.has(note.id) && !note.deleted_at)
+      .map((note) => ({ note, link: linkByNoteId.get(note.id)! }));
   }, [activeNote?.id, selectedIds, snapshot.links, snapshot.notes]);
 
   const loadBank = useCallback(async () => {
@@ -1428,9 +1437,32 @@ function App() {
     const count = selectedIds.length;
     try {
       setError(null);
-      const bank = await invoke<BankSnapshot>("link_notes", { ids: selectedIds });
+      const bank = await invoke<BankSnapshot>("link_notes", {
+        ids: selectedIds,
+        label: null,
+        linkKind: "manual",
+      });
       setSnapshot(bank);
       toast.success(`Linked ${count} notes`);
+    } catch (linkError) {
+      setError(String(linkError));
+    }
+  }
+
+  async function linkNote(targetId: string, label?: string | null) {
+    if (!activeNote) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const bank = await invoke<BankSnapshot>("link_notes", {
+        ids: [activeNote.id, targetId],
+        label: label ?? null,
+        linkKind: "manual",
+      });
+      setSnapshot(bank);
+      toast.success("Linked note");
     } catch (linkError) {
       setError(String(linkError));
     }
@@ -1445,6 +1477,8 @@ function App() {
       setError(null);
       const bank = await invoke<BankSnapshot>("link_notes", {
         ids: [activeNote.id, targetId],
+        label: "Entity Sharing",
+        linkKind: "entity_sharing",
       });
       setSnapshot(bank);
       setLinkSuggestions((current) =>
@@ -1453,6 +1487,21 @@ function App() {
       toast.success("Linked note");
     } catch (linkError) {
       setError(String(linkError));
+    }
+  }
+
+  async function renameNoteLink(sourceId: string, targetId: string, label: string | null) {
+    try {
+      setError(null);
+      const bank = await invoke<BankSnapshot>("rename_note_link", {
+        sourceId,
+        targetId,
+        label,
+      });
+      setSnapshot(bank);
+      toast.success(label?.trim() ? "Link renamed" : "Link name cleared");
+    } catch (renameError) {
+      setError(String(renameError));
     }
   }
 
@@ -1770,13 +1819,16 @@ function App() {
                 />
                 <ContextPanel
                   note={activeNote}
+                  notes={snapshot.notes}
                   linkedNotes={linkedNotes}
                   linkSuggestions={linkSuggestions}
+                  onLinkNote={linkNote}
                   onOpenNote={openNote}
                   onLinkSuggestion={linkSuggestedNote}
                   onExtractionStatusChange={updateNoteExtractionStatus}
                   onCreateNoteFromContent={createNoteFromContent}
                   onRenameSpeaker={(oldName, newName) => void renameSpeaker(oldName, newName)}
+                  onRenameLink={renameNoteLink}
                   onUnlink={unlinkNotes}
                 />
               </>
@@ -3982,29 +4034,93 @@ function SpeakersSection({
 
 type ContextPanelProps = {
   note: NoteWithContent;
-  linkedNotes: NoteListItem[];
+  notes: NoteListItem[];
+  linkedNotes: LinkedNote[];
   linkSuggestions: LinkSuggestion[];
   onOpenNote: (id: string) => Promise<void>;
+  onLinkNote: (targetId: string, label?: string | null) => Promise<void>;
   onLinkSuggestion: (targetId: string) => Promise<void>;
   onExtractionStatusChange: (noteId: string, status: string) => void;
   onCreateNoteFromContent: (content: string) => void;
   onRenameSpeaker: (oldName: string, newName: string) => void;
+  onRenameLink: (sourceId: string, targetId: string, label: string | null) => Promise<void>;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
 function ContextPanel({
   note,
+  notes,
   linkedNotes,
   linkSuggestions,
   onOpenNote,
+  onLinkNote,
   onLinkSuggestion,
   onExtractionStatusChange,
   onCreateNoteFromContent,
   onRenameSpeaker,
+  onRenameLink,
   onUnlink,
 }: ContextPanelProps) {
   const [tab, setTab] = useState<"details" | "links" | "chat">("details");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [linkSearch, setLinkSearch] = useState("");
+  const [newLinkLabel, setNewLinkLabel] = useState("");
+  const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
+  const [linkLabelDraft, setLinkLabelDraft] = useState("");
   const linkCount = linkedNotes.length + linkSuggestions.length;
+  const linkedIds = useMemo(
+    () => new Set(linkedNotes.map((linked) => linked.note.id)),
+    [linkedNotes],
+  );
+  const linkCandidates = useMemo(() => {
+    const query = linkSearch.trim().toLowerCase();
+    return notes
+      .filter((candidate) => {
+        if (candidate.deleted_at || candidate.id === note.id || linkedIds.has(candidate.id)) {
+          return false;
+        }
+
+        if (!query) {
+          return true;
+        }
+
+        return (
+          candidate.title.toLowerCase().includes(query) ||
+          candidate.excerpt.toLowerCase().includes(query)
+        );
+      })
+      .slice(0, 20);
+  }, [linkSearch, linkedIds, note.id, notes]);
+
+  useEffect(() => {
+    setPickerOpen(false);
+    setLinkSearch("");
+    setNewLinkLabel("");
+    setEditingLinkId(null);
+    setLinkLabelDraft("");
+  }, [note.id]);
+
+  async function addManualLink(targetId: string) {
+    await onLinkNote(targetId, newLinkLabel);
+    setPickerOpen(false);
+    setLinkSearch("");
+    setNewLinkLabel("");
+  }
+
+  function beginRenameLink(linked: LinkedNote) {
+    if (linked.link.link_kind === "entity_sharing") {
+      return;
+    }
+
+    setEditingLinkId(linked.note.id);
+    setLinkLabelDraft(linked.link.label ?? "");
+  }
+
+  async function submitRenameLink(linked: LinkedNote) {
+    await onRenameLink(note.id, linked.note.id, linkLabelDraft);
+    setEditingLinkId(null);
+    setLinkLabelDraft("");
+  }
 
   return (
     <aside className="context-panel">
@@ -4060,21 +4176,107 @@ function ContextPanel({
           <div className="context-heading">
             <span>Linked notes</span>
             <small>{linkedNotes.length}</small>
+            <button
+              className={pickerOpen ? "ghost-icon active" : "ghost-icon"}
+              type="button"
+              onClick={() => setPickerOpen((open) => !open)}
+              title="Link note"
+            >
+              <Plus size={14} />
+            </button>
           </div>
+          {pickerOpen ? (
+            <div className="link-picker">
+              <input
+                className="link-picker-input"
+                value={linkSearch}
+                onChange={(event) => setLinkSearch(event.target.value)}
+                placeholder="Find a note"
+                autoFocus
+              />
+              <input
+                className="link-picker-input"
+                value={newLinkLabel}
+                onChange={(event) => setNewLinkLabel(event.target.value)}
+                placeholder="Link name (optional)"
+              />
+              <div className="link-picker-list">
+                {linkCandidates.length === 0 ? (
+                  <p className="context-empty">No available notes</p>
+                ) : (
+                  linkCandidates.map((candidate) => (
+                    <button
+                      className="link-picker-row"
+                      key={candidate.id}
+                      type="button"
+                      onClick={() => void addManualLink(candidate.id)}
+                    >
+                      <span>{candidate.title || "Untitled"}</span>
+                      <small>{candidate.excerpt || formatTime(candidate.updated_at)}</small>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : null}
           {linkedNotes.length === 0 ? (
             <p className="context-empty">No linked notes yet</p>
           ) : (
             <div className="context-links">
               {linkedNotes.map((linked) => (
-                <div className="linked-row" key={linked.id}>
-                  <button type="button" onClick={() => void onOpenNote(linked.id)}>
-                    <span>{linked.title || "Untitled"}</span>
-                    <small>{formatTime(linked.updated_at)}</small>
-                  </button>
+                <div className="linked-row" key={linked.note.id}>
+                  {editingLinkId === linked.note.id ? (
+                    <form
+                      className="linked-label-editor"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void submitRenameLink(linked);
+                      }}
+                    >
+                      <input
+                        value={linkLabelDraft}
+                        onChange={(event) => setLinkLabelDraft(event.target.value)}
+                        placeholder="Link name"
+                        autoFocus
+                      />
+                      <button type="submit" title="Save link name">
+                        <CheckCircle2 size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingLinkId(null);
+                          setLinkLabelDraft("");
+                        }}
+                        title="Cancel"
+                      >
+                        <X size={15} />
+                      </button>
+                    </form>
+                  ) : (
+                    <button type="button" onClick={() => void onOpenNote(linked.note.id)}>
+                      <span>{linked.note.title || "Untitled"}</span>
+                      <small>
+                        {linked.link.label
+                          ? `${linked.link.label} · ${formatTime(linked.note.updated_at)}`
+                          : formatTime(linked.note.updated_at)}
+                      </small>
+                    </button>
+                  )}
+                  {linked.link.link_kind === "entity_sharing" ? null : (
+                    <button
+                      className="ghost-icon"
+                      type="button"
+                      onClick={() => beginRenameLink(linked)}
+                      title="Rename link"
+                    >
+                      <FileText size={15} />
+                    </button>
+                  )}
                   <button
                     className="ghost-icon danger"
                     type="button"
-                    onClick={() => void onUnlink(note.id, linked.id)}
+                    onClick={() => void onUnlink(note.id, linked.note.id)}
                     title="Unlink note"
                   >
                     <Unlink size={15} />

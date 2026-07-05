@@ -964,7 +964,12 @@ select:hover {
   white-space: nowrap;
 }
 
-.linked-row,
+.linked-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 6px;
+  min-height: 46px;
+}
+
 .suggested-row {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 46px;
@@ -1063,6 +1068,11 @@ select:hover {
 
 .ghost-icon:hover {
   background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+
+.ghost-icon.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .ghost-icon.danger:hover {
@@ -2483,6 +2493,107 @@ select:hover {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
   text-align: center;
+}
+
+.link-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -3px 0 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-strong);
+}
+
+.link-picker-input,
+.linked-label-editor input {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: 0;
+}
+
+.link-picker-input:focus,
+.linked-label-editor input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.link-picker-list {
+  display: flex;
+  max-height: 240px;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+.link-picker-row {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.link-picker-row:hover {
+  background: var(--accent-soft);
+}
+
+.link-picker-row span,
+.link-picker-row small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-picker-row span {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.link-picker-row small {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.linked-label-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.linked-label-editor button {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.linked-label-editor button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .context-meta {

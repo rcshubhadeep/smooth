@@ -357,7 +357,12 @@ fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscrip
     }
 
     // Silence gate: don't transcribe near-silent chunks (kills silence hallucinations).
-    if audio.info.rms_db.map(|db| db < SILENCE_RMS_DB).unwrap_or(false) {
+    if audio
+        .info
+        .rms_db
+        .map(|db| db < SILENCE_RMS_DB)
+        .unwrap_or(false)
+    {
         return Ok(SttTranscription {
             text: String::new(),
             segments: Vec::new(),
