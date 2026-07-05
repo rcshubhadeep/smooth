@@ -14,6 +14,7 @@ import {
   ChevronRight,
   CircleAlert,
   Database,
+  Download,
   FileText,
   Folder,
   FolderPlus,
@@ -105,6 +106,11 @@ type BankSnapshot = {
   notes: NoteListItem[];
   folders: Folder[];
   links: NoteLink[];
+};
+
+type ExportResult = {
+  path: string;
+  count: number;
 };
 
 type LlamaConfig = {
@@ -1389,6 +1395,36 @@ function App() {
     }
   }
 
+  async function exportNote(
+    id: string,
+    title: string,
+    content: string,
+    folderId: string | null,
+  ) {
+    try {
+      setError(null);
+      await saveNote(id, title, content, folderId);
+      const result = await invoke<ExportResult>("export_note_markdown", { id });
+      toast.success(`Exported Markdown to ${result.path}`);
+    } catch (exportError) {
+      setError(String(exportError));
+      toast.error(exportError);
+    }
+  }
+
+  async function exportSelectedNotes() {
+    try {
+      setError(null);
+      const result = await invoke<ExportResult>("export_notes_markdown_zip", {
+        ids: selectedIds,
+      });
+      toast.success(`Exported ${result.count} notes to ${result.path}`);
+    } catch (exportError) {
+      setError(String(exportError));
+      toast.error(exportError);
+    }
+  }
+
   async function trashNote(id: string) {
     try {
       setError(null);
@@ -1650,7 +1686,15 @@ function App() {
                 title="Link selected notes"
               >
                 <Link2 size={15} />
-                Link
+                <span>Link</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void exportSelectedNotes()}
+                title="Export selected notes as ZIP"
+              >
+                <Download size={15} />
+                <span>Export</span>
               </button>
               <select
                 aria-label="Move selected notes"
@@ -1808,6 +1852,7 @@ function App() {
               onRestore={restoreNote}
               onPermanentDelete={permanentDeleteNote}
               onMove={moveNote}
+              onExport={exportNote}
             />
             {activeNote && panelOpen ? (
               <>
@@ -3522,6 +3567,12 @@ type NoteEditorProps = {
   onRestore: (id: string) => Promise<void>;
   onPermanentDelete: (id: string) => Promise<void>;
   onMove: (id: string, folderId: string | null) => Promise<void>;
+  onExport: (
+    id: string,
+    title: string,
+    content: string,
+    folderId: string | null,
+  ) => Promise<void>;
 };
 
 function NoteEditor({
@@ -3537,6 +3588,7 @@ function NoteEditor({
   onRestore,
   onPermanentDelete,
   onMove,
+  onExport,
 }: NoteEditorProps) {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
@@ -3774,6 +3826,17 @@ function NoteEditor({
     setEditorRevision((revision) => revision + 1);
   }
 
+  async function exportCurrentNote() {
+    if (!note || !editor || editor.isDestroyed || note.deleted_at) {
+      return;
+    }
+
+    const markdown = turndown.turndown(editor.getHTML());
+    await onExport(note.id, draftTitle, markdown, draftFolderId || null);
+    hasUnsavedChangesRef.current = false;
+    setSaveState("saved");
+  }
+
   if (!note) {
     return (
       <div className="empty-workspace">
@@ -3854,6 +3917,14 @@ function NoteEditor({
                 title="Move to trash"
               >
                 <Trash2 size={17} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => void exportCurrentNote()}
+                title="Export note as Markdown"
+              >
+                <Download size={17} />
               </button>
             </>
           )}

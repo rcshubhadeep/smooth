@@ -1,6 +1,7 @@
 mod audio_capture;
 mod audio_preprocess;
 mod chat;
+mod export_notes;
 mod stt;
 mod system_audio;
 
@@ -3007,6 +3008,8 @@ pub fn run() {
             chat::get_chat_messages,
             chat::send_chat_message,
             chat::clear_chat,
+            export_notes::export_note_markdown,
+            export_notes::export_notes_markdown_zip,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,
