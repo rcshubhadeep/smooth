@@ -979,6 +979,8 @@ function App() {
       return;
     }
 
+    const meetingNoteToExtract = meetingNoteIdRef.current;
+
     setMeetingState("stopping");
     setMeetingDetail("Stopping");
     meetingLoopActiveRef.current = false;
@@ -993,6 +995,21 @@ function App() {
     setMeetingVisualSourceName(null);
     setMeetingState("idle");
     setMeetingDetail("Ready");
+
+    // Meeting notes skip live extraction while recording. Now that the
+    // transcript is finalized, kick off entity extraction for the note.
+    if (meetingNoteToExtract) {
+      try {
+        await invoke("finalize_meeting_extraction", { id: meetingNoteToExtract });
+        const refreshed = await invoke<NoteWithContent>("get_note", {
+          id: meetingNoteToExtract,
+        });
+        applySavedNote(refreshed);
+        toast.info("Extracting entities from meeting");
+      } catch (extractionError) {
+        toast.error(extractionError);
+      }
+    }
   }
 
   async function startMeetingSources() {

@@ -2346,6 +2346,31 @@ fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueue
     get_extraction_queue_status(app)
 }
 
+/// Enqueue extraction for a meeting note once the meeting has stopped.
+/// Unlike `enqueue_note_extraction`, this intentionally clears the `disabled`
+/// state (meeting notes skip live extraction while recording).
+#[tauri::command]
+fn finalize_meeting_extraction(
+    app: AppHandle,
+    id: String,
+) -> Result<ExtractionQueueStatus, String> {
+    let mut connection = open_database(&app)?;
+    let note = load_note_meta(&connection, &id)?;
+    if note.deleted_at.is_some() {
+        return Err("Trashed notes cannot be queued for extraction".to_string());
+    }
+
+    let content = read_note_content(&app, &id)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    if content.trim().is_empty() {
+        clear_extraction_job(&transaction, &id)?;
+    } else {
+        force_enqueue_extraction(&transaction, &id, &content_hash(&content))?;
+    }
+    transaction.commit().map_err(db_error)?;
+    get_extraction_queue_status(app)
+}
+
 #[tauri::command]
 fn enqueue_all_note_extractions(app: AppHandle) -> Result<ExtractionQueueStatus, String> {
     let mut connection = open_database(&app)?;
@@ -2830,6 +2855,7 @@ pub fn run() {
             get_note_extraction,
             get_link_suggestions,
             enqueue_note_extraction,
+            finalize_meeting_extraction,
             enqueue_all_note_extractions,
             retry_failed_extractions,
             get_audio_capture_status,
