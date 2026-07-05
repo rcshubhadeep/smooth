@@ -359,8 +359,9 @@ function meetingInitialContent(title: string) {
   return `# ${title}\n\nStarted: ${new Date().toLocaleString()}\n\n## Transcript\n`;
 }
 
-function meetingTranscriptLine(source: "Mic" | "System", text: string) {
-  return `- ${new Date().toLocaleTimeString()} · **${source}:** ${text.trim()}`;
+function meetingTranscriptLine(label: string, text: string) {
+  const speaker = label.trim() || "Speaker";
+  return `- ${new Date().toLocaleTimeString()} · **${speaker}:** ${text.trim()}`;
 }
 
 function meetingSnapshotLine(snapshot: MeetingSnapshot) {
@@ -583,7 +584,17 @@ function App() {
   const [meetingVisualSources, setMeetingVisualSources] = useState<MeetingVisualSource[]>([]);
   const [meetingSourcePickerOpen, setMeetingSourcePickerOpen] = useState(false);
   const [meetingVisualSourceName, setMeetingVisualSourceName] = useState<string | null>(null);
+  const [meetingMicLabel, setMeetingMicLabel] = useState(
+    () => localStorage.getItem("smooth-meeting-you") || "You",
+  );
+  const [meetingSystemLabel, setMeetingSystemLabel] = useState(
+    () => localStorage.getItem("smooth-meeting-others") || "Participants",
+  );
   const searchRef = useRef<HTMLInputElement>(null);
+  const meetingMicLabelRef = useRef(meetingMicLabel);
+  meetingMicLabelRef.current = meetingMicLabel;
+  const meetingSystemLabelRef = useRef(meetingSystemLabel);
+  meetingSystemLabelRef.current = meetingSystemLabel;
   const meetingLoopActiveRef = useRef(false);
   const meetingNoteIdRef = useRef<string | null>(null);
   const meetingTitleRef = useRef("");
@@ -746,6 +757,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem("smooth-panel-width", String(panelWidth));
   }, [panelWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("smooth-meeting-you", meetingMicLabel);
+  }, [meetingMicLabel]);
+
+  useEffect(() => {
+    localStorage.setItem("smooth-meeting-others", meetingSystemLabel);
+  }, [meetingSystemLabel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1142,7 +1161,9 @@ function App() {
       });
       const text = result?.text.trim();
       if (text) {
-        noteLines.push(meetingTranscriptLine(item.source, text));
+        const label =
+          item.source === "Mic" ? meetingMicLabelRef.current : meetingSystemLabelRef.current;
+        noteLines.push(meetingTranscriptLine(label, text));
       }
     }
 
@@ -1746,6 +1767,10 @@ function App() {
         noteTitle={meetingNoteTitle}
         visualSourceName={meetingVisualSourceName}
         state={meetingState}
+        micLabel={meetingMicLabel}
+        systemLabel={meetingSystemLabel}
+        onMicLabelChange={setMeetingMicLabel}
+        onSystemLabelChange={setMeetingSystemLabel}
         onPause={() => void pauseMeetingMode()}
         onResume={() => void resumeMeetingMode()}
         onStart={() => void startMeetingMode()}
@@ -1771,6 +1796,10 @@ type MeetingCapsuleProps = {
   noteTitle: string;
   visualSourceName: string | null;
   state: MeetingState;
+  micLabel: string;
+  systemLabel: string;
+  onMicLabelChange: (value: string) => void;
+  onSystemLabelChange: (value: string) => void;
   onPause: () => void;
   onResume: () => void;
   onStart: () => void;
@@ -1782,6 +1811,10 @@ function MeetingCapsule({
   noteTitle,
   visualSourceName,
   state,
+  micLabel,
+  systemLabel,
+  onMicLabelChange,
+  onSystemLabelChange,
   onPause,
   onResume,
   onStart,
@@ -1803,6 +1836,25 @@ function MeetingCapsule({
           </small>
         </div>
       </div>
+
+      {state === "idle" ? (
+        <div className="meeting-capsule-labels">
+          <input
+            value={micLabel}
+            onChange={(event) => onMicLabelChange(event.currentTarget.value)}
+            placeholder="You"
+            title="Your name (labels your microphone)"
+            aria-label="Your name"
+          />
+          <input
+            value={systemLabel}
+            onChange={(event) => onSystemLabelChange(event.currentTarget.value)}
+            placeholder="Participants"
+            title="Other participants (labels system audio)"
+            aria-label="Other participants"
+          />
+        </div>
+      ) : null}
       <div className="meeting-capsule-actions">
         {state === "idle" ? (
           <button type="button" onClick={onStart} title="Start meeting mode">

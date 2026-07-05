@@ -2259,6 +2259,37 @@ select:hover {
   flex: 0 0 auto;
 }
 
+.meeting-capsule-labels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.meeting-capsule-labels input {
+  width: 104px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: 0;
+  transition:
+    border-color var(--t) var(--ease),
+    box-shadow var(--t) var(--ease);
+}
+
+.meeting-capsule-labels input::placeholder {
+  color: var(--faint);
+}
+
+.meeting-capsule-labels input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
 .meeting-capsule button {
   display: inline-flex;
   align-items: center;

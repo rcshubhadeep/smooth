@@ -287,6 +287,62 @@ fn acceleration_features() -> Vec<String> {
     features
 }
 
+/// Chunks quieter than this (dBFS RMS) are treated as silence and skipped —
+/// Whisper hallucinates filler ("you", "[Silence]", "Thank you") on quiet audio.
+const SILENCE_RMS_DB: f32 = -50.0;
+
+/// True when a transcribed segment is a Whisper hallucination / non-speech tag
+/// rather than real speech.
+fn is_noise_segment(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Drop leading ">>" speaker-change markers some models emit.
+    let stripped = trimmed.trim_start_matches('>').trim();
+    if stripped.is_empty() {
+        return true;
+    }
+    // Bracketed / parenthesized annotations: [silence], (muffled speaking), [music]…
+    if (stripped.starts_with('[') && stripped.ends_with(']'))
+        || (stripped.starts_with('(') && stripped.ends_with(')'))
+    {
+        return true;
+    }
+    // Normalize to lowercase alphanumerics and match a known-hallucination set.
+    let normalized = stripped
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    const NOISE: &[&str] = &[
+        "you",
+        "thank you",
+        "thank you for watching",
+        "thanks for watching",
+        "silence",
+        "music",
+        "applause",
+        "inaudible",
+        "blank audio",
+        "muffled speaking",
+        "no speech",
+        "uh",
+        "um",
+        "uh huh",
+        "mm",
+        "mm hmm",
+        "hmm",
+    ];
+    NOISE.contains(&normalized.as_str())
+}
+
 fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscription, String> {
     WHISPER_LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
 
@@ -298,6 +354,20 @@ fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscrip
     let audio = load_wav_for_whisper(&audio_path)?;
     if audio.samples.is_empty() {
         return Err("Captured audio is empty".to_string());
+    }
+
+    // Silence gate: don't transcribe near-silent chunks (kills silence hallucinations).
+    if audio.info.rms_db.map(|db| db < SILENCE_RMS_DB).unwrap_or(false) {
+        return Ok(SttTranscription {
+            text: String::new(),
+            segments: Vec::new(),
+            raw_segment_count: 0,
+            language_id: -1,
+            language: config.language,
+            audio: audio.info,
+            elapsed_ms: 0,
+            model_path: config.model_path,
+        });
     }
 
     let started_at = Instant::now();
@@ -312,6 +382,10 @@ fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscrip
     params.set_language(config.language.as_deref());
     params.set_detect_language(config.language.is_none());
     params.set_no_context(true);
+    params.set_temperature(0.0);
+    params.set_no_speech_thold(0.6);
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -333,7 +407,7 @@ fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscrip
             .map_err(|error| format!("Failed to read Whisper segment: {error}"))?
             .trim()
             .to_string();
-        if text.is_empty() {
+        if text.is_empty() || is_noise_segment(&text) {
             continue;
         }
         segments.push(SttSegment {
