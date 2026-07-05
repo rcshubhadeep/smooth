@@ -364,6 +364,36 @@ function meetingTranscriptLine(label: string, text: string) {
   return `- ${new Date().toLocaleTimeString()} · **${speaker}:** ${text.trim()}`;
 }
 
+// Matches the structural speaker slot of a transcript line:
+// `- <time> · **<speaker>:** <text>` → [full prefix, "- <time> · **", speaker, ":** "]
+const TRANSCRIPT_SPEAKER = /^(- .+? · \*\*)(.+?)(:\*\* )/;
+
+/** Distinct speaker names, in first-seen order, found in transcript lines. */
+function parseSpeakers(content: string): string[] {
+  const seen: string[] = [];
+  for (const line of content.split("\n")) {
+    const match = line.match(TRANSCRIPT_SPEAKER);
+    if (match && !seen.includes(match[2])) {
+      seen.push(match[2]);
+    }
+  }
+  return seen;
+}
+
+/** Rewrite ONLY the speaker slot of lines whose speaker == oldName. */
+function renameSpeakerInContent(content: string, oldName: string, newName: string): string {
+  return content
+    .split("\n")
+    .map((line) => {
+      const match = line.match(TRANSCRIPT_SPEAKER);
+      if (match && match[2] === oldName) {
+        return match[1] + newName + match[3] + line.slice(match[0].length);
+      }
+      return line;
+    })
+    .join("\n");
+}
+
 function meetingSnapshotLine(snapshot: MeetingSnapshot) {
   const label = new Date(Number(snapshot.captured_at_ms)).toLocaleTimeString();
   return `![Meeting snapshot ${label}](${convertFileSrc(snapshot.path)})`;
@@ -562,6 +592,7 @@ function App() {
   };
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [editorReloadKey, setEditorReloadKey] = useState(0);
   const [linkSuggestions, setLinkSuggestions] = useState<LinkSuggestion[]>([]);
   const [menuTarget, setMenuTarget] = useState<{
     note: NoteListItem;
@@ -844,6 +875,29 @@ function App() {
       toast.success("Note created — extracting entities");
     } catch (createError) {
       toast.error(createError);
+    }
+  }
+
+  // Rename a meeting speaker everywhere by rewriting only the transcript speaker
+  // slots (never free text). Reloads the editor so the change isn't clobbered.
+  async function renameSpeaker(oldName: string, newName: string) {
+    if (!activeNote) {
+      return;
+    }
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) {
+      return;
+    }
+    const nextContent = renameSpeakerInContent(activeNote.content, oldName, trimmed);
+    if (nextContent === activeNote.content) {
+      return;
+    }
+    try {
+      await saveNote(activeNote.id, activeNote.title, nextContent, activeNote.folder_id);
+      setEditorReloadKey((key) => key + 1);
+      toast.success(`Renamed “${oldName}” to “${trimmed}”`);
+    } catch (renameError) {
+      toast.error(renameError);
     }
   }
 
@@ -1692,6 +1746,7 @@ function App() {
             }
           >
             <NoteEditor
+              key={`${activeNote?.id ?? "none"}:${editorReloadKey}`}
               note={activeNote}
               folders={snapshot.folders}
               panelOpen={panelOpen}
@@ -1721,6 +1776,7 @@ function App() {
                   onLinkSuggestion={linkSuggestedNote}
                   onExtractionStatusChange={updateNoteExtractionStatus}
                   onCreateNoteFromContent={createNoteFromContent}
+                  onRenameSpeaker={(oldName, newName) => void renameSpeaker(oldName, newName)}
                   onUnlink={unlinkNotes}
                 />
               </>
@@ -3856,6 +3912,74 @@ function NoteEditor({
   );
 }
 
+function SpeakerRow({
+  name,
+  onRename,
+}: {
+  name: string;
+  onRename: (oldName: string, newName: string) => void;
+}) {
+  const [value, setValue] = useState(name);
+
+  useEffect(() => {
+    setValue(name);
+  }, [name]);
+
+  function commit() {
+    const next = value.trim();
+    if (next && next !== name) {
+      onRename(name, next);
+    } else {
+      setValue(name);
+    }
+  }
+
+  return (
+    <input
+      className="speaker-input"
+      value={value}
+      onChange={(event) => setValue(event.currentTarget.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
+          setValue(name);
+          event.currentTarget.blur();
+        }
+      }}
+      aria-label={`Rename speaker ${name}`}
+    />
+  );
+}
+
+function SpeakersSection({
+  content,
+  onRename,
+}: {
+  content: string;
+  onRename: (oldName: string, newName: string) => void;
+}) {
+  const speakers = useMemo(() => parseSpeakers(content), [content]);
+  if (speakers.length === 0) {
+    return null;
+  }
+  return (
+    <div className="context-section">
+      <div className="context-heading">
+        <span>Speakers</span>
+        <small>{speakers.length}</small>
+      </div>
+      <div className="speaker-list">
+        {speakers.map((name) => (
+          <SpeakerRow key={name} name={name} onRename={onRename} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 type ContextPanelProps = {
   note: NoteWithContent;
   linkedNotes: NoteListItem[];
@@ -3864,6 +3988,7 @@ type ContextPanelProps = {
   onLinkSuggestion: (targetId: string) => Promise<void>;
   onExtractionStatusChange: (noteId: string, status: string) => void;
   onCreateNoteFromContent: (content: string) => void;
+  onRenameSpeaker: (oldName: string, newName: string) => void;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
@@ -3875,6 +4000,7 @@ function ContextPanel({
   onLinkSuggestion,
   onExtractionStatusChange,
   onCreateNoteFromContent,
+  onRenameSpeaker,
   onUnlink,
 }: ContextPanelProps) {
   const [tab, setTab] = useState<"details" | "links" | "chat">("details");
@@ -3916,6 +4042,7 @@ function ContextPanel({
       </div>
 
       <div className="panel-pane" hidden={tab !== "details"}>
+        <SpeakersSection content={note.content} onRename={onRenameSpeaker} />
         <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
       </div>
 

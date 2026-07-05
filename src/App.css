@@ -2524,6 +2524,37 @@ select:hover {
   gap: 2px;
 }
 
+.speaker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.speaker-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  outline: 0;
+  transition:
+    border-color var(--t) var(--ease),
+    box-shadow var(--t) var(--ease);
+}
+
+.speaker-input:hover {
+  border-color: var(--border-strong);
+}
+
+.speaker-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
 /* Tiptap editor surface — readerly serif */
 .tiptap {
   height: 100%;
