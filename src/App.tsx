@@ -18,6 +18,7 @@ import {
   Download,
   FileText,
   Folder,
+  FolderInput,
   FolderPlus,
   FolderOpen,
   Heading2,
@@ -616,8 +617,6 @@ function App() {
   const [activeNote, setActiveNote] = useState<NoteWithContent | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [newFolderName, setNewFolderName] = useState("");
-  const [isFolderFormOpen, setIsFolderFormOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>(() => {
     return (localStorage.getItem("smooth-note-sort") as SortMode | null) ?? "updated-desc";
@@ -634,6 +633,27 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!createMenuOpen) {
+      return;
+    }
+    const close = () => setCreateMenuOpen(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [createMenuOpen]);
+
+  useEffect(() => {
+    if (!moveMenuOpen) {
+      return;
+    }
+    const close = () => setMoveMenuOpen(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [moveMenuOpen]);
   const [linkSuggestions, setLinkSuggestions] = useState<LinkSuggestion[]>([]);
   const [menuTarget, setMenuTarget] = useState<{
     note: NoteListItem;
@@ -1308,19 +1328,36 @@ function App() {
     return snapshot ? meetingSnapshotLine(snapshot) : null;
   }
 
-  async function createFolder() {
-    if (!newFolderName.trim()) {
-      return;
-    }
 
+  // Create a folder with a placeholder name, then drop straight into inline rename.
+  async function createFolderInline() {
     try {
       setError(null);
-      const bank = await invoke<BankSnapshot>("create_folder", { name: newFolderName });
+      const before = new Set(snapshot.folders.map((folder) => folder.id));
+      const bank = await invoke<BankSnapshot>("create_folder", { name: "Untitled Folder" });
       setSnapshot(bank);
-      setNewFolderName("");
-      setIsFolderFormOpen(false);
+      const created = bank.folders.find((folder) => !before.has(folder.id));
+      if (created) {
+        setCollapsedSections((current) => current.filter((id) => id !== created.id));
+        setRenamingFolderId(created.id);
+      }
     } catch (folderError) {
-      setError(String(folderError));
+      toast.error(folderError);
+    }
+  }
+
+  async function renameFolder(id: string, name: string) {
+    setRenamingFolderId(null);
+    const trimmed = name.trim();
+    const current = snapshot.folders.find((folder) => folder.id === id);
+    if (!trimmed || (current && current.name === trimmed)) {
+      return;
+    }
+    try {
+      const bank = await invoke<BankSnapshot>("rename_folder", { id, name: trimmed });
+      setSnapshot(bank);
+    } catch (renameError) {
+      toast.error(renameError);
     }
   }
 
@@ -1652,10 +1689,43 @@ function App() {
       >
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1>Knowledge Bank</h1>
-          <button className="icon-button primary" type="button" onClick={createNote} title="New note (⌘N)">
-            <Plus size={18} />
-          </button>
+          <h1>Let&rsquo;s dive in</h1>
+          <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
+            <button
+              className="icon-button primary"
+              type="button"
+              onClick={() => setCreateMenuOpen((open) => !open)}
+              title="Create new"
+              aria-haspopup="menu"
+              aria-expanded={createMenuOpen}
+            >
+              <Plus size={18} />
+            </button>
+            {createMenuOpen ? (
+              <div className="pop-menu" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateMenuOpen(false);
+                    void createNote();
+                  }}
+                >
+                  <FileText size={15} />
+                  New note
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateMenuOpen(false);
+                    void createFolderInline();
+                  }}
+                >
+                  <FolderPlus size={15} />
+                  New folder
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="sidebar-controls">
@@ -1670,15 +1740,6 @@ function App() {
           </label>
 
           <div className="controls-row">
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => setIsFolderFormOpen((isOpen) => !isOpen)}
-            >
-              <FolderPlus size={16} />
-              New folder
-            </button>
-
             <label className="sort-control">
               <ArrowDownUp size={15} />
               <select
@@ -1693,30 +1754,6 @@ function App() {
               </select>
             </label>
           </div>
-
-          {isFolderFormOpen ? (
-            <form
-              className="folder-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void createFolder();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setNewFolderName("");
-                  setIsFolderFormOpen(false);
-                }
-              }}
-            >
-              <input
-                value={newFolderName}
-                onChange={(event) => setNewFolderName(event.currentTarget.value)}
-                placeholder="Folder name"
-              />
-              <button type="submit">Create</button>
-            </form>
-          ) : null}
 
           {selectedIds.length > 0 ? (
             <div className="selection-bar">
@@ -1738,31 +1775,48 @@ function App() {
                 <Download size={15} />
                 <span>Export</span>
               </button>
-              <select
-                aria-label="Move selected notes"
-                defaultValue="__move__"
-                onChange={(event) => {
-                  const folderId =
-                    event.currentTarget.value === "__inbox__"
-                      ? null
-                      : event.currentTarget.value;
-                  event.currentTarget.value = "__move__";
-                  void moveSelected(folderId);
-                }}
-              >
-                <option value="__move__" disabled>
-                  Move
-                </option>
-                <option value="__inbox__">Inbox</option>
-                {snapshot.folders.map((folder) => (
-                  <option key={folder.id} value={folder.id}>
-                    {folder.name}
-                  </option>
-                ))}
-              </select>
+              <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className={moveMenuOpen ? "active" : ""}
+                  onClick={() => setMoveMenuOpen((open) => !open)}
+                  title="Move to folder"
+                  aria-haspopup="menu"
+                  aria-expanded={moveMenuOpen}
+                >
+                  <FolderInput size={15} />
+                  <span>Move</span>
+                </button>
+                {moveMenuOpen ? (
+                  <div className="pop-menu align-right" role="menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoveMenuOpen(false);
+                        void moveSelected(null);
+                      }}
+                    >
+                      <Inbox size={15} />
+                      Inbox
+                    </button>
+                    {snapshot.folders.map((folder) => (
+                      <button
+                        key={folder.id}
+                        type="button"
+                        onClick={() => {
+                          setMoveMenuOpen(false);
+                          void moveSelected(folder.id);
+                        }}
+                      >
+                        <Folder size={15} />
+                        {folder.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
-
         </div>
 
         <div className="notes-pane">
@@ -1798,6 +1852,9 @@ function App() {
               title={folder.name}
               droppable
               onDropNote={(id) => void moveNoteToFolder(id, folder.id)}
+              renamable
+              startRenaming={renamingFolderId === folder.id}
+              onRename={(name) => void renameFolder(folder.id, name)}
             >
               {renderNoteRows(notes, folder.id, { indent: true })}
             </TreeSection>
@@ -3214,6 +3271,9 @@ type TreeSectionProps = {
   droppable?: boolean;
   onDropNote?: (noteId: string) => void;
   onDropTargetChange?: (target: DropTarget | null) => void;
+  renamable?: boolean;
+  startRenaming?: boolean;
+  onRename?: (name: string) => void;
 };
 
 function TreeSection({
@@ -3229,8 +3289,36 @@ function TreeSection({
   droppable = false,
   onDropNote,
   onDropTargetChange,
+  renamable = false,
+  startRenaming = false,
+  onRename,
 }: TreeSectionProps) {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (startRenaming) {
+      setEditing(true);
+    }
+  }, [startRenaming]);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(title);
+      const input = renameInputRef.current;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+  }, [editing, title]);
+
+  function commitRename() {
+    setEditing(false);
+    onRename?.(draft);
+  }
 
   const onDragOver = (event: DragEvent<HTMLElement>) => {
     if (!droppable) {
@@ -3289,16 +3377,48 @@ function TreeSection({
       onDragLeave={droppable ? onDragLeave : undefined}
       onDrop={droppable ? onDrop : undefined}
     >
-      <button
-        className={isDragOver ? "tree-header drag-over" : "tree-header"}
-        type="button"
-        onClick={onToggle}
-      >
-        {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        {icon}
-        <span>{title}</span>
-        <small>{count}</small>
-      </button>
+      {editing ? (
+        <div className="tree-header editing">
+          {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          {icon}
+          <input
+            ref={renameInputRef}
+            className="tree-rename-input"
+            value={draft}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            onBlur={commitRename}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitRename();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setEditing(false);
+              }
+            }}
+            aria-label={`Rename ${title}`}
+          />
+        </div>
+      ) : (
+        <button
+          className={isDragOver ? "tree-header drag-over" : "tree-header"}
+          type="button"
+          onClick={onToggle}
+          onDoubleClick={
+            renamable
+              ? (event) => {
+                  event.preventDefault();
+                  setEditing(true);
+                }
+              : undefined
+          }
+        >
+          {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          {icon}
+          <span>{title}</span>
+          <small>{count}</small>
+        </button>
+      )}
       {isOpen ? <div className="tree-children">{children}</div> : null}
     </section>
   );

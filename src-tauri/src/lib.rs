@@ -2727,6 +2727,22 @@ fn create_folder(app: AppHandle, name: String) -> Result<BankSnapshot, String> {
 }
 
 #[tauri::command]
+fn rename_folder(app: AppHandle, id: String, name: String) -> Result<BankSnapshot, String> {
+    let clean_name = name.trim();
+    if clean_name.is_empty() {
+        return Err("Folder name is required".to_string());
+    }
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "UPDATE folders SET name = ?2 WHERE id = ?1",
+            params![id, clean_name],
+        )
+        .map_err(db_error)?;
+    snapshot(&app, &connection)
+}
+
+#[tauri::command]
 fn delete_folder(app: AppHandle, id: String) -> Result<BankSnapshot, String> {
     let mut connection = open_database(&app)?;
     let transaction = connection.transaction().map_err(db_error)?;
@@ -3039,6 +3055,7 @@ pub fn run() {
             create_meeting_note,
             save_meeting_note,
             create_folder,
+            rename_folder,
             delete_folder,
             move_note,
             trash_note,
