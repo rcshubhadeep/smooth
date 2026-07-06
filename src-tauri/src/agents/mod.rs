@@ -14,6 +14,7 @@
 
 pub mod context;
 pub mod flow;
+pub mod persistence;
 pub mod registry;
 pub mod runtime;
 pub mod tool;
@@ -23,6 +24,8 @@ pub mod worker;
 pub use context::AgentContext;
 pub use registry::ToolDescriptor;
 pub use runtime::AgentRuntime;
+
+pub(crate) use persistence::init_schema;
 
 use serde_json::Value;
 use tauri::{AppHandle, State};
@@ -60,4 +63,22 @@ pub(crate) async fn agent_run(
     max_steps: Option<u8>,
 ) -> Result<flow::AgentRunResult, String> {
     flow::run_agent_once(app, &runtime, prompt, max_steps).await
+}
+
+/// Tauri bridge: inspect recent persisted agent runs.
+#[tauri::command]
+pub(crate) fn agent_list_runs(
+    app: AppHandle,
+    options: Option<persistence::AgentRunListOptions>,
+) -> Result<Vec<persistence::AgentRunRecord>, String> {
+    persistence::list_runs(app, options)
+}
+
+/// Tauri bridge: inspect the ordered event trace for one persisted run.
+#[tauri::command]
+pub(crate) fn agent_get_run_events(
+    app: AppHandle,
+    run_id: String,
+) -> Result<Vec<persistence::AgentEventRecord>, String> {
+    persistence::get_events(app, run_id)
 }

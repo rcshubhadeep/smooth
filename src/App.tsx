@@ -186,6 +186,7 @@ type AgentRunStep = {
 };
 
 type AgentRunResult = {
+  run_id: string;
   model: string;
   answer: string;
   steps: AgentRunStep[];
@@ -3043,6 +3044,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
       const message = String(agentError);
       setAgentRunResult({
         model: "",
+        run_id: "",
         answer: message,
         steps: [],
         raw_model_output: "",
@@ -3694,6 +3696,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <div className="agent-run-output">
               <div>
                 <strong>Answer</strong>
+                {agentRunResult.run_id ? (
+                  <small>{agentRunResult.run_id}</small>
+                ) : null}
                 <p>{agentRunResult.answer || "No answer returned"}</p>
               </div>
               <div>

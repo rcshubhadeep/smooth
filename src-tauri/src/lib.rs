@@ -438,6 +438,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
         .map_err(db_error)?;
 
     chat::init_schema(&connection)?;
+    agents::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_legacy_store(app, &mut connection)?;
     Ok(connection)
@@ -3088,7 +3089,9 @@ pub fn run() {
             unlink_notes,
             agents::agent_execute_tool,
             agents::agent_list_tools,
-            agents::agent_run
+            agents::agent_run,
+            agents::agent_list_runs,
+            agents::agent_get_run_events
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

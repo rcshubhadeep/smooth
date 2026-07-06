@@ -17,6 +17,7 @@ use tauri::AppHandle;
 use crate::{chat_llama_target, llama_endpoint};
 
 use super::context::AgentContext;
+use super::persistence::{AgentEvent, AgentRunRecorder};
 use super::registry::ToolDescriptor;
 use super::runtime::AgentRuntime;
 
@@ -26,6 +27,7 @@ const AGENT_MAX_TOKENS: u32 = 1024;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentRunResult {
+    pub(crate) run_id: String,
     pub(crate) model: String,
     pub(crate) answer: String,
     pub(crate) steps: Vec<AgentRunStep>,
@@ -128,6 +130,43 @@ pub(crate) async fn run_agent_once(
     let max_steps = max_steps
         .unwrap_or(DEFAULT_MAX_AGENT_STEPS)
         .clamp(1, MAX_AGENT_STEPS);
+    let mut recorder = AgentRunRecorder::start(app.clone(), &prompt, max_steps)?;
+    recorder.record(AgentEvent {
+        event_type: "user_prompt",
+        role: Some("user"),
+        tool_name: None,
+        content: Some(&prompt),
+        input: None,
+        output: None,
+        error: None,
+    })?;
+
+    let outcome = run_agent_once_inner(app, runtime, prompt, max_steps, &mut recorder).await;
+    match &outcome {
+        Ok(result) => recorder.complete_success(&result.answer, &result.raw_model_output)?,
+        Err(error) => {
+            let _ = recorder.record(AgentEvent {
+                event_type: "error",
+                role: None,
+                tool_name: None,
+                content: None,
+                input: None,
+                output: None,
+                error: Some(error),
+            });
+            let _ = recorder.complete_failure(error);
+        }
+    }
+    outcome
+}
+
+async fn run_agent_once_inner(
+    app: AppHandle,
+    runtime: &AgentRuntime,
+    prompt: String,
+    max_steps: u8,
+    recorder: &mut AgentRunRecorder,
+) -> Result<AgentRunResult, String> {
     let ctx = AgentContext::new(app.clone());
     let tools = runtime.list_tools();
     let tool_names = tools
@@ -147,6 +186,7 @@ pub(crate) async fn run_agent_once(
         .build()
         .map_err(|error| error.to_string())?;
     let model = resolve_model(&client, &base_url, preferred_model).await?;
+    recorder.set_model(&model, &base_url)?;
 
     let mut messages = vec![
         json!({
@@ -161,16 +201,55 @@ pub(crate) async fn run_agent_once(
     let mut steps = Vec::new();
     let mut known_notes = Vec::<KnownNoteRef>::new();
 
-    for _ in 0..max_steps {
+    for step_index in 0..max_steps {
+        let model_request = json!({
+            "step": step_index + 1,
+            "messages": messages,
+            "tools": openai_tools,
+        });
+        recorder.record(AgentEvent {
+            event_type: "model_request",
+            role: Some("assistant"),
+            tool_name: None,
+            content: None,
+            input: Some(&model_request),
+            output: None,
+            error: None,
+        })?;
         let response =
             complete_agent_turn(&client, &base_url, &model, &messages, Some(&openai_tools)).await?;
         let raw_model_output = response.content.clone().unwrap_or_default();
         let tool_calls = extract_tool_calls(&response)?;
+        let tool_calls_json = tool_calls_to_json(&tool_calls);
+        let model_response = json!({
+            "content": raw_model_output,
+            "tool_calls": tool_calls_json,
+        });
+        recorder.record(AgentEvent {
+            event_type: "model_response",
+            role: Some("assistant"),
+            tool_name: None,
+            content: Some(&raw_model_output),
+            input: None,
+            output: Some(&model_response),
+            error: None,
+        })?;
 
         if tool_calls.is_empty() {
+            let answer = clean_model_text(raw_model_output.clone());
+            recorder.record(AgentEvent {
+                event_type: "final_answer",
+                role: Some("assistant"),
+                tool_name: None,
+                content: Some(&answer),
+                input: None,
+                output: None,
+                error: None,
+            })?;
             return Ok(AgentRunResult {
+                run_id: recorder.run_id().to_string(),
                 model,
-                answer: clean_model_text(raw_model_output.clone()),
+                answer,
                 steps,
                 raw_model_output,
             });
@@ -207,6 +286,7 @@ pub(crate) async fn run_agent_once(
                     merge_known_notes(&mut known_notes, extract_search_results(value));
                 }
             }
+            let tool_event_output = output.clone().unwrap_or_else(|| tool_response.clone());
 
             executions.push(ToolExecution {
                 call: executable_call.clone(),
@@ -217,6 +297,23 @@ pub(crate) async fn run_agent_once(
                     repair.as_deref(),
                 ),
             });
+            let tool_event_input = if let Some(repair) = repair.as_deref() {
+                json!({
+                    "input": executable_call.input,
+                    "repair": repair,
+                })
+            } else {
+                executable_call.input.clone()
+            };
+            recorder.record(AgentEvent {
+                event_type: "tool_execution",
+                role: Some("tool"),
+                tool_name: Some(&executable_call.name),
+                content: repair.as_deref(),
+                input: Some(&tool_event_input),
+                output: Some(&tool_event_output),
+                error: error.as_deref(),
+            })?;
             steps.push(AgentRunStep {
                 tool_name: executable_call.name,
                 input: executable_call.input,
@@ -235,11 +332,34 @@ pub(crate) async fn run_agent_once(
         "role": "user",
         "content": "Give the final answer now. Do not call more tools. Use only the tool result blocks above as source material. If a detail is not present there, do not include it.",
     }));
+    let final_request = json!({
+        "messages": messages,
+    });
+    recorder.record(AgentEvent {
+        event_type: "model_request",
+        role: Some("assistant"),
+        tool_name: None,
+        content: None,
+        input: Some(&final_request),
+        output: None,
+        error: None,
+    })?;
     let response = complete_agent_turn(&client, &base_url, &model, &messages, None).await?;
     let raw_model_output = response.content.clone().unwrap_or_default();
+    let answer = clean_model_text(raw_model_output.clone());
+    recorder.record(AgentEvent {
+        event_type: "final_answer",
+        role: Some("assistant"),
+        tool_name: None,
+        content: Some(&answer),
+        input: None,
+        output: None,
+        error: None,
+    })?;
     Ok(AgentRunResult {
+        run_id: recorder.run_id().to_string(),
         model,
-        answer: clean_model_text(raw_model_output.clone()),
+        answer,
         steps,
         raw_model_output,
     })
@@ -383,6 +503,21 @@ fn extract_tool_calls(message: &CompletionMessage) -> Result<Vec<ToolCall>, Stri
         .as_deref()
         .map(extract_gemma_tool_calls)
         .unwrap_or_default())
+}
+
+fn tool_calls_to_json(tool_calls: &[ToolCall]) -> Value {
+    Value::Array(
+        tool_calls
+            .iter()
+            .map(|call| {
+                json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.input,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn validate_note_id_arg(call: &ToolCall, known_notes: &[KnownNoteRef]) -> Option<String> {
