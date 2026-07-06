@@ -20,9 +20,8 @@ pub mod tools;
 pub mod worker;
 
 pub use context::AgentContext;
-pub use registry::{ToolDescriptor, ToolRegistry};
+pub use registry::ToolDescriptor;
 pub use runtime::AgentRuntime;
-pub use tool::AgentTool;
 
 use serde_json::Value;
 use tauri::{AppHandle, State};

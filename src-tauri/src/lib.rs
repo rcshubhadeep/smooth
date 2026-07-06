@@ -41,64 +41,64 @@ struct LegacyStore {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct NoteMeta {
-    id: String,
-    title: String,
-    folder_id: Option<String>,
-    created_at: String,
-    updated_at: String,
-    deleted_at: Option<String>,
+pub(crate) struct NoteMeta {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) folder_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) deleted_at: Option<String>,
     #[serde(default = "default_extraction_status")]
-    extraction_status: String,
+    pub(crate) extraction_status: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct Folder {
-    id: String,
-    name: String,
-    created_at: String,
+pub(crate) struct Folder {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) created_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct NoteLink {
-    source_id: String,
-    target_id: String,
-    created_at: String,
+pub(crate) struct NoteLink {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) created_at: String,
     #[serde(default)]
-    label: Option<String>,
+    pub(crate) label: Option<String>,
     #[serde(default = "default_link_kind")]
-    link_kind: String,
+    pub(crate) link_kind: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct NoteListItem {
-    id: String,
-    title: String,
-    folder_id: Option<String>,
-    created_at: String,
-    updated_at: String,
-    deleted_at: Option<String>,
-    excerpt: String,
-    extraction_status: String,
+pub(crate) struct NoteListItem {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) folder_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) deleted_at: Option<String>,
+    pub(crate) excerpt: String,
+    pub(crate) extraction_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct NoteWithContent {
-    id: String,
-    title: String,
-    folder_id: Option<String>,
-    created_at: String,
-    updated_at: String,
-    deleted_at: Option<String>,
-    content: String,
-    extraction_status: String,
+pub(crate) struct NoteWithContent {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) folder_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) deleted_at: Option<String>,
+    pub(crate) content: String,
+    pub(crate) extraction_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct BankSnapshot {
-    notes: Vec<NoteListItem>,
-    folders: Vec<Folder>,
-    links: Vec<NoteLink>,
+pub(crate) struct BankSnapshot {
+    pub(crate) notes: Vec<NoteListItem>,
+    pub(crate) folders: Vec<Folder>,
+    pub(crate) links: Vec<NoteLink>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -228,11 +228,11 @@ struct InputTokensResponse {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct NoteEntity {
-    id: i64,
-    name: String,
-    entity_type: String,
-    mention_count: u64,
+pub(crate) struct NoteEntity {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) entity_type: String,
+    pub(crate) mention_count: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -243,11 +243,11 @@ struct NoteExtractionView {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct LinkSuggestion {
-    note: NoteListItem,
-    shared_entities: Vec<NoteEntity>,
-    shared_entity_count: u64,
-    shared_mention_count: u64,
+pub(crate) struct LinkSuggestion {
+    pub(crate) note: NoteListItem,
+    pub(crate) shared_entities: Vec<NoteEntity>,
+    pub(crate) shared_entity_count: u64,
+    pub(crate) shared_mention_count: u64,
 }
 
 #[derive(Debug)]
@@ -1861,7 +1861,7 @@ async fn extraction_worker(app: AppHandle) {
     }
 }
 
-fn read_note_content(app: &AppHandle, note_id: &str) -> Result<String, String> {
+pub(crate) fn read_note_content(app: &AppHandle, note_id: &str) -> Result<String, String> {
     let path = note_path(app, note_id)?;
     if !path.exists() {
         return Ok(String::new());
@@ -1870,7 +1870,11 @@ fn read_note_content(app: &AppHandle, note_id: &str) -> Result<String, String> {
     fs::read_to_string(path).map_err(|error| error.to_string())
 }
 
-fn write_note_content(app: &AppHandle, note_id: &str, content: &str) -> Result<(), String> {
+pub(crate) fn write_note_content(
+    app: &AppHandle,
+    note_id: &str,
+    content: &str,
+) -> Result<(), String> {
     fs::write(note_path(app, note_id)?, content).map_err(|error| error.to_string())
 }
 
@@ -1921,7 +1925,7 @@ fn normalize_link_kind(link_kind: Option<String>) -> Result<String, String> {
     }
 }
 
-fn load_note_meta(connection: &Connection, id: &str) -> Result<NoteMeta, String> {
+pub(crate) fn load_note_meta(connection: &Connection, id: &str) -> Result<NoteMeta, String> {
     connection
         .query_row(
             "
@@ -1948,7 +1952,7 @@ fn load_note_meta(connection: &Connection, id: &str) -> Result<NoteMeta, String>
         .ok_or_else(|| "Note not found".to_string())
 }
 
-fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankSnapshot, String> {
+pub(crate) fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankSnapshot, String> {
     let notes_meta = {
         let mut statement = connection
             .prepare(
@@ -2282,6 +2286,14 @@ fn get_link_suggestions(
     note_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<LinkSuggestion>, String> {
+    get_link_suggestions_internal(app, note_id, limit)
+}
+
+pub(crate) fn get_link_suggestions_internal(
+    app: AppHandle,
+    note_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<LinkSuggestion>, String> {
     let connection = open_database(&app)?;
     connection
         .query_row(
@@ -2550,6 +2562,14 @@ fn create_note(
     title: Option<String>,
     folder_id: Option<String>,
 ) -> Result<NoteWithContent, String> {
+    create_standard_note(app, title, folder_id)
+}
+
+pub(crate) fn create_standard_note(
+    app: AppHandle,
+    title: Option<String>,
+    folder_id: Option<String>,
+) -> Result<NoteWithContent, String> {
     create_note_with_extraction_status(app, title, folder_id, default_extraction_status())
 }
 
@@ -2562,7 +2582,7 @@ fn create_meeting_note(
     create_note_with_extraction_status(app, title, folder_id, disabled_extraction_status())
 }
 
-fn create_note_with_extraction_status(
+pub(crate) fn create_note_with_extraction_status(
     app: AppHandle,
     title: Option<String>,
     folder_id: Option<String>,
@@ -2644,7 +2664,7 @@ fn save_meeting_note(
     save_note_internal(app, id, title, content, folder_id, true)
 }
 
-fn save_note_internal(
+pub(crate) fn save_note_internal(
     app: AppHandle,
     id: String,
     title: String,

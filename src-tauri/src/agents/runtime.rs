@@ -28,10 +28,6 @@ impl AgentRuntime {
         Self { registry }
     }
 
-    pub fn registry(&self) -> &ToolRegistry {
-        &self.registry
-    }
-
     pub fn list_tools(&self) -> Vec<ToolDescriptor> {
         self.registry.list()
     }
