@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Check, Copy, FilePlus, Sparkles, Trash2 } from "lucide-react";
 import { marked } from "marked";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 type ChatMessage = {
   id: string;
@@ -33,6 +33,109 @@ function tempId() {
   return `local-${tempCounter}`;
 }
 
+type ChatStreamState = {
+  noteId: string;
+  isSending: boolean;
+  streaming: string | null;
+  status: string | null;
+  error: string | null;
+  completedMessage: ChatMessage | null;
+};
+
+const emptyStreamState = (noteId: string): ChatStreamState => ({
+  noteId,
+  isSending: false,
+  streaming: null,
+  status: null,
+  error: null,
+  completedMessage: null,
+});
+
+const chatStreamStore = (() => {
+  const states = new Map<string, ChatStreamState>();
+  const emptyStates = new Map<string, ChatStreamState>();
+  const listeners = new Set<() => void>();
+
+  function snapshot(noteId: string) {
+    const activeState = states.get(noteId);
+    if (activeState) {
+      return activeState;
+    }
+
+    let emptyState = emptyStates.get(noteId);
+    if (!emptyState) {
+      emptyState = emptyStreamState(noteId);
+      emptyStates.set(noteId, emptyState);
+    }
+    return emptyState;
+  }
+
+  function emit() {
+    listeners.forEach((listener) => listener());
+  }
+
+  function update(noteId: string, patch: Partial<ChatStreamState>) {
+    states.set(noteId, { ...snapshot(noteId), ...patch, noteId });
+    emit();
+  }
+
+  return {
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    snapshot,
+    start(noteId: string) {
+      update(noteId, {
+        isSending: true,
+        streaming: null,
+        status: null,
+        error: null,
+        completedMessage: null,
+      });
+    },
+    status(noteId: string, message: string) {
+      update(noteId, { status: message });
+    },
+    delta(noteId: string, delta: string) {
+      const current = snapshot(noteId);
+      update(noteId, {
+        status: null,
+        streaming: (current.streaming ?? "") + delta,
+      });
+    },
+    done(noteId: string, message: ChatMessage) {
+      update(noteId, {
+        isSending: false,
+        streaming: null,
+        status: null,
+        error: null,
+        completedMessage: message,
+      });
+    },
+    error(noteId: string, message: string) {
+      update(noteId, {
+        isSending: false,
+        streaming: null,
+        status: null,
+        error: message,
+      });
+    },
+    clear(noteId: string) {
+      states.delete(noteId);
+      emit();
+    },
+    consumeCompleted(noteId: string) {
+      const current = snapshot(noteId);
+      if (!current.completedMessage) {
+        return null;
+      }
+      update(noteId, { completedMessage: null });
+      return current.completedMessage;
+    },
+  };
+})();
+
 export default function NoteChat({
   noteId,
   noteContent,
@@ -44,11 +147,13 @@ export default function NoteChat({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const streamState = useSyncExternalStore(
+    chatStreamStore.subscribe,
+    () => chatStreamStore.snapshot(noteId),
+    () => chatStreamStore.snapshot(noteId),
+  );
+  const { streaming, status, isSending, error } = streamState;
   const scrollRef = useRef<HTMLDivElement>(null);
   const noteContentRef = useRef(noteContent);
   noteContentRef.current = noteContent;
@@ -70,6 +175,18 @@ export default function NoteChat({
   }, [noteId]);
 
   useEffect(() => {
+    const completed = chatStreamStore.consumeCompleted(noteId);
+    if (!completed) {
+      return;
+    }
+    setMessages((current) =>
+      current.some((message) => message.id === completed.id)
+        ? current
+        : [...current, completed],
+    );
+  }, [noteId, streamState.completedMessage]);
+
+  useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
 
@@ -80,11 +197,8 @@ export default function NoteChat({
         return;
       }
 
-      setError(null);
       setInput("");
-      setIsSending(true);
-      setStreaming(null);
-      setStatus(null);
+      chatStreamStore.start(noteId);
       setMessages((current) => [
         ...current,
         {
@@ -99,20 +213,13 @@ export default function NoteChat({
       const channel = new Channel<ChatStreamEvent>();
       channel.onmessage = (event) => {
         if (event.type === "status") {
-          setStatus(event.message);
+          chatStreamStore.status(noteId, event.message);
         } else if (event.type === "delta") {
-          setStatus(null);
-          setStreaming((current) => (current ?? "") + event.delta);
+          chatStreamStore.delta(noteId, event.delta);
         } else if (event.type === "done") {
-          setMessages((current) => [...current, event.message]);
-          setStreaming(null);
-          setStatus(null);
-          setIsSending(false);
+          chatStreamStore.done(noteId, event.message);
         } else {
-          setError(event.message);
-          setStreaming(null);
-          setStatus(null);
-          setIsSending(false);
+          chatStreamStore.error(noteId, event.message);
         }
       };
 
@@ -124,10 +231,7 @@ export default function NoteChat({
           onEvent: channel,
         });
       } catch (invokeError) {
-        setError(String(invokeError));
-        setStreaming(null);
-        setStatus(null);
-        setIsSending(false);
+        chatStreamStore.error(noteId, String(invokeError));
       }
     },
     [isSending, noteId],
@@ -137,10 +241,9 @@ export default function NoteChat({
     try {
       await invoke("clear_chat", { noteId });
       setMessages([]);
-      setStreaming(null);
-      setError(null);
+      chatStreamStore.clear(noteId);
     } catch (clearError) {
-      setError(String(clearError));
+      chatStreamStore.error(noteId, String(clearError));
     }
   }
 
@@ -150,7 +253,7 @@ export default function NoteChat({
       setCopiedId(id);
       window.setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
     } catch {
-      setError("Couldn't copy to the clipboard");
+      chatStreamStore.error(noteId, "Couldn't copy to the clipboard");
     }
   }
 
