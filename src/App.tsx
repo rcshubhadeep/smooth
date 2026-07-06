@@ -393,7 +393,8 @@ function meetingTitleNow() {
     minute: "2-digit",
     hour12: false,
   }).formatToParts(date);
-  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
   return `Meeting ${value("year")}-${value("month")}-${value("day")} ${value("hour")}:${value("minute")}`;
 }
 
@@ -423,7 +424,11 @@ function parseSpeakers(content: string): string[] {
 }
 
 /** Rewrite ONLY the speaker slot of lines whose speaker == oldName. */
-function renameSpeakerInContent(content: string, oldName: string, newName: string): string {
+function renameSpeakerInContent(
+  content: string,
+  oldName: string,
+  newName: string,
+): string {
   return content
     .split("\n")
     .map((line) => {
@@ -449,9 +454,16 @@ function wait(ms: number) {
 
 function sortNotes(notes: NoteListItem[], mode: SortMode) {
   return [...notes].sort((first, second) => {
-    const [field, direction] = mode.split("-") as ["updated" | "created", "asc" | "desc"];
-    const firstValue = dateValue(field === "updated" ? first.updated_at : first.created_at);
-    const secondValue = dateValue(field === "updated" ? second.updated_at : second.created_at);
+    const [field, direction] = mode.split("-") as [
+      "updated" | "created",
+      "asc" | "desc",
+    ];
+    const firstValue = dateValue(
+      field === "updated" ? first.updated_at : first.created_at,
+    );
+    const secondValue = dateValue(
+      field === "updated" ? second.updated_at : second.created_at,
+    );
     const result = firstValue - secondValue;
     return direction === "asc" ? result : -result;
   });
@@ -491,11 +503,14 @@ const toastStore = (() => {
 })();
 
 function cleanErrorMessage(value: unknown) {
-  return String(value).replace(/^Error:\s*/i, "").trim();
+  return String(value)
+    .replace(/^Error:\s*/i, "")
+    .trim();
 }
 
 const toast = {
-  error: (message: unknown) => toastStore.push("error", cleanErrorMessage(message)),
+  error: (message: unknown) =>
+    toastStore.push("error", cleanErrorMessage(message)),
   success: (message: string) => toastStore.push("success", message),
   info: (message: string) => toastStore.push("info", message),
 };
@@ -619,10 +634,15 @@ function App() {
   const [query, setQuery] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>(() => {
-    return (localStorage.getItem("smooth-note-sort") as SortMode | null) ?? "updated-desc";
+    return (
+      (localStorage.getItem("smooth-note-sort") as SortMode | null) ??
+      "updated-desc"
+    );
   });
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    return (localStorage.getItem("smooth-theme") as ThemeMode | null) ?? "system";
+    return (
+      (localStorage.getItem("smooth-theme") as ThemeMode | null) ?? "system"
+    );
   });
   const [view, setView] = useState<ViewMode>("notes");
   const setError = (message: string | null) => {
@@ -673,9 +693,13 @@ function App() {
   const [meetingDetail, setMeetingDetail] = useState("Ready");
   const [meetingContentRevision, setMeetingContentRevision] = useState(0);
   const [meetingNoteId, setMeetingNoteId] = useState<string | null>(null);
-  const [meetingVisualSources, setMeetingVisualSources] = useState<MeetingVisualSource[]>([]);
+  const [meetingVisualSources, setMeetingVisualSources] = useState<
+    MeetingVisualSource[]
+  >([]);
   const [meetingSourcePickerOpen, setMeetingSourcePickerOpen] = useState(false);
-  const [meetingVisualSourceName, setMeetingVisualSourceName] = useState<string | null>(null);
+  const [meetingVisualSourceName, setMeetingVisualSourceName] = useState<
+    string | null
+  >(null);
   const [meetingMicLabel, setMeetingMicLabel] = useState(
     () => localStorage.getItem("smooth-meeting-you") || "You",
   );
@@ -722,7 +746,11 @@ function App() {
 
   const activeNotes = snapshot.notes.filter((note) => !note.deleted_at);
   const trashedNotes = useMemo(
-    () => sortNotes(snapshot.notes.filter((note) => note.deleted_at), sortMode),
+    () =>
+      sortNotes(
+        snapshot.notes.filter((note) => note.deleted_at),
+        sortMode,
+      ),
     [snapshot.notes, sortMode],
   );
 
@@ -735,7 +763,8 @@ function App() {
     return sortNotes(
       activeNotes.filter((note) => {
         const folderName =
-          snapshot.folders.find((folder) => folder.id === note.folder_id)?.name ?? "";
+          snapshot.folders.find((folder) => folder.id === note.folder_id)
+            ?.name ?? "";
         return `${note.title} ${note.excerpt} ${folderName}`
           .toLowerCase()
           .includes(cleanQuery);
@@ -764,7 +793,11 @@ function App() {
   const inboxNotes = filteredNotes.filter((note) => !note.folder_id);
 
   const paletteNotes = useMemo(
-    () => sortNotes(snapshot.notes.filter((note) => !note.deleted_at), "updated-desc"),
+    () =>
+      sortNotes(
+        snapshot.notes.filter((note) => !note.deleted_at),
+        "updated-desc",
+      ),
     [snapshot.notes],
   );
 
@@ -961,12 +994,21 @@ function App() {
     if (!trimmed || trimmed === oldName) {
       return;
     }
-    const nextContent = renameSpeakerInContent(activeNote.content, oldName, trimmed);
+    const nextContent = renameSpeakerInContent(
+      activeNote.content,
+      oldName,
+      trimmed,
+    );
     if (nextContent === activeNote.content) {
       return;
     }
     try {
-      await saveNote(activeNote.id, activeNote.title, nextContent, activeNote.folder_id);
+      await saveNote(
+        activeNote.id,
+        activeNote.title,
+        nextContent,
+        activeNote.folder_id,
+      );
       setEditorReloadKey((key) => key + 1);
       toast.success(`Renamed “${oldName}” to “${trimmed}”`);
     } catch (renameError) {
@@ -1006,38 +1048,44 @@ function App() {
     }));
   }, []);
 
-  const saveNote = useCallback(async (
-    id: string,
-    title: string,
-    content: string,
-    folderId: string | null,
-  ) => {
-    const saved = await invoke<NoteWithContent>("save_note", {
-      id,
-      title,
-      content,
-      folderId,
-    });
-    applySavedNote(saved);
-    return saved;
-  }, [applySavedNote]);
+  const saveNote = useCallback(
+    async (
+      id: string,
+      title: string,
+      content: string,
+      folderId: string | null,
+    ) => {
+      const saved = await invoke<NoteWithContent>("save_note", {
+        id,
+        title,
+        content,
+        folderId,
+      });
+      applySavedNote(saved);
+      return saved;
+    },
+    [applySavedNote],
+  );
 
-  const saveMeetingNote = useCallback(async (
-    id: string,
-    title: string,
-    content: string,
-    folderId: string | null,
-  ) => {
-    const saved = await invoke<NoteWithContent>("save_meeting_note", {
-      id,
-      title,
-      content,
-      folderId,
-    });
-    applySavedNote(saved);
-    setMeetingContentRevision((revision) => revision + 1);
-    return saved;
-  }, [applySavedNote]);
+  const saveMeetingNote = useCallback(
+    async (
+      id: string,
+      title: string,
+      content: string,
+      folderId: string | null,
+    ) => {
+      const saved = await invoke<NoteWithContent>("save_meeting_note", {
+        id,
+        title,
+        content,
+        folderId,
+      });
+      applySavedNote(saved);
+      setMeetingContentRevision((revision) => revision + 1);
+      return saved;
+    },
+    [applySavedNote],
+  );
 
   async function startMeetingMode() {
     if (meetingState !== "idle") {
@@ -1047,11 +1095,15 @@ function App() {
     setMeetingState("starting");
     setMeetingDetail("Finding screens");
     try {
-      const sources = await invoke<MeetingVisualSource[]>("list_meeting_visual_sources");
+      const sources = await invoke<MeetingVisualSource[]>(
+        "list_meeting_visual_sources",
+      );
       setMeetingVisualSources(sources);
       setMeetingSourcePickerOpen(true);
       setMeetingState("idle");
-      setMeetingDetail(sources.length > 0 ? "Choose capture target" : "No visual sources");
+      setMeetingDetail(
+        sources.length > 0 ? "Choose capture target" : "No visual sources",
+      );
     } catch (sourceError) {
       toast.error(`Visual source list failed: ${String(sourceError)}`);
       await beginMeetingMode(null, null);
@@ -1172,7 +1224,9 @@ function App() {
     // transcript is finalized, kick off entity extraction for the note.
     if (meetingNoteToExtract) {
       try {
-        await invoke("finalize_meeting_extraction", { id: meetingNoteToExtract });
+        await invoke("finalize_meeting_extraction", {
+          id: meetingNoteToExtract,
+        });
         const refreshed = await invoke<NoteWithContent>("get_note", {
           id: meetingNoteToExtract,
         });
@@ -1189,7 +1243,9 @@ function App() {
     try {
       await invoke<SystemAudioCaptureStatus>("start_system_audio_capture");
     } catch (systemAudioError) {
-      await invoke<AudioCaptureStatus>("stop_audio_capture").catch(() => undefined);
+      await invoke<AudioCaptureStatus>("stop_audio_capture").catch(
+        () => undefined,
+      );
       throw systemAudioError;
     }
   }
@@ -1223,13 +1279,19 @@ function App() {
     return true;
   }
 
-  async function processMeetingChunk(minDurationMs: number, restartSystemCapture: boolean) {
+  async function processMeetingChunk(
+    minDurationMs: number,
+    restartSystemCapture: boolean,
+  ) {
     if (meetingChunkRef.current) {
       await meetingChunkRef.current;
       return;
     }
 
-    const chunkPromise = processMeetingChunkInner(minDurationMs, restartSystemCapture);
+    const chunkPromise = processMeetingChunkInner(
+      minDurationMs,
+      restartSystemCapture,
+    );
     meetingChunkRef.current = chunkPromise;
     try {
       await chunkPromise;
@@ -1250,11 +1312,17 @@ function App() {
     }
 
     setMeetingDetail("Transcribing");
-    const previews: Array<{ source: "Mic" | "System"; preview: AudioCapturePreview | SystemAudioCapturePreview }> = [];
+    const previews: Array<{
+      source: "Mic" | "System";
+      preview: AudioCapturePreview | SystemAudioCapturePreview;
+    }> = [];
 
-    const micPreview = await invoke<AudioCapturePreview | null>("flush_audio_capture_chunk", {
-      minDurationMs,
-    }).catch(() => null);
+    const micPreview = await invoke<AudioCapturePreview | null>(
+      "flush_audio_capture_chunk",
+      {
+        minDurationMs,
+      },
+    ).catch(() => null);
     if (micPreview) {
       previews.push({ source: "Mic", preview: micPreview });
     }
@@ -1273,7 +1341,9 @@ function App() {
     }
 
     if (restartSystemCapture && meetingLoopActiveRef.current) {
-      await invoke<SystemAudioCaptureStatus>("start_system_audio_capture").catch((error) => {
+      await invoke<SystemAudioCaptureStatus>(
+        "start_system_audio_capture",
+      ).catch((error) => {
         setMeetingDetail(`System audio paused: ${String(error)}`);
       });
     }
@@ -1289,7 +1359,9 @@ function App() {
       const text = result?.text.trim();
       if (text) {
         const label =
-          item.source === "Mic" ? meetingMicLabelRef.current : meetingSystemLabelRef.current;
+          item.source === "Mic"
+            ? meetingMicLabelRef.current
+            : meetingSystemLabelRef.current;
         noteLines.push(meetingTranscriptLine(label, text));
       }
     }
@@ -1338,17 +1410,20 @@ function App() {
     return snapshot ? meetingSnapshotLine(snapshot) : null;
   }
 
-
   // Create a folder with a placeholder name, then drop straight into inline rename.
   async function createFolderInline() {
     try {
       setError(null);
       const before = new Set(snapshot.folders.map((folder) => folder.id));
-      const bank = await invoke<BankSnapshot>("create_folder", { name: "Untitled Folder" });
+      const bank = await invoke<BankSnapshot>("create_folder", {
+        name: "Untitled Folder",
+      });
       setSnapshot(bank);
       const created = bank.folders.find((folder) => !before.has(folder.id));
       if (created) {
-        setCollapsedSections((current) => current.filter((id) => id !== created.id));
+        setCollapsedSections((current) =>
+          current.filter((id) => id !== created.id),
+        );
         setRenamingFolderId(created.id);
       }
     } catch (folderError) {
@@ -1364,7 +1439,10 @@ function App() {
       return;
     }
     try {
-      const bank = await invoke<BankSnapshot>("rename_folder", { id, name: trimmed });
+      const bank = await invoke<BankSnapshot>("rename_folder", {
+        id,
+        name: trimmed,
+      });
       setSnapshot(bank);
     } catch (renameError) {
       toast.error(renameError);
@@ -1388,7 +1466,8 @@ function App() {
     try {
       await moveNote(id, folderId);
       const name = folderId
-        ? (snapshot.folders.find((folder) => folder.id === folderId)?.name ?? "folder")
+        ? (snapshot.folders.find((folder) => folder.id === folderId)?.name ??
+          "folder")
         : "Inbox";
       toast.success(`Moved to ${name}`);
     } catch (moveError) {
@@ -1407,7 +1486,10 @@ function App() {
   }
 
   function updateDropTarget(target: DropTarget | null) {
-    if (dropTarget?.folderId === target?.folderId && dropTarget?.index === target?.index) {
+    if (
+      dropTarget?.folderId === target?.folderId &&
+      dropTarget?.index === target?.index
+    ) {
       return;
     }
 
@@ -1454,7 +1536,10 @@ function App() {
       return rows;
     }
 
-    const index = Math.max(0, Math.min(dropTarget?.index ?? rows.length, rows.length));
+    const index = Math.max(
+      0,
+      Math.min(dropTarget?.index ?? rows.length, rows.length),
+    );
     rows.splice(index, 0, <DropPlaceholder key="drop-placeholder" />);
     return rows;
   }
@@ -1519,7 +1604,9 @@ function App() {
       setError(null);
       const bank = await invoke<BankSnapshot>("trash_note", { id });
       setSnapshot(bank);
-      setSelectedIds((current) => current.filter((selectedId) => selectedId !== id));
+      setSelectedIds((current) =>
+        current.filter((selectedId) => selectedId !== id),
+      );
       setActiveNote((current) =>
         current?.id === id
           ? {
@@ -1551,7 +1638,9 @@ function App() {
       setError(null);
       const bank = await invoke<BankSnapshot>("permanent_delete_note", { id });
       setSnapshot(bank);
-      setSelectedIds((current) => current.filter((selectedId) => selectedId !== id));
+      setSelectedIds((current) =>
+        current.filter((selectedId) => selectedId !== id),
+      );
       setActiveNote((current) => (current?.id === id ? null : current));
     } catch (deleteError) {
       setError(String(deleteError));
@@ -1615,7 +1704,11 @@ function App() {
     }
   }
 
-  async function renameNoteLink(sourceId: string, targetId: string, label: string | null) {
+  async function renameNoteLink(
+    sourceId: string,
+    targetId: string,
+    label: string | null,
+  ) {
     try {
       setError(null);
       const bank = await invoke<BankSnapshot>("rename_note_link", {
@@ -1633,7 +1726,10 @@ function App() {
   async function unlinkNotes(sourceId: string, targetId: string) {
     try {
       setError(null);
-      const bank = await invoke<BankSnapshot>("unlink_notes", { sourceId, targetId });
+      const bank = await invoke<BankSnapshot>("unlink_notes", {
+        sourceId,
+        targetId,
+      });
       setSnapshot(bank);
       toast.success("Note unlinked");
     } catch (unlinkError) {
@@ -1649,21 +1745,24 @@ function App() {
     );
   }
 
-  const updateNoteExtractionStatus = useCallback((id: string, status: string) => {
-    setActiveNote((current) =>
-      current?.id === id && current.extraction_status !== status
-        ? { ...current, extraction_status: status }
-        : current,
-    );
-    setSnapshot((current) => ({
-      ...current,
-      notes: current.notes.map((note) =>
-        note.id === id && note.extraction_status !== status
-          ? { ...note, extraction_status: status }
-          : note,
-      ),
-    }));
-  }, []);
+  const updateNoteExtractionStatus = useCallback(
+    (id: string, status: string) => {
+      setActiveNote((current) =>
+        current?.id === id && current.extraction_status !== status
+          ? { ...current, extraction_status: status }
+          : current,
+      );
+      setSnapshot((current) => ({
+        ...current,
+        notes: current.notes.map((note) =>
+          note.id === id && note.extraction_status !== status
+            ? { ...note, extraction_status: status }
+            : note,
+        ),
+      }));
+    },
+    [],
+  );
 
   function cycleTheme() {
     setTheme((current) =>
@@ -1671,7 +1770,8 @@ function App() {
     );
   }
 
-  const ThemeIcon = theme === "system" ? Monitor : theme === "light" ? Sun : Moon;
+  const ThemeIcon =
+    theme === "system" ? Monitor : theme === "light" ? Sun : Moon;
 
   return (
     <div className="app-shell">
@@ -1697,306 +1797,326 @@ function App() {
         className="app-body"
         style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}
       >
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <h1>Let&rsquo;s dive in</h1>
-          <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
-            <button
-              className="icon-button primary"
-              type="button"
-              onClick={() => setCreateMenuOpen((open) => !open)}
-              title="Create new"
-              aria-haspopup="menu"
-              aria-expanded={createMenuOpen}
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <h1>Let&rsquo;s dive in</h1>
+            <div
+              className="pop-wrap"
+              onPointerDown={(event) => event.stopPropagation()}
             >
-              <Plus size={18} />
-            </button>
-            {createMenuOpen ? (
-              <div className="pop-menu" role="menu">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreateMenuOpen(false);
-                    void createNote();
-                  }}
-                >
-                  <FileText size={15} />
-                  New note
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreateMenuOpen(false);
-                    void createFolderInline();
-                  }}
-                >
-                  <FolderPlus size={15} />
-                  New folder
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="sidebar-controls">
-          <label className="search-field">
-            <Search size={16} />
-            <input
-              ref={searchRef}
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Search notes"
-            />
-          </label>
-
-          <div className="controls-row">
-            <label className="sort-control">
-              <ArrowDownUp size={15} />
-              <select
-                value={sortMode}
-                onChange={(event) => setSortMode(event.currentTarget.value as SortMode)}
-                aria-label="Sort notes"
+              <button
+                className="icon-button primary"
+                type="button"
+                onClick={() => setCreateMenuOpen((open) => !open)}
+                title="Create new"
+                aria-haspopup="menu"
+                aria-expanded={createMenuOpen}
               >
-                <option value="updated-desc">Updated newest</option>
-                <option value="updated-asc">Updated oldest</option>
-                <option value="created-desc">Created newest</option>
-                <option value="created-asc">Created oldest</option>
-              </select>
+                <Plus size={18} />
+              </button>
+              {createMenuOpen ? (
+                <div className="pop-menu" role="menu">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      void createNote();
+                    }}
+                  >
+                    <FileText size={15} />
+                    New note
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      void createFolderInline();
+                    }}
+                  >
+                    <FolderPlus size={15} />
+                    New folder
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="sidebar-controls">
+            <label className="search-field">
+              <Search size={16} />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                placeholder="Search notes"
+              />
             </label>
-          </div>
 
-          {selectedIds.length > 0 ? (
-            <div className="selection-bar">
-              <span>{selectedIds.length} selected</span>
-              <button
-                type="button"
-                disabled={selectedIds.length < 2}
-                onClick={linkSelectedNotes}
-                title="Link selected notes"
-              >
-                <Link2 size={15} />
-                <span>Link</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void exportSelectedNotes()}
-                title="Export selected notes as ZIP"
-              >
-                <Download size={15} />
-                <span>Export</span>
-              </button>
-              <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="controls-row">
+              <label className="sort-control">
+                <ArrowDownUp size={15} />
+                <select
+                  value={sortMode}
+                  onChange={(event) =>
+                    setSortMode(event.currentTarget.value as SortMode)
+                  }
+                  aria-label="Sort notes"
+                >
+                  <option value="updated-desc">Updated newest</option>
+                  <option value="updated-asc">Updated oldest</option>
+                  <option value="created-desc">Created newest</option>
+                  <option value="created-asc">Created oldest</option>
+                </select>
+              </label>
+            </div>
+
+            {selectedIds.length > 0 ? (
+              <div className="selection-bar">
+                <span>{selectedIds.length} selected</span>
                 <button
                   type="button"
-                  className={moveMenuOpen ? "active" : ""}
-                  onClick={() => setMoveMenuOpen((open) => !open)}
-                  title="Move to folder"
-                  aria-haspopup="menu"
-                  aria-expanded={moveMenuOpen}
+                  disabled={selectedIds.length < 2}
+                  onClick={linkSelectedNotes}
+                  title="Link selected notes"
                 >
-                  <FolderInput size={15} />
-                  <span>Move</span>
+                  <Link2 size={15} />
+                  <span>Link</span>
                 </button>
-                {moveMenuOpen ? (
-                  <div className="pop-menu align-right" role="menu">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMoveMenuOpen(false);
-                        void moveSelected(null);
-                      }}
-                    >
-                      <Inbox size={15} />
-                      Inbox
-                    </button>
-                    {snapshot.folders.map((folder) => (
+                <button
+                  type="button"
+                  onClick={() => void exportSelectedNotes()}
+                  title="Export selected notes as ZIP"
+                >
+                  <Download size={15} />
+                  <span>Export</span>
+                </button>
+                <div
+                  className="pop-wrap"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    className={moveMenuOpen ? "active" : ""}
+                    onClick={() => setMoveMenuOpen((open) => !open)}
+                    title="Move to folder"
+                    aria-haspopup="menu"
+                    aria-expanded={moveMenuOpen}
+                  >
+                    <FolderInput size={15} />
+                    <span>Move</span>
+                  </button>
+                  {moveMenuOpen ? (
+                    <div className="pop-menu align-right" role="menu">
                       <button
-                        key={folder.id}
                         type="button"
                         onClick={() => {
                           setMoveMenuOpen(false);
-                          void moveSelected(folder.id);
+                          void moveSelected(null);
                         }}
                       >
-                        <Folder size={15} />
-                        {folder.name}
+                        <Inbox size={15} />
+                        Inbox
                       </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="notes-pane">
-          <TreeSection
-            count={inboxNotes.length}
-            draggedNoteId={draggedNoteId}
-            dropTarget={dropTarget}
-            folderId={null}
-            icon={<Inbox size={16} />}
-            isOpen={isSectionOpen("inbox")}
-            onToggle={() => toggleSection("inbox")}
-            onDropTargetChange={updateDropTarget}
-            title="Inbox"
-            droppable
-            onDropNote={(id) => void moveNoteToFolder(id, null)}
-          >
-            {renderNoteRows(inboxNotes, null)}
-          </TreeSection>
-
-          {folderGroups.map(({ folder, notes }) => (
-            <TreeSection
-              key={folder.id}
-              count={notes.length}
-              draggedNoteId={draggedNoteId}
-              dropTarget={dropTarget}
-              folderId={folder.id}
-              icon={
-                isSectionOpen(folder.id) ? <FolderOpen size={16} /> : <Folder size={16} />
-              }
-              isOpen={isSectionOpen(folder.id)}
-              onToggle={() => toggleSection(folder.id)}
-              onDropTargetChange={updateDropTarget}
-              title={folder.name}
-              droppable
-              onDropNote={(id) => void moveNoteToFolder(id, folder.id)}
-              renamable
-              startRenaming={renamingFolderId === folder.id}
-              onRename={(name) => void renameFolder(folder.id, name)}
-            >
-              {renderNoteRows(notes, folder.id, { indent: true })}
-            </TreeSection>
-          ))}
-
-          {trashedNotes.length > 0 ? (
-            <TreeSection
-              count={trashedNotes.length}
-              icon={<Trash2 size={16} />}
-              isOpen={isSectionOpen("trash")}
-              onToggle={() => toggleSection("trash")}
-              title="Trash"
-            >
-              {trashedNotes.map((note) => (
-                <NoteRow
-                  key={note.id}
-                  activeId={activeNote?.id ?? null}
-                  muted
-                  note={note}
-                  onOpen={openNote}
-                  onContextMenu={(target, x, y) => setMenuTarget({ note: target, x, y })}
-                  selectable={false}
-                  action={
-                    <div className="row-actions">
-                      <button
-                        className="ghost-icon"
-                        type="button"
-                        onClick={() => void restoreNote(note.id)}
-                        title="Restore to Inbox"
-                      >
-                        <ArchiveRestore size={15} />
-                      </button>
-                      <button
-                        className="ghost-icon danger"
-                        type="button"
-                        onClick={() => void permanentDeleteNote(note.id)}
-                        title="Delete forever"
-                      >
-                        <X size={15} />
-                      </button>
+                      {snapshot.folders.map((folder) => (
+                        <button
+                          key={folder.id}
+                          type="button"
+                          onClick={() => {
+                            setMoveMenuOpen(false);
+                            void moveSelected(folder.id);
+                          }}
+                        >
+                          <Folder size={15} />
+                          {folder.name}
+                        </button>
+                      ))}
                     </div>
-                  }
-                />
-              ))}
-            </TreeSection>
-          ) : null}
-        </div>
-
-        <div className="sidebar-footer">
-          <button
-            className={view === "settings" ? "icon-button active" : "icon-button"}
-            type="button"
-            onClick={() => setView("settings")}
-            title="Settings"
-          >
-            <Settings size={18} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={cycleTheme}
-            title={`Theme: ${theme}`}
-          >
-            <ThemeIcon size={18} />
-          </button>
-        </div>
-      </aside>
-
-      <section className="workspace">
-        {view === "settings" ? (
-          <SettingsView onClose={() => setView("notes")} />
-        ) : (
-          <div
-            className={
-              activeNote && panelOpen ? "notes-workspace with-panel" : "notes-workspace"
-            }
-            style={
-              activeNote && panelOpen
-                ? { gridTemplateColumns: `minmax(0, 1fr) ${panelWidth}px` }
-                : undefined
-            }
-          >
-            <NoteEditor
-              key={`${activeNote?.id ?? "none"}:${editorReloadKey}`}
-              note={activeNote}
-              folders={snapshot.folders}
-              panelOpen={panelOpen}
-              externalRevision={meetingContentRevision}
-              externalNoteId={meetingNoteId}
-              onTogglePanel={() => setPanelOpen((open) => !open)}
-              onCreate={createNote}
-              onSave={saveNote}
-              onTrash={trashNote}
-              onRestore={restoreNote}
-              onPermanentDelete={permanentDeleteNote}
-              onMove={moveNote}
-              onExport={exportNote}
-              onCreateGmailDraft={createGmailDraft}
-            />
-            {activeNote && panelOpen ? (
-              <>
-                <ResizeHandle
-                  side="right"
-                  ariaLabel="Resize details panel"
-                  style={{ right: panelWidth }}
-                  onResize={resizePanel}
-                />
-                <ContextPanel
-                  note={activeNote}
-                  notes={snapshot.notes}
-                  linkedNotes={linkedNotes}
-                  linkSuggestions={linkSuggestions}
-                  onLinkNote={linkNote}
-                  onOpenNote={openNote}
-                  onLinkSuggestion={linkSuggestedNote}
-                  onExtractionStatusChange={updateNoteExtractionStatus}
-                  onCreateNoteFromContent={createNoteFromContent}
-                  onRenameSpeaker={(oldName, newName) => void renameSpeaker(oldName, newName)}
-                  onRenameLink={renameNoteLink}
-                  onUnlink={unlinkNotes}
-                />
-              </>
+                  ) : null}
+                </div>
+              </div>
             ) : null}
           </div>
-        )}
-      </section>
-      <ResizeHandle
-        side="left"
-        ariaLabel="Resize sidebar"
-        style={{ left: sidebarWidth }}
-        onResize={resizeSidebar}
-      />
+
+          <div className="notes-pane">
+            <TreeSection
+              count={inboxNotes.length}
+              draggedNoteId={draggedNoteId}
+              dropTarget={dropTarget}
+              folderId={null}
+              icon={<Inbox size={16} />}
+              isOpen={isSectionOpen("inbox")}
+              onToggle={() => toggleSection("inbox")}
+              onDropTargetChange={updateDropTarget}
+              title="Inbox"
+              droppable
+              onDropNote={(id) => void moveNoteToFolder(id, null)}
+            >
+              {renderNoteRows(inboxNotes, null)}
+            </TreeSection>
+
+            {folderGroups.map(({ folder, notes }) => (
+              <TreeSection
+                key={folder.id}
+                count={notes.length}
+                draggedNoteId={draggedNoteId}
+                dropTarget={dropTarget}
+                folderId={folder.id}
+                icon={
+                  isSectionOpen(folder.id) ? (
+                    <FolderOpen size={16} />
+                  ) : (
+                    <Folder size={16} />
+                  )
+                }
+                isOpen={isSectionOpen(folder.id)}
+                onToggle={() => toggleSection(folder.id)}
+                onDropTargetChange={updateDropTarget}
+                title={folder.name}
+                droppable
+                onDropNote={(id) => void moveNoteToFolder(id, folder.id)}
+                renamable
+                startRenaming={renamingFolderId === folder.id}
+                onRename={(name) => void renameFolder(folder.id, name)}
+              >
+                {renderNoteRows(notes, folder.id, { indent: true })}
+              </TreeSection>
+            ))}
+
+            {trashedNotes.length > 0 ? (
+              <TreeSection
+                count={trashedNotes.length}
+                icon={<Trash2 size={16} />}
+                isOpen={isSectionOpen("trash")}
+                onToggle={() => toggleSection("trash")}
+                title="Trash"
+              >
+                {trashedNotes.map((note) => (
+                  <NoteRow
+                    key={note.id}
+                    activeId={activeNote?.id ?? null}
+                    muted
+                    note={note}
+                    onOpen={openNote}
+                    onContextMenu={(target, x, y) =>
+                      setMenuTarget({ note: target, x, y })
+                    }
+                    selectable={false}
+                    action={
+                      <div className="row-actions">
+                        <button
+                          className="ghost-icon"
+                          type="button"
+                          onClick={() => void restoreNote(note.id)}
+                          title="Restore to Inbox"
+                        >
+                          <ArchiveRestore size={15} />
+                        </button>
+                        <button
+                          className="ghost-icon danger"
+                          type="button"
+                          onClick={() => void permanentDeleteNote(note.id)}
+                          title="Delete forever"
+                        >
+                          <X size={15} />
+                        </button>
+                      </div>
+                    }
+                  />
+                ))}
+              </TreeSection>
+            ) : null}
+          </div>
+
+          <div className="sidebar-footer">
+            <button
+              className={
+                view === "settings" ? "icon-button active" : "icon-button"
+              }
+              type="button"
+              onClick={() => setView("settings")}
+              title="Settings"
+            >
+              <Settings size={18} />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={cycleTheme}
+              title={`Theme: ${theme}`}
+            >
+              <ThemeIcon size={18} />
+            </button>
+          </div>
+        </aside>
+
+        <section className="workspace">
+          {view === "settings" ? (
+            <SettingsView onClose={() => setView("notes")} />
+          ) : (
+            <div
+              className={
+                activeNote && panelOpen
+                  ? "notes-workspace with-panel"
+                  : "notes-workspace"
+              }
+              style={
+                activeNote && panelOpen
+                  ? { gridTemplateColumns: `minmax(0, 1fr) ${panelWidth}px` }
+                  : undefined
+              }
+            >
+              <NoteEditor
+                key={`${activeNote?.id ?? "none"}:${editorReloadKey}`}
+                note={activeNote}
+                folders={snapshot.folders}
+                panelOpen={panelOpen}
+                externalRevision={meetingContentRevision}
+                externalNoteId={meetingNoteId}
+                onTogglePanel={() => setPanelOpen((open) => !open)}
+                onCreate={createNote}
+                onSave={saveNote}
+                onTrash={trashNote}
+                onRestore={restoreNote}
+                onPermanentDelete={permanentDeleteNote}
+                onMove={moveNote}
+                onExport={exportNote}
+                onCreateGmailDraft={createGmailDraft}
+              />
+              {activeNote && panelOpen ? (
+                <>
+                  <ResizeHandle
+                    side="right"
+                    ariaLabel="Resize details panel"
+                    style={{ right: panelWidth }}
+                    onResize={resizePanel}
+                  />
+                  <ContextPanel
+                    note={activeNote}
+                    notes={snapshot.notes}
+                    linkedNotes={linkedNotes}
+                    linkSuggestions={linkSuggestions}
+                    onLinkNote={linkNote}
+                    onOpenNote={openNote}
+                    onLinkSuggestion={linkSuggestedNote}
+                    onExtractionStatusChange={updateNoteExtractionStatus}
+                    onCreateNoteFromContent={createNoteFromContent}
+                    onRenameSpeaker={(oldName, newName) =>
+                      void renameSpeaker(oldName, newName)
+                    }
+                    onRenameLink={renameNoteLink}
+                    onUnlink={unlinkNotes}
+                  />
+                </>
+              ) : null}
+            </div>
+          )}
+        </section>
+        <ResizeHandle
+          side="left"
+          ariaLabel="Resize sidebar"
+          style={{ left: sidebarWidth }}
+          onResize={resizeSidebar}
+        />
       </div>
 
       {paletteOpen ? (
@@ -2092,7 +2212,11 @@ function MeetingCapsule({
       <div className="meeting-capsule-status">
         <span className="meeting-dot" aria-hidden="true" />
         <div>
-          <strong>{isActive || isPaused || isBusy ? noteTitle || "Meeting" : "Meeting mode"}</strong>
+          <strong>
+            {isActive || isPaused || isBusy
+              ? noteTitle || "Meeting"
+              : "Meeting mode"}
+          </strong>
           <small>
             {isBusy ? state : detail}
             {visualSourceName ? ` · ${visualSourceName}` : ""}
@@ -2125,12 +2249,22 @@ function MeetingCapsule({
             Start
           </button>
         ) : isPaused ? (
-          <button type="button" onClick={onResume} disabled={isBusy} title="Resume meeting mode">
+          <button
+            type="button"
+            onClick={onResume}
+            disabled={isBusy}
+            title="Resume meeting mode"
+          >
             <Play size={15} />
             Resume
           </button>
         ) : (
-          <button type="button" onClick={onPause} disabled={!isActive} title="Pause meeting mode">
+          <button
+            type="button"
+            onClick={onPause}
+            disabled={!isActive}
+            title="Pause meeting mode"
+          >
             <Pause size={15} />
             Pause
           </button>
@@ -2166,7 +2300,11 @@ function MeetingSourcePicker({
   onTranscriptOnly,
 }: MeetingSourcePickerProps) {
   return (
-    <div className="meeting-source-backdrop" role="presentation" onMouseDown={onCancel}>
+    <div
+      className="meeting-source-backdrop"
+      role="presentation"
+      onMouseDown={onCancel}
+    >
       <section
         className="meeting-source-dialog"
         role="dialog"
@@ -2179,25 +2317,40 @@ function MeetingSourcePicker({
             <h2 id="meeting-source-title">Meeting capture</h2>
             <p>Choose what should be captured as periodic visual snapshots.</p>
           </div>
-          <button type="button" className="icon-button" onClick={onCancel} title="Close">
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onCancel}
+            title="Close"
+          >
             <X size={18} />
           </button>
         </header>
 
         <div className="meeting-source-list">
           {sources.length === 0 ? (
-            <p className="meeting-source-empty">No visual sources are available right now.</p>
+            <p className="meeting-source-empty">
+              No visual sources are available right now.
+            </p>
           ) : (
             sources.map((source) => (
-              <button type="button" key={source.id} onClick={() => onSelect(source)}>
+              <button
+                type="button"
+                key={source.id}
+                onClick={() => onSelect(source)}
+              >
                 <span className="meeting-source-icon">
                   <Monitor size={18} />
                 </span>
                 <span>
                   <strong>{source.name}</strong>
                   <small>
-                    {source.kind === "display" ? "Display" : source.app_name ?? "Window"}
-                    {source.width && source.height ? ` · ${source.width}x${source.height}` : ""}
+                    {source.kind === "display"
+                      ? "Display"
+                      : (source.app_name ?? "Window")}
+                    {source.width && source.height
+                      ? ` · ${source.width}x${source.height}`
+                      : ""}
                   </small>
                 </span>
               </button>
@@ -2228,7 +2381,13 @@ type CommandPaletteProps = {
 };
 
 type PaletteItem =
-  | { kind: "command"; id: string; label: string; icon: React.ReactNode; run: () => void }
+  | {
+      kind: "command";
+      id: string;
+      label: string;
+      icon: React.ReactNode;
+      run: () => void;
+    }
   | { kind: "note"; id: string; label: string; sub: string };
 
 function CommandPalette({
@@ -2252,16 +2411,36 @@ function CommandPalette({
 
   const commands = useMemo<PaletteItem[]>(
     () => [
-      { kind: "command", id: "new-note", label: "New note", icon: <Plus size={16} />, run: onCreateNote },
-      { kind: "command", id: "settings", label: "Open settings", icon: <Settings size={16} />, run: onOpenSettings },
-      { kind: "command", id: "theme", label: "Toggle theme", icon: <Sun size={16} />, run: onToggleTheme },
+      {
+        kind: "command",
+        id: "new-note",
+        label: "New note",
+        icon: <Plus size={16} />,
+        run: onCreateNote,
+      },
+      {
+        kind: "command",
+        id: "settings",
+        label: "Open settings",
+        icon: <Settings size={16} />,
+        run: onOpenSettings,
+      },
+      {
+        kind: "command",
+        id: "theme",
+        label: "Toggle theme",
+        icon: <Sun size={16} />,
+        run: onToggleTheme,
+      },
     ],
     [onCreateNote, onOpenSettings, onToggleTheme],
   );
 
   const items = useMemo<PaletteItem[]>(() => {
     const matchedCommands = cleanQuery
-      ? commands.filter((command) => command.label.toLowerCase().includes(cleanQuery))
+      ? commands.filter((command) =>
+          command.label.toLowerCase().includes(cleanQuery),
+        )
       : commands;
     const matchedNotes = (
       cleanQuery
@@ -2300,7 +2479,9 @@ function CommandPalette({
   function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveIndex((index) => Math.min(index + 1, Math.max(items.length - 1, 0)));
+      setActiveIndex((index) =>
+        Math.min(index + 1, Math.max(items.length - 1, 0)),
+      );
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setActiveIndex((index) => Math.max(index - 1, 0));
@@ -2344,7 +2525,9 @@ function CommandPalette({
               <button
                 key={`${item.kind}:${item.id}`}
                 ref={index === activeIndex ? activeRef : null}
-                className={index === activeIndex ? "palette-item active" : "palette-item"}
+                className={
+                  index === activeIndex ? "palette-item active" : "palette-item"
+                }
                 type="button"
                 onMouseMove={() => setActiveIndex(index)}
                 onClick={() => activate(item)}
@@ -2378,8 +2561,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
     preferred_model: null,
   });
   const [status, setStatus] = useState<LlamaStatus | null>(null);
-  const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(null);
-  const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(null);
+  const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(
+    null,
+  );
+  const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(
+    null,
+  );
   const [systemAudioStatus, setSystemAudioStatus] =
     useState<SystemAudioPermissionStatus | null>(null);
   const [systemCaptureStatus, setSystemCaptureStatus] =
@@ -2397,7 +2584,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
     access_token_expires_at: null,
   });
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
-  const [transcription, setTranscription] = useState<SttTranscription | null>(null);
+  const [transcription, setTranscription] = useState<SttTranscription | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [isChecking, setIsChecking] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
@@ -2428,7 +2617,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const refreshAudioStatus = useCallback(async () => {
-    const nextAudioStatus = await invoke<AudioCaptureStatus>("get_audio_capture_status");
+    const nextAudioStatus = await invoke<AudioCaptureStatus>(
+      "get_audio_capture_status",
+    );
     setAudioStatus(nextAudioStatus);
     return nextAudioStatus;
   }, []);
@@ -2513,7 +2704,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
     setIsChecking(true);
     setSettingsError(null);
     try {
-      const savedConfig = await invoke<LlamaConfig>("save_llama_config", { config });
+      const savedConfig = await invoke<LlamaConfig>("save_llama_config", {
+        config,
+      });
       setConfig(savedConfig);
       const nextStatus = await invoke<LlamaStatus>("get_llama_status");
       setStatus(nextStatus);
@@ -2558,7 +2751,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
     setIsAudioBusy(true);
     setSettingsError(null);
     try {
-      const nextAudioStatus = await invoke<AudioCaptureStatus>("start_audio_capture");
+      const nextAudioStatus = await invoke<AudioCaptureStatus>(
+        "start_audio_capture",
+      );
       setAudioStatus(nextAudioStatus);
     } catch (audioError) {
       setSettingsError(String(audioError));
@@ -2571,7 +2766,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
     setIsAudioBusy(true);
     setSettingsError(null);
     try {
-      const nextAudioStatus = await invoke<AudioCaptureStatus>("stop_audio_capture");
+      const nextAudioStatus =
+        await invoke<AudioCaptureStatus>("stop_audio_capture");
       setAudioStatus(nextAudioStatus);
     } catch (audioError) {
       setSettingsError(String(audioError));
@@ -2686,7 +2882,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
         config: gmailConfig,
       });
       setGmailConfig(savedConfig);
-      const { signIn } = await import("@choochmeque/tauri-plugin-google-auth-api");
+      const { signIn } =
+        await import("@choochmeque/tauri-plugin-google-auth-api");
       const tokens = await signIn({
         clientId: savedConfig.client_id,
         clientSecret: savedConfig.client_secret,
@@ -2719,7 +2916,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
     setSettingsError(null);
     try {
       if (gmailConfig.has_access_token) {
-        const { signOut } = await import("@choochmeque/tauri-plugin-google-auth-api");
+        const { signOut } =
+          await import("@choochmeque/tauri-plugin-google-auth-api");
         await signOut().catch(() => undefined);
       }
       const nextConfig = await invoke<GmailConfig>("clear_gmail_auth");
@@ -2738,7 +2936,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
       : status?.state === "loading"
         ? RefreshCw
         : CircleAlert;
-  const SttStatusIcon = sttStatus?.state === "ready" ? CheckCircle2 : CircleAlert;
+  const SttStatusIcon =
+    sttStatus?.state === "ready" ? CheckCircle2 : CircleAlert;
   const audioPreviewUrl = audioStatus?.last_preview
     ? convertFileSrc(audioStatus.last_preview.path)
     : null;
@@ -2751,7 +2950,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
       <header className="settings-header" data-tauri-drag-region>
         <div>
           <p className="eyebrow">Settings</p>
-          <h2>Local AI</h2>
+          <h2>Settings</h2>
         </div>
         <div className="settings-header-actions">
           <button
@@ -2787,7 +2986,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
           <small>{audioStatus?.is_recording ? "Recording" : "Idle"}</small>
         </div>
 
-        <div className={audioStatus?.is_recording ? "audio-capture-card recording" : "audio-capture-card"}>
+        <div
+          className={
+            audioStatus?.is_recording
+              ? "audio-capture-card recording"
+              : "audio-capture-card"
+          }
+        >
           <div className="audio-capture-meter" aria-hidden="true">
             <Mic size={19} />
           </div>
@@ -2826,7 +3031,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <div>
               <Play size={15} />
               <span>Last capture</span>
-              <small>{formatDuration(audioStatus.last_preview.duration_ms)}</small>
+              <small>
+                {formatDuration(audioStatus.last_preview.duration_ms)}
+              </small>
             </div>
             <audio controls src={audioPreviewUrl} />
           </div>
@@ -2841,10 +3048,10 @@ function SettingsView({ onClose }: SettingsViewProps) {
             {systemCaptureStatus?.is_recording
               ? "Recording"
               : systemAudioStatus
-              ? systemAudioStatus.granted
-                ? "Available"
-                : "Permission needed"
-              : "ScreenCaptureKit"}
+                ? systemAudioStatus.granted
+                  ? "Available"
+                  : "Permission needed"
+                : "ScreenCaptureKit"}
           </small>
         </div>
 
@@ -2874,8 +3081,8 @@ function SettingsView({ onClose }: SettingsViewProps) {
 
         {systemAudioStatus && !systemAudioStatus.granted ? (
           <p className="settings-help">
-            Enable Smooth in System Settings, Privacy & Security, Screen & System
-            Audio Recording, then restart the app.
+            Enable Smooth in System Settings, Privacy & Security, Screen &
+            System Audio Recording, then restart the app.
           </p>
         ) : null}
 
@@ -2925,7 +3132,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <button
               type="button"
               onClick={() => void stopSystemAudioCapture()}
-              disabled={isSystemCaptureBusy || !systemCaptureStatus?.is_recording}
+              disabled={
+                isSystemCaptureBusy || !systemCaptureStatus?.is_recording
+              }
             >
               <Square size={14} />
               Stop
@@ -2942,7 +3151,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <div>
               <Play size={15} />
               <span>Last system capture</span>
-              <small>{formatDuration(systemCaptureStatus.last_preview.duration_ms)}</small>
+              <small>
+                {formatDuration(systemCaptureStatus.last_preview.duration_ms)}
+              </small>
             </div>
             <audio controls src={systemAudioPreviewUrl} />
           </div>
@@ -3013,11 +3224,17 @@ function SettingsView({ onClose }: SettingsViewProps) {
           </label>
         </div>
 
-        <div className={`connection-status ${sttStatus?.state === "ready" ? "ready" : "offline"}`}>
+        <div
+          className={`connection-status ${sttStatus?.state === "ready" ? "ready" : "offline"}`}
+        >
           <SttStatusIcon size={19} />
           <div>
-            <strong>{sttStatus?.state?.replace("_", " ") ?? "not configured"}</strong>
-            <span>{sttStatus?.message ?? "Choose a Whisper ggml model file"}</span>
+            <strong>
+              {sttStatus?.state?.replace("_", " ") ?? "not configured"}
+            </strong>
+            <span>
+              {sttStatus?.message ?? "Choose a Whisper ggml model file"}
+            </span>
           </div>
           <small>{sttStatus?.threads ?? sttConfig.threads} threads</small>
         </div>
@@ -3043,8 +3260,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
               </small>
             </div>
             <small className="transcript-diagnostics">
-              language {transcription.language ?? `auto:${transcription.language_id}`} · rms{" "}
-              {formatDb(transcription.audio.rms_db)} · peak{" "}
+              language{" "}
+              {transcription.language ?? `auto:${transcription.language_id}`} ·
+              rms {formatDb(transcription.audio.rms_db)} · peak{" "}
               {formatDb(transcription.audio.peak_db)}
             </small>
             <p>{transcription.text || "No speech detected"}</p>
@@ -3056,7 +3274,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
         <div className="section-heading">
           <Mail size={18} />
           <span>Gmail drafts</span>
-          <small>{gmailConfig.has_access_token ? "Connected" : "Not connected"}</small>
+          <small>
+            {gmailConfig.has_access_token ? "Connected" : "Not connected"}
+          </small>
         </div>
 
         <label className="settings-field">
@@ -3099,7 +3319,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <CircleAlert size={19} />
           )}
           <div>
-            <strong>{gmailConfig.has_access_token ? "connected" : "not connected"}</strong>
+            <strong>
+              {gmailConfig.has_access_token ? "connected" : "not connected"}
+            </strong>
             <span>
               Scope: gmail.drafts.create
               {gmailConfig.has_refresh_token ? " · refresh enabled" : ""}
@@ -3107,25 +3329,40 @@ function SettingsView({ onClose }: SettingsViewProps) {
           </div>
           {gmailConfig.access_token_expires_at ? (
             <small>
-              {new Date(gmailConfig.access_token_expires_at * 1000).toLocaleTimeString()}
+              {new Date(
+                gmailConfig.access_token_expires_at * 1000,
+              ).toLocaleTimeString()}
             </small>
           ) : null}
         </div>
 
         <p className="settings-help">
           Use a Google OAuth Web client with an authorized redirect URI of
-          http://localhost. Draft creation requires only the Gmail drafts create scope.
+          http://localhost. Draft creation requires only the Gmail drafts create
+          scope.
         </p>
 
         <div className="settings-actions">
-          <button type="button" onClick={() => void saveGmailConfig()} disabled={isGmailBusy}>
+          <button
+            type="button"
+            onClick={() => void saveGmailConfig()}
+            disabled={isGmailBusy}
+          >
             Save Gmail Settings
           </button>
-          <button type="button" onClick={() => void connectGmail()} disabled={isGmailBusy}>
+          <button
+            type="button"
+            onClick={() => void connectGmail()}
+            disabled={isGmailBusy}
+          >
             {gmailConfig.has_access_token ? "Reconnect Gmail" : "Connect Gmail"}
           </button>
           {gmailConfig.has_access_token || gmailConfig.has_refresh_token ? (
-            <button type="button" onClick={() => void disconnectGmail()} disabled={isGmailBusy}>
+            <button
+              type="button"
+              onClick={() => void disconnectGmail()}
+              disabled={isGmailBusy}
+            >
               Disconnect
             </button>
           ) : null}
@@ -3162,11 +3399,15 @@ function SettingsView({ onClose }: SettingsViewProps) {
           </div>
         </label>
 
-
         <div className={`connection-status ${status?.state ?? "offline"}`}>
-          <StatusIcon className={status?.state === "loading" ? "spin" : ""} size={19} />
+          <StatusIcon
+            className={status?.state === "loading" ? "spin" : ""}
+            size={19}
+          />
           <div>
-            <strong>{status?.state ?? (isLoading ? "checking" : "offline")}</strong>
+            <strong>
+              {status?.state ?? (isLoading ? "checking" : "offline")}
+            </strong>
             <span>{status?.message ?? "Checking llama.cpp connection"}</span>
           </div>
           {status?.latency_ms !== null && status?.latency_ms !== undefined ? (
@@ -3211,7 +3452,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
             </div>
             <div className="model-meta">
               {formatLargeValue(model.parameter_count, " params") ? (
-                <span>{formatLargeValue(model.parameter_count, " params")}</span>
+                <span>
+                  {formatLargeValue(model.parameter_count, " params")}
+                </span>
               ) : null}
               {model.context_size ? (
                 <span>{model.context_size.toLocaleString()} context</span>
@@ -3355,7 +3598,10 @@ function TreeSection({
     }
 
     const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+    if (
+      nextTarget instanceof Node &&
+      event.currentTarget.contains(nextTarget)
+    ) {
       return;
     }
 
@@ -3490,7 +3736,10 @@ function NoteRow({
         draggable
           ? (event) => {
               onDragStart?.(note.id);
-              event.dataTransfer.setData("application/x-smooth-note-id", note.id);
+              event.dataTransfer.setData(
+                "application/x-smooth-note-id",
+                note.id,
+              );
               event.dataTransfer.setData("text/note-id", note.id);
               event.dataTransfer.setData("text/plain", note.id);
               event.dataTransfer.effectAllowed = "move";
@@ -3524,7 +3773,11 @@ function NoteRow({
       ) : (
         <FileText className="row-file-icon" size={15} />
       )}
-      <button className="note-main" type="button" onClick={() => void onOpen(note.id)}>
+      <button
+        className="note-main"
+        type="button"
+        onClick={() => void onOpen(note.id)}
+      >
         <span>{note.title}</span>
         <small>{note.excerpt || "No content"}</small>
       </button>
@@ -3535,7 +3788,11 @@ function NoteRow({
 
 function DropPlaceholder() {
   return (
-    <div className="drop-placeholder" data-drop-placeholder="true" aria-hidden="true">
+    <div
+      className="drop-placeholder"
+      data-drop-placeholder="true"
+      aria-hidden="true"
+    >
       <span />
     </div>
   );
@@ -3706,7 +3963,11 @@ function NoteContextMenu({
             Restore to Inbox
           </button>
           <div className="context-sep" />
-          <button type="button" className="danger" onClick={run(() => onDelete(note.id))}>
+          <button
+            type="button"
+            className="danger"
+            onClick={run(() => onDelete(note.id))}
+          >
             <X size={15} />
             Delete forever
           </button>
@@ -3747,7 +4008,11 @@ function NoteContextMenu({
             </div>
           </div>
           <div className="context-sep" />
-          <button type="button" className="danger" onClick={run(() => onTrash(note.id))}>
+          <button
+            type="button"
+            className="danger"
+            onClick={run(() => onTrash(note.id))}
+          >
             <Trash2 size={15} />
             Move to trash
           </button>
@@ -3772,9 +4037,12 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const refreshExtraction = useCallback(async () => {
-    const nextExtraction = await invoke<NoteExtractionView>("get_note_extraction", {
-      id: note.id,
-    });
+    const nextExtraction = await invoke<NoteExtractionView>(
+      "get_note_extraction",
+      {
+        id: note.id,
+      },
+    );
     setExtraction(nextExtraction);
     onStatusChange(note.id, nextExtraction.status);
     return nextExtraction;
@@ -3826,7 +4094,9 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
           <span>Entities</span>
           <small className="entity-status disabled">disabled</small>
         </div>
-        <p className="entity-empty">Entity extraction is off for meeting notes.</p>
+        <p className="entity-empty">
+          Entity extraction is off for meeting notes.
+        </p>
       </section>
     );
   }
@@ -3838,25 +4108,40 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
   const visibleEntities = isExpanded
     ? extraction.entities
     : extraction.entities.slice(0, ENTITY_PREVIEW_LIMIT);
-  const hiddenEntityCount = Math.max(0, extraction.entities.length - ENTITY_PREVIEW_LIMIT);
+  const hiddenEntityCount = Math.max(
+    0,
+    extraction.entities.length - ENTITY_PREVIEW_LIMIT,
+  );
 
   return (
     <section className="entity-strip">
       <div className="entity-strip-header">
         <Sparkles size={14} />
         <span>Entities</span>
-        <small className={`entity-status ${extraction.status}`}>{statusLabel}</small>
+        <small className={`entity-status ${extraction.status}`}>
+          {statusLabel}
+        </small>
         {canQueue ? (
-          <button type="button" onClick={() => void queueExtraction()} disabled={isQueuing}>
+          <button
+            type="button"
+            onClick={() => void queueExtraction()}
+            disabled={isQueuing}
+          >
             {extraction.status === "failed" ? "Retry" : "Extract"}
           </button>
         ) : null}
       </div>
-      {extraction.error ? <p className="entity-error">{extraction.error}</p> : null}
+      {extraction.error ? (
+        <p className="entity-error">{extraction.error}</p>
+      ) : null}
       {extraction.entities.length > 0 ? (
         <div className="entity-chips">
           {visibleEntities.map((entity) => (
-            <span className="entity-chip" key={entity.id} title={entity.entity_type}>
+            <span
+              className="entity-chip"
+              key={entity.id}
+              title={entity.entity_type}
+            >
               <small>{entity.entity_type}</small>
               {entity.name}
               {entity.mention_count > 1 ? <b>{entity.mention_count}</b> : null}
@@ -4129,9 +4414,12 @@ function NoteEditor({
     }
 
     const chunkPromise = (async () => {
-      const preview = await invoke<AudioCapturePreview | null>("flush_audio_capture_chunk", {
-        minDurationMs,
-      });
+      const preview = await invoke<AudioCapturePreview | null>(
+        "flush_audio_capture_chunk",
+        {
+          minDurationMs,
+        },
+      );
       if (!preview) {
         return;
       }
@@ -4219,7 +4507,11 @@ function NoteEditor({
           </div>
           <h2>Nothing open</h2>
           <p>Pick a note from the sidebar, or start a fresh one.</p>
-          <button className="empty-cta" type="button" onClick={() => void onCreate()}>
+          <button
+            className="empty-cta"
+            type="button"
+            onClick={() => void onCreate()}
+          >
             <Plus size={16} />
             New note
           </button>
@@ -4330,10 +4622,16 @@ function NoteEditor({
         />
       </header>
 
-      <div className={note.deleted_at ? "editor-toolbar disabled" : "editor-toolbar"}>
+      <div
+        className={
+          note.deleted_at ? "editor-toolbar disabled" : "editor-toolbar"
+        }
+      >
         <button
           className={dictationState === "recording" ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || dictationState === "transcribing"}
+          disabled={
+            Boolean(note.deleted_at) || dictationState === "transcribing"
+          }
           type="button"
           onClick={() => void toggleDictation()}
           title={
@@ -4395,7 +4693,9 @@ function NoteEditor({
           className={editor?.isActive("heading", { level: 2 }) ? "active" : ""}
           disabled={Boolean(note.deleted_at)}
           type="button"
-          onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+          onClick={() =>
+            editor?.chain().focus().toggleHeading({ level: 2 }).run()
+          }
           title="Heading"
         >
           <Heading2 size={16} />
@@ -4441,7 +4741,11 @@ function EmailDraftDialog({
   onSubmit,
 }: EmailDraftDialogProps) {
   return (
-    <div className="email-draft-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      className="email-draft-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
       <section
         className="email-draft-dialog"
         role="dialog"
@@ -4454,7 +4758,12 @@ function EmailDraftDialog({
             <h2 id="email-draft-title">Gmail draft</h2>
             <p>Create a draft email from this note.</p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} title="Close">
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            title="Close"
+          >
             <X size={18} />
           </button>
         </header>
@@ -4463,7 +4772,9 @@ function EmailDraftDialog({
           <span>To</span>
           <input
             value={draft.to ?? ""}
-            onChange={(event) => onChange({ ...draft, to: event.currentTarget.value })}
+            onChange={(event) =>
+              onChange({ ...draft, to: event.currentTarget.value })
+            }
             placeholder="Optional recipient"
             autoFocus
           />
@@ -4472,7 +4783,9 @@ function EmailDraftDialog({
           <span>Subject</span>
           <input
             value={draft.subject}
-            onChange={(event) => onChange({ ...draft, subject: event.currentTarget.value })}
+            onChange={(event) =>
+              onChange({ ...draft, subject: event.currentTarget.value })
+            }
             placeholder="Email subject"
           />
         </label>
@@ -4480,7 +4793,9 @@ function EmailDraftDialog({
           <span>Body</span>
           <textarea
             value={draft.body}
-            onChange={(event) => onChange({ ...draft, body: event.currentTarget.value })}
+            onChange={(event) =>
+              onChange({ ...draft, body: event.currentTarget.value })
+            }
             rows={12}
           />
         </label>
@@ -4583,7 +4898,11 @@ type ContextPanelProps = {
   onExtractionStatusChange: (noteId: string, status: string) => void;
   onCreateNoteFromContent: (content: string) => void;
   onRenameSpeaker: (oldName: string, newName: string) => void;
-  onRenameLink: (sourceId: string, targetId: string, label: string | null) => Promise<void>;
+  onRenameLink: (
+    sourceId: string,
+    targetId: string,
+    label: string | null,
+  ) => Promise<void>;
   onUnlink: (sourceId: string, targetId: string) => Promise<void>;
 };
 
@@ -4616,7 +4935,11 @@ function ContextPanel({
     const query = linkSearch.trim().toLowerCase();
     return notes
       .filter((candidate) => {
-        if (candidate.deleted_at || candidate.id === note.id || linkedIds.has(candidate.id)) {
+        if (
+          candidate.deleted_at ||
+          candidate.id === note.id ||
+          linkedIds.has(candidate.id)
+        ) {
           return false;
         }
 
@@ -4752,7 +5075,9 @@ function ContextPanel({
                       onClick={() => void addManualLink(candidate.id)}
                     >
                       <span>{candidate.title || "Untitled"}</span>
-                      <small>{candidate.excerpt || formatTime(candidate.updated_at)}</small>
+                      <small>
+                        {candidate.excerpt || formatTime(candidate.updated_at)}
+                      </small>
                     </button>
                   ))
                 )}
@@ -4775,7 +5100,9 @@ function ContextPanel({
                     >
                       <input
                         value={linkLabelDraft}
-                        onChange={(event) => setLinkLabelDraft(event.target.value)}
+                        onChange={(event) =>
+                          setLinkLabelDraft(event.target.value)
+                        }
                         placeholder="Link name"
                         autoFocus
                       />
@@ -4794,7 +5121,10 @@ function ContextPanel({
                       </button>
                     </form>
                   ) : (
-                    <button type="button" onClick={() => void onOpenNote(linked.note.id)}>
+                    <button
+                      type="button"
+                      onClick={() => void onOpenNote(linked.note.id)}
+                    >
                       <span>{linked.note.title || "Untitled"}</span>
                       <small>
                         {linked.link.label
@@ -4846,7 +5176,9 @@ function ContextPanel({
                     <span>{suggestion.note.title || "Untitled"}</span>
                     <small>
                       {suggestion.shared_entity_count} shared{" "}
-                      {suggestion.shared_entity_count === 1 ? "entity" : "entities"}
+                      {suggestion.shared_entity_count === 1
+                        ? "entity"
+                        : "entities"}
                     </small>
                     <span className="suggested-entities">
                       {suggestion.shared_entities.map((entity) => (
