@@ -3036,7 +3036,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
     try {
       const result = await invoke<AgentRunResult>("agent_run", {
         prompt: agentPrompt,
-        maxSteps: 3,
+        maxSteps: 5,
       });
       setAgentRunResult(result);
     } catch (agentError) {
