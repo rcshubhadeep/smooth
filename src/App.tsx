@@ -4217,6 +4217,7 @@ function NoteEditor({
 }: NoteEditorProps) {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
+  const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [editorRevision, setEditorRevision] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
@@ -4236,6 +4237,15 @@ function NoteEditor({
       }),
     [],
   );
+
+  useEffect(() => {
+    if (!folderMenuOpen) {
+      return;
+    }
+    const close = () => setFolderMenuOpen(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [folderMenuOpen]);
 
   const editor = useEditor({
     extensions: [
@@ -4549,22 +4559,51 @@ function NoteEditor({
             </>
           ) : (
             <>
-              <select
-                value={draftFolderId}
-                onChange={(event) => {
-                  const folderId = event.currentTarget.value;
-                  setDraftFolderId(folderId);
-                  void onMove(note.id, folderId || null);
-                }}
-                aria-label="Move note to folder"
-              >
-                <option value="">Inbox</option>
-                {folders.map((folder) => (
-                  <option key={folder.id} value={folder.id}>
-                    {folder.name}
-                  </option>
-                ))}
-              </select>
+              <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className="folder-select-trigger"
+                  onClick={() => setFolderMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={folderMenuOpen}
+                  title="Move to folder"
+                >
+                  {draftFolderId ? <Folder size={15} /> : <Inbox size={15} />}
+                  <span>
+                    {folders.find((folder) => folder.id === draftFolderId)?.name ?? "Inbox"}
+                  </span>
+                  <ChevronDown className="folder-select-caret" size={14} />
+                </button>
+                {folderMenuOpen ? (
+                  <div className="pop-menu" role="menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFolderMenuOpen(false);
+                        setDraftFolderId("");
+                        void onMove(note.id, null);
+                      }}
+                    >
+                      <Inbox size={15} />
+                      Inbox
+                    </button>
+                    {folders.map((folder) => (
+                      <button
+                        key={folder.id}
+                        type="button"
+                        onClick={() => {
+                          setFolderMenuOpen(false);
+                          setDraftFolderId(folder.id);
+                          void onMove(note.id, folder.id);
+                        }}
+                      >
+                        <Folder size={15} />
+                        {folder.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <NoteInfoPopover note={note} />
               {saveState !== "idle" ? (
                 <span className={`save-indicator ${saveState}`}>
