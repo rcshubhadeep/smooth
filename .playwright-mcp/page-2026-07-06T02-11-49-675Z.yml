@@ -1,0 +1,201 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: S
+      - generic [ref=e7]: Smooth
+    - button "Search… ⌘K" [ref=e8] [cursor=pointer]:
+      - img [ref=e9]
+      - generic [ref=e12]: Search…
+      - generic [ref=e13]: ⌘K
+  - generic [ref=e14]:
+    - complementary [ref=e15]:
+      - generic [ref=e16]:
+        - heading "Knowledge Bank" [level=1] [ref=e17]
+        - button "New note (⌘N)" [ref=e18] [cursor=pointer]:
+          - img [ref=e19]
+      - generic [ref=e20]:
+        - generic [ref=e21]:
+          - img [ref=e22]
+          - textbox [ref=e25]:
+            - /placeholder: Search notes
+        - generic [ref=e26]:
+          - button "New folder" [ref=e27] [cursor=pointer]:
+            - img [ref=e28]
+            - text: New folder
+          - generic [ref=e30]:
+            - img [ref=e31]
+            - combobox "Sort notes" [ref=e34] [cursor=pointer]:
+              - option "Updated newest" [selected]
+              - option "Updated oldest"
+              - option "Created newest"
+              - option "Created oldest"
+      - button "Inbox 0" [ref=e37] [cursor=pointer]:
+        - img [ref=e38]
+        - img [ref=e40]
+        - generic [ref=e43]: Inbox
+        - generic [ref=e44]: "0"
+      - generic [ref=e45]:
+        - button "Settings" [ref=e46] [cursor=pointer]:
+          - img [ref=e47]
+        - 'button "Theme: system" [ref=e50] [cursor=pointer]':
+          - img [ref=e51]
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e89]:
+          - paragraph [ref=e90]: Settings
+          - heading "Local AI" [level=2] [ref=e91]
+        - generic [ref=e92]:
+          - button "Back to notes" [ref=e93] [cursor=pointer]:
+            - img [ref=e94]
+          - button "Refresh connection status" [ref=e96] [cursor=pointer]:
+            - img [ref=e97]
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - img [ref=e104]
+          - generic [ref=e107]: Audio capture
+          - generic [ref=e108]: Idle
+        - generic [ref=e109]:
+          - img [ref=e111]
+          - generic [ref=e114]:
+            - strong [ref=e115]: Default microphone
+            - generic [ref=e116]: Ready
+          - generic [ref=e117]:
+            - button "Start" [ref=e118] [cursor=pointer]:
+              - img [ref=e119]
+              - text: Start
+            - button "Stop" [disabled] [ref=e122]:
+              - img [ref=e123]
+              - text: Stop
+      - generic [ref=e125]:
+        - generic [ref=e126]:
+          - img [ref=e127]
+          - generic [ref=e129]: System audio
+          - generic [ref=e130]: ScreenCaptureKit
+        - generic [ref=e131]:
+          - img [ref=e132]
+          - generic [ref=e134]:
+            - strong [ref=e135]: not checked
+            - generic [ref=e136]: Check macOS Screen & System Audio Recording access before capture.
+          - generic [ref=e137]: 0 displays
+        - button "Check Permission" [ref=e139] [cursor=pointer]
+        - generic [ref=e140]:
+          - img [ref=e142]
+          - generic [ref=e144]:
+            - strong [ref=e145]: ScreenCaptureKit audio
+            - generic [ref=e146]: Ready after permission check
+          - generic [ref=e147]:
+            - button "Start" [disabled] [ref=e148]:
+              - img [ref=e149]
+              - text: Start
+            - button "Stop" [disabled] [ref=e151]:
+              - img [ref=e152]
+              - text: Stop
+      - generic [ref=e154]:
+        - generic [ref=e155]:
+          - img [ref=e156]
+          - generic [ref=e159]: Speech to text
+          - generic [ref=e160]: cpu
+        - generic [ref=e161]:
+          - generic [ref=e162]: Whisper model path
+          - generic [ref=e163]:
+            - textbox "Whisper model path Save" [active] [ref=e164]:
+              - /placeholder: Path to ggml-base.en.bin
+            - button "Save" [ref=e165] [cursor=pointer]
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - generic [ref=e168]: Language
+            - textbox "Language" [ref=e169]:
+              - /placeholder: en or auto
+              - text: en
+          - generic [ref=e170]:
+            - generic [ref=e171]: Threads
+            - spinbutton "Threads" [ref=e172]: "4"
+        - generic [ref=e173]:
+          - img [ref=e174]
+          - generic [ref=e176]:
+            - strong [ref=e177]: not configured
+            - generic [ref=e178]: Choose a Whisper ggml model file
+          - generic [ref=e179]: 4 threads
+        - button "Transcribe Last Capture" [ref=e181] [cursor=pointer]
+      - generic [ref=e182]:
+        - generic [ref=e183]:
+          - img [ref=e184]
+          - generic [ref=e187]: Gmail drafts
+          - generic [ref=e188]: Not connected
+        - generic [ref=e189]:
+          - generic [ref=e190]: OAuth client ID
+          - textbox "OAuth client ID" [ref=e191]:
+            - /placeholder: Google OAuth web client ID
+        - generic [ref=e192]:
+          - generic [ref=e193]: OAuth client secret
+          - textbox "OAuth client secret" [ref=e194]:
+            - /placeholder: Google OAuth web client secret
+        - generic [ref=e195]:
+          - img [ref=e196]
+          - generic [ref=e198]:
+            - strong [ref=e199]: not connected
+            - generic [ref=e200]: "Scope: gmail.drafts.create"
+        - paragraph [ref=e201]: Use a Google OAuth Web client with an authorized redirect URI of http://localhost. Draft creation requires only the Gmail drafts create scope.
+        - generic [ref=e202]:
+          - button "Save Gmail Settings" [ref=e203] [cursor=pointer]
+          - button "Connect Gmail" [ref=e204] [cursor=pointer]
+      - generic [ref=e205]:
+        - generic [ref=e206]:
+          - img [ref=e207]
+          - generic [ref=e210]: llama.cpp server
+        - generic [ref=e211]:
+          - generic [ref=e212]: Server URL
+          - generic [ref=e213]:
+            - textbox "Server URL Save & Test" [ref=e214]:
+              - /placeholder: http://127.0.0.1:8080
+              - text: http://127.0.0.1:8080
+            - button "Save & Test" [ref=e215] [cursor=pointer]
+        - generic [ref=e216]:
+          - img [ref=e217]
+          - generic [ref=e219]:
+            - strong [ref=e220]: offline
+            - generic [ref=e221]: Checking llama.cpp connection
+      - generic [ref=e222]:
+        - generic [ref=e223]:
+          - generic [ref=e224]: Model
+          - generic [ref=e225]: 0 discovered
+        - generic [ref=e226]:
+          - generic [ref=e227]: Preferred model
+          - combobox "Preferred model" [disabled] [ref=e228] [cursor=pointer]:
+            - option "Server default" [selected]
+      - generic [ref=e229]:
+        - generic [ref=e230]:
+          - img [ref=e231]
+          - generic [ref=e235]: Extraction queue
+          - generic [ref=e236]: Persistent
+        - generic [ref=e237]:
+          - generic [ref=e238]:
+            - strong [ref=e239]: "0"
+            - generic [ref=e240]: Pending
+          - generic [ref=e241]:
+            - strong [ref=e242]: "0"
+            - generic [ref=e243]: Processing
+          - generic [ref=e244]:
+            - strong [ref=e245]: "0"
+            - generic [ref=e246]: Failed
+          - generic [ref=e247]:
+            - strong [ref=e248]: "0"
+            - generic [ref=e249]: Indexed
+        - generic [ref=e250]:
+          - button "Queue Changed Notes" [ref=e251] [cursor=pointer]
+          - button "Retry Failed" [disabled] [ref=e252]
+    - separator "Resize sidebar" [ref=e64]
+  - generic [ref=e65]:
+    - generic [ref=e68]:
+      - strong [ref=e69]: Meeting mode
+      - generic [ref=e70]: Ready
+    - generic [ref=e71]:
+      - textbox "Your name" [ref=e72]:
+        - /placeholder: You
+        - text: You
+      - textbox "Other participants" [ref=e73]:
+        - /placeholder: Participants
+        - text: Participants
+    - button "Start" [ref=e75] [cursor=pointer]:
+      - img [ref=e76]
+      - text: Start

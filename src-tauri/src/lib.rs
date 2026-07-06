@@ -2,6 +2,7 @@ mod audio_capture;
 mod audio_preprocess;
 mod chat;
 mod export_notes;
+mod gmail;
 mod stt;
 mod system_audio;
 
@@ -2986,6 +2987,7 @@ fn unlink_notes(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
         .setup(|app| {
@@ -3010,6 +3012,11 @@ pub fn run() {
             chat::clear_chat,
             export_notes::export_note_markdown,
             export_notes::export_notes_markdown_zip,
+            gmail::get_gmail_config,
+            gmail::save_gmail_config,
+            gmail::save_gmail_tokens,
+            gmail::clear_gmail_auth,
+            gmail::create_gmail_draft,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,

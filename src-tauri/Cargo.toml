@@ -39,3 +39,4 @@ tokio = { version = "1", features = ["time"] }
 cpal = "0.15"
 hound = "3.5"
 whisper-rs = { version = "0.16", default-features = false }
+tauri-plugin-google-auth = "0.5.1"

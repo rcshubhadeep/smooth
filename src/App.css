@@ -2488,6 +2488,101 @@ select:hover {
   color: var(--accent-strong);
 }
 
+.email-draft-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgb(17 24 39 / 0.28);
+}
+
+.email-draft-dialog {
+  display: flex;
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 56px));
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.email-draft-dialog header,
+.email-draft-dialog footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.email-draft-dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 720;
+}
+
+.email-draft-dialog p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.email-draft-dialog textarea {
+  min-height: 260px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: 0;
+}
+
+.email-draft-dialog textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.email-draft-dialog footer {
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.email-draft-dialog footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.email-draft-dialog footer button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.email-draft-dialog footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .context-heading {
   display: flex;
   align-items: center;

@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import type { TokenResponse } from "@choochmeque/tauri-plugin-google-auth-api";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -25,6 +26,7 @@ import {
   Italic,
   Link2,
   List,
+  Mail,
   Mic,
   Monitor,
   Moon,
@@ -111,6 +113,31 @@ type BankSnapshot = {
 type ExportResult = {
   path: string;
   count: number;
+};
+
+type GmailConfig = {
+  client_id: string;
+  client_secret: string;
+  has_access_token: boolean;
+  has_refresh_token: boolean;
+  access_token_expires_at: number | null;
+};
+
+type GmailTokenPayload = {
+  access_token: string;
+  refresh_token: string | null;
+  expires_at: number | null;
+};
+
+type GmailDraftInput = {
+  to: string | null;
+  subject: string;
+  body: string;
+};
+
+type GmailDraftResult = {
+  id: string;
+  message_id: string | null;
 };
 
 type LlamaConfig = {
@@ -287,6 +314,7 @@ const ENTITY_PREVIEW_LIMIT = 12;
 const DICTATION_CHUNK_MS = 5_000;
 const MEETING_CHUNK_MS = 10_000;
 const MEETING_SNAPSHOT_MS = 30_000;
+const GMAIL_DRAFT_SCOPE = "https://www.googleapis.com/auth/gmail.drafts.create";
 
 function markdownToHtml(markdown: string) {
   return marked.parse(markdown || "", { async: false }) as string;
@@ -1425,6 +1453,20 @@ function App() {
     }
   }
 
+  async function createGmailDraft(input: GmailDraftInput) {
+    try {
+      setError(null);
+      const result = await invoke<GmailDraftResult>("create_gmail_draft", {
+        draft: input,
+      });
+      toast.success(`Gmail draft created: ${result.id}`);
+    } catch (draftError) {
+      setError(String(draftError));
+      toast.error(draftError);
+      throw draftError;
+    }
+  }
+
   async function trashNote(id: string) {
     try {
       setError(null);
@@ -1853,6 +1895,7 @@ function App() {
               onPermanentDelete={permanentDeleteNote}
               onMove={moveNote}
               onExport={exportNote}
+              onCreateGmailDraft={createGmailDraft}
             />
             {activeNote && panelOpen ? (
               <>
@@ -2279,6 +2322,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
     language: "en",
     threads: 4,
   });
+  const [gmailConfig, setGmailConfig] = useState<GmailConfig>({
+    client_id: "",
+    client_secret: "",
+    has_access_token: false,
+    has_refresh_token: false,
+    access_token_expires_at: null,
+  });
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
   const [transcription, setTranscription] = useState<SttTranscription | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -2288,6 +2338,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isSystemAudioBusy, setIsSystemAudioBusy] = useState(false);
   const [isSystemCaptureBusy, setIsSystemCaptureBusy] = useState(false);
   const [isSttBusy, setIsSttBusy] = useState(false);
+  const [isGmailBusy, setIsGmailBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
       toast.error(message);
@@ -2350,6 +2401,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
         setSttConfig(savedConfig);
         return refreshSttStatus();
       }),
+      invoke<GmailConfig>("get_gmail_config").then(setGmailConfig),
     ])
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
@@ -2540,6 +2592,76 @@ function SettingsView({ onClose }: SettingsViewProps) {
       setSettingsError(String(sttError));
     } finally {
       setIsSttBusy(false);
+    }
+  }
+
+  async function saveGmailConfig() {
+    setIsGmailBusy(true);
+    setSettingsError(null);
+    try {
+      const savedConfig = await invoke<GmailConfig>("save_gmail_config", {
+        config: gmailConfig,
+      });
+      setGmailConfig(savedConfig);
+      toast.success("Gmail OAuth settings saved");
+    } catch (gmailError) {
+      setSettingsError(String(gmailError));
+    } finally {
+      setIsGmailBusy(false);
+    }
+  }
+
+  async function connectGmail() {
+    setIsGmailBusy(true);
+    setSettingsError(null);
+    try {
+      const savedConfig = await invoke<GmailConfig>("save_gmail_config", {
+        config: gmailConfig,
+      });
+      setGmailConfig(savedConfig);
+      const { signIn } = await import("@choochmeque/tauri-plugin-google-auth-api");
+      const tokens = await signIn({
+        clientId: savedConfig.client_id,
+        clientSecret: savedConfig.client_secret,
+        scopes: [GMAIL_DRAFT_SCOPE],
+        successHtmlResponse:
+          "<h1>Gmail connected</h1><p>You can close this window and return to Smooth.</p>",
+      });
+      const nextConfig = await saveGmailTokens(tokens);
+      setGmailConfig(nextConfig);
+      toast.success("Gmail connected for draft creation");
+    } catch (gmailError) {
+      setSettingsError(String(gmailError));
+    } finally {
+      setIsGmailBusy(false);
+    }
+  }
+
+  async function saveGmailTokens(tokens: TokenResponse) {
+    return invoke<GmailConfig>("save_gmail_tokens", {
+      tokens: {
+        access_token: tokens.accessToken,
+        refresh_token: tokens.refreshToken ?? null,
+        expires_at: tokens.expiresAt ?? null,
+      } satisfies GmailTokenPayload,
+    });
+  }
+
+  async function disconnectGmail() {
+    setIsGmailBusy(true);
+    setSettingsError(null);
+    try {
+      if (gmailConfig.has_access_token) {
+        const { signOut } = await import("@choochmeque/tauri-plugin-google-auth-api");
+        await signOut().catch(() => undefined);
+      }
+      const nextConfig = await invoke<GmailConfig>("clear_gmail_auth");
+      setGmailConfig(nextConfig);
+      toast.success("Gmail disconnected");
+    } catch (gmailError) {
+      setSettingsError(String(gmailError));
+    } finally {
+      setIsGmailBusy(false);
     }
   }
 
@@ -2772,12 +2894,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
           <div className="settings-input-row">
             <input
               value={sttConfig.model_path}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setSttConfig((current) => ({
                   ...current,
-                  model_path: event.currentTarget.value,
-                }))
-              }
+                  model_path: value,
+                }));
+              }}
               placeholder="Path to ggml-base.en.bin"
             />
             <button
@@ -2795,12 +2918,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
             <span>Language</span>
             <input
               value={sttConfig.language ?? ""}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setSttConfig((current) => ({
                   ...current,
-                  language: event.currentTarget.value || null,
-                }))
-              }
+                  language: value || null,
+                }));
+              }}
               placeholder="en or auto"
             />
           </label>
@@ -2811,12 +2935,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
               max={32}
               type="number"
               value={sttConfig.threads}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setSttConfig((current) => ({
                   ...current,
-                  threads: Number(event.currentTarget.value) || 1,
-                }))
-              }
+                  threads: Number(value) || 1,
+                }));
+              }}
             />
           </label>
         </div>
@@ -2862,6 +2987,86 @@ function SettingsView({ onClose }: SettingsViewProps) {
 
       <section className="settings-section">
         <div className="section-heading">
+          <Mail size={18} />
+          <span>Gmail drafts</span>
+          <small>{gmailConfig.has_access_token ? "Connected" : "Not connected"}</small>
+        </div>
+
+        <label className="settings-field">
+          <span>OAuth client ID</span>
+          <input
+            value={gmailConfig.client_id}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setGmailConfig((current) => ({
+                ...current,
+                client_id: value,
+              }));
+            }}
+            placeholder="Google OAuth web client ID"
+          />
+        </label>
+
+        <label className="settings-field">
+          <span>OAuth client secret</span>
+          <input
+            value={gmailConfig.client_secret}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setGmailConfig((current) => ({
+                ...current,
+                client_secret: value,
+              }));
+            }}
+            placeholder="Google OAuth web client secret"
+            type="password"
+          />
+        </label>
+
+        <div
+          className={`connection-status ${gmailConfig.has_access_token ? "ready" : "offline"}`}
+        >
+          {gmailConfig.has_access_token ? (
+            <CheckCircle2 size={19} />
+          ) : (
+            <CircleAlert size={19} />
+          )}
+          <div>
+            <strong>{gmailConfig.has_access_token ? "connected" : "not connected"}</strong>
+            <span>
+              Scope: gmail.drafts.create
+              {gmailConfig.has_refresh_token ? " · refresh enabled" : ""}
+            </span>
+          </div>
+          {gmailConfig.access_token_expires_at ? (
+            <small>
+              {new Date(gmailConfig.access_token_expires_at * 1000).toLocaleTimeString()}
+            </small>
+          ) : null}
+        </div>
+
+        <p className="settings-help">
+          Use a Google OAuth Web client with an authorized redirect URI of
+          http://localhost. Draft creation requires only the Gmail drafts create scope.
+        </p>
+
+        <div className="settings-actions">
+          <button type="button" onClick={() => void saveGmailConfig()} disabled={isGmailBusy}>
+            Save Gmail Settings
+          </button>
+          <button type="button" onClick={() => void connectGmail()} disabled={isGmailBusy}>
+            {gmailConfig.has_access_token ? "Reconnect Gmail" : "Connect Gmail"}
+          </button>
+          {gmailConfig.has_access_token || gmailConfig.has_refresh_token ? (
+            <button type="button" onClick={() => void disconnectGmail()} disabled={isGmailBusy}>
+              Disconnect
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <div className="section-heading">
           <Server size={18} />
           <span>llama.cpp server</span>
         </div>
@@ -2871,12 +3076,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
           <div className="settings-input-row">
             <input
               value={config.base_url}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setConfig((current) => ({
                   ...current,
-                  base_url: event.currentTarget.value,
-                }))
-              }
+                  base_url: value,
+                }));
+              }}
               placeholder="http://127.0.0.1:8080"
             />
             <button
@@ -2912,12 +3118,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
           <span>Preferred model</span>
           <select
             value={config.preferred_model ?? ""}
-            onChange={(event) =>
+            onChange={(event) => {
+              const value = event.currentTarget.value;
               setConfig((current) => ({
                 ...current,
-                preferred_model: event.currentTarget.value || null,
-              }))
-            }
+                preferred_model: value || null,
+              }));
+            }}
             disabled={!status?.models.length}
           >
             <option value="">Server default</option>
@@ -3573,6 +3780,7 @@ type NoteEditorProps = {
     content: string,
     folderId: string | null,
   ) => Promise<void>;
+  onCreateGmailDraft: (input: GmailDraftInput) => Promise<void>;
 };
 
 function NoteEditor({
@@ -3589,6 +3797,7 @@ function NoteEditor({
   onPermanentDelete,
   onMove,
   onExport,
+  onCreateGmailDraft,
 }: NoteEditorProps) {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
@@ -3596,6 +3805,8 @@ function NoteEditor({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
   const [streamingTranscript, setStreamingTranscript] = useState("");
+  const [emailDraft, setEmailDraft] = useState<GmailDraftInput | null>(null);
+  const [isCreatingEmailDraft, setIsCreatingEmailDraft] = useState(false);
   const hasUnsavedChangesRef = useRef(false);
   const isLoadingNoteRef = useRef(false);
   const dictationActiveRef = useRef(false);
@@ -3837,6 +4048,37 @@ function NoteEditor({
     setSaveState("saved");
   }
 
+  function openEmailDraft() {
+    if (!note || !editor || editor.isDestroyed || note.deleted_at) {
+      return;
+    }
+
+    const markdown = turndown.turndown(editor.getHTML());
+    setEmailDraft({
+      to: "",
+      subject: draftTitle.trim() || "Untitled note",
+      body: markdown,
+    });
+  }
+
+  async function submitEmailDraft() {
+    if (!emailDraft) {
+      return;
+    }
+
+    setIsCreatingEmailDraft(true);
+    try {
+      await onCreateGmailDraft({
+        to: emailDraft.to?.trim() || null,
+        subject: emailDraft.subject,
+        body: emailDraft.body,
+      });
+      setEmailDraft(null);
+    } finally {
+      setIsCreatingEmailDraft(false);
+    }
+  }
+
   if (!note) {
     return (
       <div className="empty-workspace">
@@ -3925,6 +4167,14 @@ function NoteEditor({
                 title="Export note as Markdown"
               >
                 <Download size={17} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={openEmailDraft}
+                title="Create Gmail draft"
+              >
+                <Mail size={17} />
               </button>
             </>
           )}
@@ -4031,6 +4281,94 @@ function NoteEditor({
       </div>
 
       <EditorContent editor={editor} />
+      {emailDraft ? (
+        <EmailDraftDialog
+          draft={emailDraft}
+          isBusy={isCreatingEmailDraft}
+          onChange={setEmailDraft}
+          onClose={() => setEmailDraft(null)}
+          onSubmit={() => void submitEmailDraft()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+type EmailDraftDialogProps = {
+  draft: GmailDraftInput;
+  isBusy: boolean;
+  onChange: (draft: GmailDraftInput) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+};
+
+function EmailDraftDialog({
+  draft,
+  isBusy,
+  onChange,
+  onClose,
+  onSubmit,
+}: EmailDraftDialogProps) {
+  return (
+    <div className="email-draft-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="email-draft-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="email-draft-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <h2 id="email-draft-title">Gmail draft</h2>
+            <p>Create a draft email from this note.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+
+        <label className="settings-field">
+          <span>To</span>
+          <input
+            value={draft.to ?? ""}
+            onChange={(event) => onChange({ ...draft, to: event.currentTarget.value })}
+            placeholder="Optional recipient"
+            autoFocus
+          />
+        </label>
+        <label className="settings-field">
+          <span>Subject</span>
+          <input
+            value={draft.subject}
+            onChange={(event) => onChange({ ...draft, subject: event.currentTarget.value })}
+            placeholder="Email subject"
+          />
+        </label>
+        <label className="settings-field">
+          <span>Body</span>
+          <textarea
+            value={draft.body}
+            onChange={(event) => onChange({ ...draft, body: event.currentTarget.value })}
+            rows={12}
+          />
+        </label>
+
+        <footer>
+          <button type="button" onClick={onClose} disabled={isBusy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={onSubmit}
+            disabled={isBusy || !draft.subject.trim()}
+          >
+            <Mail size={15} />
+            {isBusy ? "Creating" : "Create Draft"}
+          </button>
+        </footer>
+      </section>
     </div>
   );
 }
