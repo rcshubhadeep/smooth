@@ -1,3 +1,4 @@
+mod agents;
 mod audio_capture;
 mod audio_preprocess;
 mod chat;
@@ -3006,6 +3007,7 @@ pub fn run() {
         .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
+        .manage(agents::AgentRuntime::new())
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
@@ -3063,7 +3065,9 @@ pub fn run() {
             permanent_delete_note,
             link_notes,
             rename_note_link,
-            unlink_notes
+            unlink_notes,
+            agents::agent_execute_tool,
+            agents::agent_list_tools
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
