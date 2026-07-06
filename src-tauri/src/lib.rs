@@ -3087,7 +3087,8 @@ pub fn run() {
             rename_note_link,
             unlink_notes,
             agents::agent_execute_tool,
-            agents::agent_list_tools
+            agents::agent_list_tools,
+            agents::agent_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

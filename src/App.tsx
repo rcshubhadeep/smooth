@@ -178,6 +178,20 @@ type AgentToolDescriptor = {
   input_schema: unknown;
 };
 
+type AgentRunStep = {
+  tool_name: string;
+  input: unknown;
+  output: unknown | null;
+  error: string | null;
+};
+
+type AgentRunResult = {
+  model: string;
+  answer: string;
+  steps: AgentRunStep[];
+  raw_model_output: string;
+};
+
 type AudioCapturePreview = {
   path: string;
   duration_ms: number;
@@ -2615,6 +2629,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
     defaultAgentToolInput("ping"),
   );
   const [agentToolOutput, setAgentToolOutput] = useState<string | null>(null);
+  const [agentPrompt, setAgentPrompt] = useState(
+    "Search for notes about Curvo and summarize what you find.",
+  );
+  const [agentRunResult, setAgentRunResult] = useState<AgentRunResult | null>(
+    null,
+  );
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
   const [transcription, setTranscription] = useState<SttTranscription | null>(
     null,
@@ -2628,6 +2648,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isSttBusy, setIsSttBusy] = useState(false);
   const [isGmailBusy, setIsGmailBusy] = useState(false);
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
+  const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
       toast.error(message);
@@ -3006,6 +3027,29 @@ function SettingsView({ onClose }: SettingsViewProps) {
       setSettingsError(message);
     } finally {
       setIsAgentToolBusy(false);
+    }
+  }
+
+  async function runAgentFlow() {
+    setIsAgentRunBusy(true);
+    setSettingsError(null);
+    try {
+      const result = await invoke<AgentRunResult>("agent_run", {
+        prompt: agentPrompt,
+        maxSteps: 3,
+      });
+      setAgentRunResult(result);
+    } catch (agentError) {
+      const message = String(agentError);
+      setAgentRunResult({
+        model: "",
+        answer: message,
+        steps: [],
+        raw_model_output: "",
+      });
+      setSettingsError(message);
+    } finally {
+      setIsAgentRunBusy(false);
     }
   }
 
@@ -3615,6 +3659,72 @@ function SettingsView({ onClose }: SettingsViewProps) {
           >
             {isAgentToolBusy ? "Running" : "Run Tool"}
           </button>
+        </div>
+
+        <div className="agent-flow-panel">
+          <div className="section-heading compact">
+            <Sparkles size={16} />
+            <span>Agent flow</span>
+            <small>{agentRunResult?.model || "llama.cpp"}</small>
+          </div>
+
+          <label className="settings-field agent-tool-input">
+            <span>Prompt</span>
+            <textarea
+              value={agentPrompt}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setAgentPrompt(value);
+              }}
+              spellCheck={false}
+            />
+          </label>
+
+          <div className="settings-actions agent-tool-actions">
+            <button
+              type="button"
+              onClick={() => void runAgentFlow()}
+              disabled={isAgentRunBusy || !agentPrompt.trim()}
+            >
+              {isAgentRunBusy ? "Running Agent" : "Run Agent"}
+            </button>
+          </div>
+
+          {agentRunResult ? (
+            <div className="agent-run-output">
+              <div>
+                <strong>Answer</strong>
+                <p>{agentRunResult.answer || "No answer returned"}</p>
+              </div>
+              <div>
+                <strong>Steps</strong>
+                {agentRunResult.steps.length ? (
+                  agentRunResult.steps.map((step, index) => (
+                    <pre key={`${step.tool_name}-${index}`}>
+                      {JSON.stringify(
+                        {
+                          tool: step.tool_name,
+                          input: step.input,
+                          output: step.output,
+                          error: step.error,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                  ))
+                ) : (
+                  <p>No tools used</p>
+                )}
+              </div>
+              {agentRunResult.raw_model_output ? (
+                <div>
+                  <strong>Raw model output</strong>
+                  <pre>{agentRunResult.raw_model_output}</pre>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </section>
 

@@ -13,6 +13,7 @@
 //! - `worker`   — background worker scaffold (not spawned yet).
 
 pub mod context;
+pub mod flow;
 pub mod registry;
 pub mod runtime;
 pub mod tool;
@@ -48,4 +49,15 @@ pub(crate) async fn agent_execute_tool(
 #[tauri::command]
 pub(crate) fn agent_list_tools(runtime: State<'_, AgentRuntime>) -> Vec<ToolDescriptor> {
     runtime.list_tools()
+}
+
+/// Tauri bridge: run a bounded foreground agent loop using the registered tools.
+#[tauri::command]
+pub(crate) async fn agent_run(
+    app: AppHandle,
+    runtime: State<'_, AgentRuntime>,
+    prompt: String,
+    max_steps: Option<u8>,
+) -> Result<flow::AgentRunResult, String> {
+    flow::run_agent_once(app, &runtime, prompt, max_steps).await
 }

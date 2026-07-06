@@ -1781,6 +1781,59 @@ select:hover {
   margin-top: 12px;
 }
 
+.agent-flow-panel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading.compact {
+  margin-bottom: 12px;
+}
+
+.agent-run-output {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.agent-run-output > div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel);
+}
+
+.agent-run-output strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-run-output p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.agent-run-output pre {
+  overflow: auto;
+  max-height: 260px;
+  margin: 8px 0 0;
+  color: var(--text-soft);
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono",
+    monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .spin {
   animation: spin 0.9s linear infinite;
 }
