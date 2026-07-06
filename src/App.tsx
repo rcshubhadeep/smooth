@@ -48,6 +48,8 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { Bot } from "lucide-react";
+import { AgentsView, type AgentRunResult } from "./Agents";
 import { marked } from "marked";
 import {
   useCallback,
@@ -64,7 +66,7 @@ import NoteChat from "./Chat";
 import "./App.css";
 
 type ThemeMode = "light" | "dark" | "system";
-type ViewMode = "notes" | "settings";
+type ViewMode = "notes" | "settings" | "agents";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SortMode = "updated-desc" | "updated-asc" | "created-desc" | "created-asc";
 type DictationState = "idle" | "recording" | "transcribing";
@@ -178,20 +180,8 @@ type AgentToolDescriptor = {
   input_schema: unknown;
 };
 
-type AgentRunStep = {
-  tool_name: string;
-  input: unknown;
-  output: unknown | null;
-  error: string | null;
-};
-
-type AgentRunResult = {
-  run_id: string;
-  model: string;
-  answer: string;
-  steps: AgentRunStep[];
-  raw_model_output: string;
-};
+// AgentRunResult / AgentRunStep are defined in ./Agents and imported above so
+// the Settings dev tester and the Agents view share one shape.
 
 type AudioCapturePreview = {
   path: string;
@@ -2071,6 +2061,16 @@ function App() {
           <div className="sidebar-footer">
             <button
               className={
+                view === "agents" ? "icon-button active" : "icon-button"
+              }
+              type="button"
+              onClick={() => setView("agents")}
+              title="Agents"
+            >
+              <Bot size={18} />
+            </button>
+            <button
+              className={
                 view === "settings" ? "icon-button active" : "icon-button"
               }
               type="button"
@@ -2093,6 +2093,11 @@ function App() {
         <section className="workspace">
           {view === "settings" ? (
             <SettingsView onClose={() => setView("notes")} />
+          ) : view === "agents" ? (
+            <AgentsView
+              notes={snapshot.notes}
+              currentNoteId={activeNote?.id ?? null}
+            />
           ) : (
             <div
               className={
