@@ -60,3 +60,85 @@ impl ToolRegistry {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    use crate::agents::context::AgentContext;
+
+    use super::*;
+
+    struct TestTool {
+        name: &'static str,
+        description: &'static str,
+    }
+
+    #[async_trait]
+    impl AgentTool for TestTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            self.description
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" }
+                }
+            })
+        }
+
+        async fn execute(&self, _ctx: &AgentContext, input: Value) -> anyhow::Result<Value> {
+            Ok(json!({ "tool": self.name, "input": input }))
+        }
+    }
+
+    #[test]
+    fn lists_registered_tools_with_descriptors() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(TestTool {
+            name: "test_tool",
+            description: "A test tool",
+        }));
+
+        let tools = registry.list();
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "test_tool");
+        assert_eq!(tools[0].description, "A test tool");
+        assert_eq!(tools[0].input_schema["type"], "object");
+    }
+
+    #[test]
+    fn registering_the_same_name_replaces_the_previous_tool() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(TestTool {
+            name: "duplicate",
+            description: "First",
+        }));
+        registry.register(Arc::new(TestTool {
+            name: "duplicate",
+            description: "Second",
+        }));
+
+        let tool = registry.get("duplicate").expect("registered tool");
+
+        assert_eq!(tool.description(), "Second");
+        assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn missing_tools_return_none() {
+        let registry = ToolRegistry::new();
+
+        assert!(registry.get("missing").is_none());
+    }
+}

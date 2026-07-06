@@ -45,6 +45,7 @@ import {
   Sun,
   Trash2,
   Unlink,
+  Wrench,
   X,
 } from "lucide-react";
 import { marked } from "marked";
@@ -169,6 +170,12 @@ type ExtractionQueueStatus = {
   failed: number;
   indexed: number;
   not_indexed: number;
+};
+
+type AgentToolDescriptor = {
+  name: string;
+  description: string;
+  input_schema: unknown;
 };
 
 type AudioCapturePreview = {
@@ -381,6 +388,25 @@ function formatDb(value: number | null | undefined) {
     return "silent";
   }
   return `${value.toFixed(1)} dB`;
+}
+
+function defaultAgentToolInput(toolName: string) {
+  switch (toolName) {
+    case "read_note":
+      return JSON.stringify({ note_id: "" }, null, 2);
+    case "create_note":
+      return JSON.stringify({ title: "Agent test note", folder_id: null }, null, 2);
+    case "write_note":
+      return JSON.stringify({ note_id: "", content: "" }, null, 2);
+    case "search_notes":
+      return JSON.stringify({ query: "", limit: 10 }, null, 2);
+    case "get_link_suggestions":
+      return JSON.stringify({ note_id: "", limit: 10 }, null, 2);
+    case "ping":
+      return JSON.stringify({ message: "hello" }, null, 2);
+    default:
+      return "{}";
+  }
 }
 
 function meetingTitleNow() {
@@ -2583,6 +2609,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
     has_refresh_token: false,
     access_token_expires_at: null,
   });
+  const [agentTools, setAgentTools] = useState<AgentToolDescriptor[]>([]);
+  const [selectedAgentTool, setSelectedAgentTool] = useState("ping");
+  const [agentToolInput, setAgentToolInput] = useState(
+    defaultAgentToolInput("ping"),
+  );
+  const [agentToolOutput, setAgentToolOutput] = useState<string | null>(null);
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
   const [transcription, setTranscription] = useState<SttTranscription | null>(
     null,
@@ -2595,11 +2627,17 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isSystemCaptureBusy, setIsSystemCaptureBusy] = useState(false);
   const [isSttBusy, setIsSttBusy] = useState(false);
   const [isGmailBusy, setIsGmailBusy] = useState(false);
+  const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
     if (message) {
       toast.error(message);
     }
   };
+
+  const selectedAgentToolDescriptor = useMemo(
+    () => agentTools.find((tool) => tool.name === selectedAgentTool) ?? null,
+    [agentTools, selectedAgentTool],
+  );
 
   const checkStatus = useCallback(async () => {
     setIsChecking(true);
@@ -2660,6 +2698,20 @@ function SettingsView({ onClose }: SettingsViewProps) {
         return refreshSttStatus();
       }),
       invoke<GmailConfig>("get_gmail_config").then(setGmailConfig),
+      invoke<AgentToolDescriptor[]>("agent_list_tools").then((tools) => {
+        const sortedTools = [...tools].sort((left, right) =>
+          left.name.localeCompare(right.name),
+        );
+        setAgentTools(sortedTools);
+        setSelectedAgentTool((current) => {
+          if (current && sortedTools.some((tool) => tool.name === current)) {
+            return current;
+          }
+          const nextTool = sortedTools[0]?.name ?? "";
+          setAgentToolInput(defaultAgentToolInput(nextTool));
+          return nextTool;
+        });
+      }),
     ])
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
@@ -2927,6 +2979,33 @@ function SettingsView({ onClose }: SettingsViewProps) {
       setSettingsError(String(gmailError));
     } finally {
       setIsGmailBusy(false);
+    }
+  }
+
+  async function runAgentTool() {
+    if (!selectedAgentTool) {
+      setSettingsError("Choose an agent tool first");
+      return;
+    }
+
+    setIsAgentToolBusy(true);
+    setSettingsError(null);
+    try {
+      const input = agentToolInput.trim() ? JSON.parse(agentToolInput) : {};
+      const result = await invoke<unknown>("agent_execute_tool", {
+        tool: selectedAgentTool,
+        input,
+      });
+      setAgentToolOutput(JSON.stringify(result, null, 2));
+    } catch (agentToolError) {
+      const message =
+        agentToolError instanceof SyntaxError
+          ? `Invalid JSON input: ${agentToolError.message}`
+          : String(agentToolError);
+      setAgentToolOutput(message);
+      setSettingsError(message);
+    } finally {
+      setIsAgentToolBusy(false);
     }
   }
 
@@ -3462,6 +3541,81 @@ function SettingsView({ onClose }: SettingsViewProps) {
             </div>
           </div>
         ))}
+      </section>
+
+      <section className="settings-section">
+        <div className="section-heading">
+          <Wrench size={18} />
+          <span>Agent tools</span>
+          <small>{agentTools.length} registered</small>
+        </div>
+
+        <label className="settings-field">
+          <span>Tool</span>
+          <select
+            value={selectedAgentTool}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setSelectedAgentTool(value);
+              setAgentToolInput(defaultAgentToolInput(value));
+              setAgentToolOutput(null);
+            }}
+            disabled={!agentTools.length}
+          >
+            {agentTools.map((tool) => (
+              <option key={tool.name} value={tool.name}>
+                {tool.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {selectedAgentToolDescriptor ? (
+          <p className="settings-help">
+            {selectedAgentToolDescriptor.description}
+          </p>
+        ) : null}
+
+        <label className="settings-field agent-tool-input">
+          <span>Input JSON</span>
+          <textarea
+            value={agentToolInput}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setAgentToolInput(value);
+            }}
+            spellCheck={false}
+          />
+        </label>
+
+        <div className="agent-tool-grid">
+          <div>
+            <strong>Input schema</strong>
+            <pre>
+              {selectedAgentToolDescriptor
+                ? JSON.stringify(
+                    selectedAgentToolDescriptor.input_schema,
+                    null,
+                    2,
+                  )
+                : "{}"}
+            </pre>
+          </div>
+          <div>
+            <strong>Output</strong>
+            <pre>{agentToolOutput ?? "No run yet"}</pre>
+          </div>
+        </div>
+
+        <div className="settings-actions agent-tool-actions">
+          <button
+            type="button"
+            onClick={() => void runAgentTool()}
+            disabled={isAgentToolBusy || !selectedAgentTool}
+          >
+            {isAgentToolBusy ? "Running" : "Run Tool"}
+          </button>
+        </div>
       </section>
 
       <section className="settings-section">
