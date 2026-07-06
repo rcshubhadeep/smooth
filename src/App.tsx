@@ -745,11 +745,21 @@ function App() {
   }, [activeNotes, query, snapshot.folders, sortMode]);
 
   const folderGroups = useMemo(() => {
-    return snapshot.folders.map((folder) => ({
+    const groups = snapshot.folders.map((folder) => ({
       folder,
       notes: filteredNotes.filter((note) => note.folder_id === folder.id),
     }));
-  }, [filteredNotes, snapshot.folders]);
+    // While renaming a (usually just-created) folder, hoist it to the top so the
+    // inline edit box is immediately visible.
+    if (renamingFolderId) {
+      groups.sort((first, second) => {
+        if (first.folder.id === renamingFolderId) return -1;
+        if (second.folder.id === renamingFolderId) return 1;
+        return 0;
+      });
+    }
+    return groups;
+  }, [filteredNotes, snapshot.folders, renamingFolderId]);
 
   const inboxNotes = filteredNotes.filter((note) => !note.folder_id);
 
@@ -3309,6 +3319,7 @@ function TreeSection({
       setDraft(title);
       const input = renameInputRef.current;
       if (input) {
+        input.scrollIntoView({ block: "nearest" });
         input.focus();
         input.select();
       }

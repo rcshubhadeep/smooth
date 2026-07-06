@@ -1144,18 +1144,19 @@ select:hover {
   min-height: 0;
   margin: 6px 8px 8px 4px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--panel-strong);
-  box-shadow: var(--shadow-sm);
 }
 
+/* Each pane is its own framed box (editor · context panel · settings). */
 .editor-layout,
 .settings-view,
 .empty-workspace {
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   background: var(--panel-strong);
+  box-shadow: var(--shadow-sm);
 }
 
 /* Empty state */
@@ -1738,6 +1739,7 @@ select:hover {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   height: 100%;
   min-height: 0;
 }
@@ -2102,8 +2104,10 @@ select:hover {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   background: var(--panel);
+  box-shadow: var(--shadow-sm);
   animation: panel-in 200ms var(--ease);
 }
 
@@ -3817,6 +3821,7 @@ body.resizing {
   height: auto;
   min-width: 0;
   align-items: center;
+  justify-content: flex-start;
   gap: 9px;
   padding: 8px 9px;
   border: 0;
