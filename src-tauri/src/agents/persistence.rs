@@ -59,6 +59,25 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS agent_events_type_idx
                 ON agent_events(event_type, created_at);
+
+            -- User-defined agents (Phase 2). These are prompt presets, not a
+            -- new execution path: `agent_run` still runs them. `scope`/`icon`
+            -- are stored with sensible defaults so the schema can grow into
+            -- per-agent scope/tool selection without a migration.
+            CREATE TABLE IF NOT EXISTS agent_definitions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                instructions TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'global',
+                icon TEXT NOT NULL DEFAULT 'overview',
+                max_steps INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS agent_definitions_updated_idx
+                ON agent_definitions(updated_at);
             ",
         )
         .map_err(db_error)
@@ -324,6 +343,152 @@ pub(crate) fn get_events(app: AppHandle, run_id: String) -> Result<Vec<AgentEven
 
 fn parse_json_column(value: Option<String>) -> Option<Value> {
     value.and_then(|value| serde_json::from_str(&value).ok())
+}
+
+// ---------------------------------------------------------------------------
+// User-defined agent definitions (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// A persisted user-defined agent. `scope`/`icon` are carried through with
+/// defaults so the frontend renders them like built-ins and we can expose
+/// editing them later without a schema change.
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentDefinitionRecord {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) instructions: String,
+    pub(crate) scope: String,
+    pub(crate) icon: String,
+    pub(crate) max_steps: Option<i64>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+
+/// Fields accepted from the frontend when creating or updating an agent.
+/// Only name/description/instructions/max_steps are user-editable for now.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AgentDefinitionInput {
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) description: String,
+    pub(crate) instructions: String,
+    #[serde(default)]
+    pub(crate) max_steps: Option<i64>,
+}
+
+/// Validate + normalize user input. Keeping this in one place means both create
+/// and update enforce the same rules.
+fn clean_definition(input: &AgentDefinitionInput) -> Result<(String, String, String, Option<i64>), String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Agent name is required".to_string());
+    }
+    let instructions = input.instructions.trim();
+    if instructions.is_empty() {
+        return Err("Agent instructions are required".to_string());
+    }
+    let max_steps = input.max_steps.map(|value| value.clamp(1, 6));
+    Ok((
+        name.to_string(),
+        input.description.trim().to_string(),
+        instructions.to_string(),
+        max_steps,
+    ))
+}
+
+fn map_definition_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinitionRecord> {
+    Ok(AgentDefinitionRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        instructions: row.get(3)?,
+        scope: row.get(4)?,
+        icon: row.get(5)?,
+        max_steps: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+const DEFINITION_COLUMNS: &str =
+    "id, name, description, instructions, scope, icon, max_steps, created_at, updated_at";
+
+pub(crate) fn list_definitions(app: AppHandle) -> Result<Vec<AgentDefinitionRecord>, String> {
+    let connection = open_database(&app)?;
+    let sql = format!(
+        "SELECT {DEFINITION_COLUMNS} FROM agent_definitions ORDER BY CAST(created_at AS INTEGER) ASC"
+    );
+    let mut statement = connection.prepare(&sql).map_err(db_error)?;
+    let rows = statement
+        .query_map([], map_definition_row)
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    Ok(rows)
+}
+
+pub(crate) fn create_definition(
+    app: AppHandle,
+    input: AgentDefinitionInput,
+) -> Result<AgentDefinitionRecord, String> {
+    let (name, description, instructions, max_steps) = clean_definition(&input)?;
+    let id = new_id("agent");
+    let now = now_string();
+
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "INSERT INTO agent_definitions
+                (id, name, description, instructions, scope, icon, max_steps, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'global', 'overview', ?5, ?6, ?6)",
+            params![id, name, description, instructions, max_steps, now],
+        )
+        .map_err(db_error)?;
+
+    read_definition(&connection, &id)
+}
+
+pub(crate) fn update_definition(
+    app: AppHandle,
+    id: String,
+    input: AgentDefinitionInput,
+) -> Result<AgentDefinitionRecord, String> {
+    let (name, description, instructions, max_steps) = clean_definition(&input)?;
+    let now = now_string();
+
+    let connection = open_database(&app)?;
+    let changed = connection
+        .execute(
+            "UPDATE agent_definitions
+             SET name = ?2, description = ?3, instructions = ?4, max_steps = ?5, updated_at = ?6
+             WHERE id = ?1",
+            params![id, name, description, instructions, max_steps, now],
+        )
+        .map_err(db_error)?;
+    if changed == 0 {
+        return Err("Agent not found".to_string());
+    }
+
+    read_definition(&connection, &id)
+}
+
+pub(crate) fn delete_definition(app: AppHandle, id: String) -> Result<(), String> {
+    let connection = open_database(&app)?;
+    let changed = connection
+        .execute("DELETE FROM agent_definitions WHERE id = ?1", params![id])
+        .map_err(db_error)?;
+    if changed == 0 {
+        return Err("Agent not found".to_string());
+    }
+    Ok(())
+}
+
+fn read_definition(connection: &Connection, id: &str) -> Result<AgentDefinitionRecord, String> {
+    let sql = format!("SELECT {DEFINITION_COLUMNS} FROM agent_definitions WHERE id = ?1");
+    connection
+        .query_row(&sql, params![id], map_definition_row)
+        .map_err(db_error)
 }
 
 #[cfg(test)]

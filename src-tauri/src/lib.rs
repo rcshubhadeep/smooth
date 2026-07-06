@@ -3091,7 +3091,11 @@ pub fn run() {
             agents::agent_list_tools,
             agents::agent_run,
             agents::agent_list_runs,
-            agents::agent_get_run_events
+            agents::agent_get_run_events,
+            agents::agent_list_definitions,
+            agents::agent_create_definition,
+            agents::agent_update_definition,
+            agents::agent_delete_definition
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,11 +6,15 @@ import {
   FileText,
   Link2,
   Loader2,
+  Pencil,
   Play,
+  Plus,
   Sparkles,
+  Trash2,
+  X,
 } from "lucide-react";
 import { marked } from "marked";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Domain types + built-in agents
@@ -25,6 +29,9 @@ import { useMemo, useState } from "react";
 
 export type AgentScope = "note" | "global";
 
+/** Built-in presets ship with the app; user agents come from the DB (Phase 2). */
+export type AgentSource = "builtin" | "user";
+
 export type AgentDefinition = {
   id: string;
   name: string;
@@ -36,6 +43,7 @@ export type AgentDefinition = {
   icon: AgentIconName;
   /** Optional cap on tool-use iterations; backend clamps to a safe range. */
   maxSteps?: number;
+  source: AgentSource;
 };
 
 export type AgentIconName = "summary" | "links" | "overview";
@@ -72,6 +80,7 @@ export const BUILTIN_AGENTS: AgentDefinition[] = [
     description: "Reads the open note and distills it into a few sharp bullets.",
     scope: "note",
     icon: "summary",
+    source: "builtin",
     instructions:
       "Read the current note and write a concise summary: 3–5 bullet points capturing the key ideas, decisions, and any action items. Stay faithful to the note — do not invent details.",
   },
@@ -81,6 +90,7 @@ export const BUILTIN_AGENTS: AgentDefinition[] = [
     description: "Finds related notes and explains why they connect.",
     scope: "note",
     icon: "links",
+    source: "builtin",
     instructions:
       "For the current note, find the most related notes in the knowledge bank. Recommend up to 5 to link, and for each give one short sentence on why it is relevant (shared topics, entities, or themes).",
   },
@@ -90,6 +100,7 @@ export const BUILTIN_AGENTS: AgentDefinition[] = [
     description: "Surveys your notes and surfaces the main themes.",
     scope: "global",
     icon: "overview",
+    source: "builtin",
     instructions:
       "Search across the knowledge bank and identify the main recurring themes. For each theme give a short name, one line describing it, and list 2–3 representative note titles.",
   },
@@ -127,6 +138,75 @@ export async function runAgent(
     prompt,
     maxSteps: agent.maxSteps ?? null,
   });
+}
+
+// ---------------------------------------------------------------------------
+// User-defined agents (Phase 2) — thin wrappers over the Tauri commands.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `persistence::AgentDefinitionRecord`. */
+type AgentDefinitionRecord = {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  scope: string;
+  icon: string;
+  max_steps: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Editable fields sent to create/update (matches `AgentDefinitionInput`). */
+export type AgentDraft = {
+  name: string;
+  description: string;
+  instructions: string;
+  max_steps: number | null;
+};
+
+function normalizeIcon(icon: string): AgentIconName {
+  return icon === "summary" || icon === "links" ? icon : "overview";
+}
+
+function recordToAgent(record: AgentDefinitionRecord): AgentDefinition {
+  return {
+    id: record.id,
+    name: record.name,
+    description: record.description,
+    scope: record.scope === "note" ? "note" : "global",
+    instructions: record.instructions,
+    icon: normalizeIcon(record.icon),
+    maxSteps: record.max_steps ?? undefined,
+    source: "user",
+  };
+}
+
+export async function listUserAgents(): Promise<AgentDefinition[]> {
+  const rows = await invoke<AgentDefinitionRecord[]>("agent_list_definitions");
+  return rows.map(recordToAgent);
+}
+
+export async function createUserAgent(draft: AgentDraft): Promise<AgentDefinition> {
+  const record = await invoke<AgentDefinitionRecord>("agent_create_definition", {
+    definition: draft,
+  });
+  return recordToAgent(record);
+}
+
+export async function updateUserAgent(
+  id: string,
+  draft: AgentDraft,
+): Promise<AgentDefinition> {
+  const record = await invoke<AgentDefinitionRecord>("agent_update_definition", {
+    id,
+    definition: draft,
+  });
+  return recordToAgent(record);
+}
+
+export async function deleteUserAgent(id: string): Promise<void> {
+  await invoke("agent_delete_definition", { id });
 }
 
 function renderMarkdown(text: string) {
@@ -217,14 +297,26 @@ type RunState =
       message: string;
     };
 
+type EditorState =
+  | { mode: "create" }
+  | { mode: "edit"; agent: AgentDefinition }
+  | null;
+
 export function AgentsView({
   notes,
   currentNoteId,
+  onClose,
 }: {
   notes: AgentNoteRef[];
   currentNoteId?: string | null;
+  onClose: () => void;
 }) {
   const [run, setRun] = useState<RunState>({ status: "idle" });
+  const [userAgents, setUserAgents] = useState<AgentDefinition[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorState>(null);
+  // Inline confirm — native window.confirm() is blocked in the Tauri webview.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [targetNoteId, setTargetNoteId] = useState<string>(
     () => currentNoteId ?? notes[0]?.id ?? "",
   );
@@ -233,6 +325,19 @@ export function AgentsView({
     () => notes.find((note) => note.id === targetNoteId) ?? null,
     [notes, targetNoteId],
   );
+
+  async function refresh() {
+    try {
+      setUserAgents(await listUserAgents());
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(String(error));
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
 
   async function start(agent: AgentDefinition) {
     const note = agent.scope === "note" ? targetNote : null;
@@ -255,6 +360,18 @@ export function AgentsView({
     }
   }
 
+  async function remove(agent: AgentDefinition) {
+    try {
+      await deleteUserAgent(agent.id);
+      setConfirmDeleteId(null);
+      await refresh();
+    } catch (error) {
+      setConfirmDeleteId(null);
+      setLoadError(String(error));
+    }
+  }
+
+  // A live run takes over the whole view; the editor is next in priority.
   if (run.status !== "idle") {
     return (
       <AgentRunPanel
@@ -265,7 +382,103 @@ export function AgentsView({
     );
   }
 
+  if (editor) {
+    return (
+      <AgentEditor
+        initial={editor.mode === "edit" ? editor.agent : null}
+        onCancel={() => setEditor(null)}
+        onSaved={async () => {
+          setEditor(null);
+          await refresh();
+        }}
+      />
+    );
+  }
+
   const hasNotes = notes.length > 0;
+
+  const renderCard = (agent: AgentDefinition) => {
+    const Icon = AGENT_ICONS[agent.icon];
+    const disabled = agent.scope === "note" && !targetNote;
+    return (
+      <article key={agent.id} className="agent-card">
+        <div className="agent-card-top">
+          <div className="agent-card-icon">
+            <Icon size={18} />
+          </div>
+          {agent.source === "user" ? (
+            <div className="agent-card-actions">
+              <button
+                type="button"
+                className="ghost-icon"
+                title="Edit agent"
+                onClick={() => setEditor({ mode: "edit", agent })}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                type="button"
+                className="ghost-icon danger"
+                title="Delete agent"
+                onClick={() => setConfirmDeleteId(agent.id)}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="agent-card-body">
+          <h2>{agent.name}</h2>
+          <p>{agent.description || "No description."}</p>
+        </div>
+        <div className="agent-card-foot">
+          {confirmDeleteId === agent.id ? (
+            <div className="agent-confirm">
+              <span>Delete this agent?</span>
+              <button
+                type="button"
+                className="agent-back sm"
+                onClick={() => setConfirmDeleteId(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="agent-run-btn sm danger"
+                onClick={() => void remove(agent)}
+              >
+                Delete
+              </button>
+            </div>
+          ) : (
+            <>
+              <span
+                className={
+                  agent.scope === "note"
+                    ? "scope-badge note"
+                    : "scope-badge global"
+                }
+              >
+                {agent.scope === "note" ? "This note" : "Whole bank"}
+              </span>
+              <button
+                type="button"
+                className="agent-run-btn"
+                disabled={disabled}
+                title={
+                  disabled ? "Choose a note above first" : `Run ${agent.name}`
+                }
+                onClick={() => void start(agent)}
+              >
+                <Play size={14} />
+                Run
+              </button>
+            </>
+          )}
+        </div>
+      </article>
+    );
+  };
 
   return (
     <div className="agents-view">
@@ -273,6 +486,25 @@ export function AgentsView({
         <div>
           <h1>Agents</h1>
           <p>Run an assistant over a note or across your whole knowledge bank.</p>
+        </div>
+        <div className="agents-header-actions">
+          <button
+            type="button"
+            className="agent-run-btn"
+            onClick={() => setEditor({ mode: "create" })}
+          >
+            <Plus size={15} />
+            New agent
+          </button>
+          <button
+            type="button"
+            className="agent-back"
+            onClick={onClose}
+            title="Back to notes"
+          >
+            <ArrowLeft size={16} />
+            Notes
+          </button>
         </div>
       </header>
 
@@ -296,46 +528,265 @@ export function AgentsView({
         </select>
       </div>
 
-      <div className="agent-grid">
-        {BUILTIN_AGENTS.map((agent) => {
+      {loadError ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{loadError}</span>
+        </div>
+      ) : null}
+
+      <h3 className="agent-section-label">Built-in</h3>
+      <div className="agent-grid">{BUILTIN_AGENTS.map(renderCard)}</div>
+
+      <h3 className="agent-section-label">Your agents</h3>
+      {userAgents.length > 0 ? (
+        <div className="agent-grid">{userAgents.map(renderCard)}</div>
+      ) : (
+        <p className="agent-empty">
+          No custom agents yet. Use <strong>New agent</strong> to create one from
+          your own instructions.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Create / edit form for user-defined agents.
+// ---------------------------------------------------------------------------
+
+function AgentEditor({
+  initial,
+  onCancel,
+  onSaved,
+}: {
+  initial: AgentDefinition | null;
+  onCancel: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [instructions, setInstructions] = useState(initial?.instructions ?? "");
+  const [maxSteps, setMaxSteps] = useState<string>(
+    initial?.maxSteps ? String(initial.maxSteps) : "",
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSave = name.trim().length > 0 && instructions.trim().length > 0;
+
+  async function save() {
+    if (!canSave) {
+      setError("Name and instructions are required.");
+      return;
+    }
+    const parsedSteps = maxSteps.trim() ? Number(maxSteps) : null;
+    const draft: AgentDraft = {
+      name: name.trim(),
+      description: description.trim(),
+      instructions: instructions.trim(),
+      max_steps:
+        parsedSteps !== null && Number.isFinite(parsedSteps)
+          ? parsedSteps
+          : null,
+    };
+
+    setSaving(true);
+    setError(null);
+    try {
+      if (initial) {
+        await updateUserAgent(initial.id, draft);
+      } else {
+        await createUserAgent(draft);
+      }
+      await onSaved();
+    } catch (saveError) {
+      setError(String(saveError));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="agents-view">
+      <header className="agents-header run">
+        <button type="button" className="agent-back" onClick={onCancel}>
+          <ArrowLeft size={16} />
+          All agents
+        </button>
+      </header>
+
+      <div className="agent-editor">
+        <h2>{initial ? "Edit agent" : "New agent"}</h2>
+        <p className="agent-editor-note">
+          Custom agents run across your whole knowledge bank using the available
+          tools.
+        </p>
+
+        <label className="agent-field">
+          <span>Name</span>
+          <input
+            type="text"
+            value={name}
+            placeholder="e.g. Weekly digest"
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+
+        <label className="agent-field">
+          <span>Description</span>
+          <input
+            type="text"
+            value={description}
+            placeholder="Short summary shown on the card"
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </label>
+
+        <label className="agent-field">
+          <span>Instructions</span>
+          <textarea
+            value={instructions}
+            rows={7}
+            placeholder="Tell the agent what to do. It can read, search and link your notes."
+            onChange={(event) => setInstructions(event.target.value)}
+          />
+        </label>
+
+        <label className="agent-field narrow">
+          <span>Max steps (optional, 1–6)</span>
+          <input
+            type="number"
+            min={1}
+            max={6}
+            value={maxSteps}
+            placeholder="3"
+            onChange={(event) => setMaxSteps(event.target.value)}
+          />
+        </label>
+
+        {error ? (
+          <div className="agent-run-state error sm">
+            <AlertTriangle size={15} />
+            <span>{error}</span>
+          </div>
+        ) : null}
+
+        <div className="agent-editor-actions">
+          <button type="button" className="agent-back" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="agent-run-btn"
+            disabled={!canSave || saving}
+            onClick={() => void save()}
+          >
+            {saving ? <Loader2 size={14} className="spin" /> : null}
+            {initial ? "Save changes" : "Create agent"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Note-scoped agents, embedded in the right context panel. Shows only agents
+// whose scope is "note" and always runs them against the open note. Mount with
+// `key={note.id}` so switching notes resets any in-flight result.
+// ---------------------------------------------------------------------------
+
+type NoteRunState =
+  | { status: "idle" }
+  | { status: "running"; agent: AgentDefinition }
+  | { status: "done"; agent: AgentDefinition; result: AgentRunResult }
+  | { status: "error"; agent: AgentDefinition; message: string };
+
+export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
+  const agents = useMemo(
+    () => BUILTIN_AGENTS.filter((agent) => agent.scope === "note"),
+    [],
+  );
+  const [run, setRun] = useState<NoteRunState>({ status: "idle" });
+  const busy = run.status === "running";
+
+  async function start(agent: AgentDefinition) {
+    setRun({ status: "running", agent });
+    try {
+      const result = await runAgent(agent, note);
+      setRun({ status: "done", agent, result });
+    } catch (error) {
+      setRun({ status: "error", agent, message: String(error) });
+    }
+  }
+
+  return (
+    <div className="note-agents">
+      <div className="context-heading">
+        <span>Agents</span>
+      </div>
+
+      <ul className="note-agent-list">
+        {agents.map((agent) => {
           const Icon = AGENT_ICONS[agent.icon];
-          const disabled = agent.scope === "note" && !targetNote;
+          const isRunning = busy && run.agent.id === agent.id;
           return (
-            <article key={agent.id} className="agent-card">
-              <div className="agent-card-icon">
-                <Icon size={18} />
+            <li key={agent.id} className="note-agent-row">
+              <div className="agent-card-icon sm">
+                <Icon size={15} />
               </div>
-              <div className="agent-card-body">
-                <h2>{agent.name}</h2>
-                <p>{agent.description}</p>
+              <div className="note-agent-meta">
+                <strong>{agent.name}</strong>
+                <span>{agent.description}</span>
               </div>
-              <div className="agent-card-foot">
-                <span
-                  className={
-                    agent.scope === "note"
-                      ? "scope-badge note"
-                      : "scope-badge global"
-                  }
-                >
-                  {agent.scope === "note" ? "This note" : "Whole bank"}
-                </span>
-                <button
-                  type="button"
-                  className="agent-run-btn"
-                  disabled={disabled}
-                  title={
-                    disabled ? "Choose a note above first" : `Run ${agent.name}`
-                  }
-                  onClick={() => void start(agent)}
-                >
-                  <Play size={14} />
-                  Run
-                </button>
-              </div>
-            </article>
+              <button
+                type="button"
+                className="agent-run-btn sm"
+                disabled={busy}
+                onClick={() => void start(agent)}
+              >
+                {isRunning ? (
+                  <Loader2 size={13} className="spin" />
+                ) : (
+                  <Play size={13} />
+                )}
+                Run
+              </button>
+            </li>
           );
         })}
-      </div>
+      </ul>
+
+      {run.status === "running" ? (
+        <div className="agent-run-state busy sm">
+          <Loader2 size={15} className="spin" />
+          <span>Working on “{run.agent.name}”…</span>
+        </div>
+      ) : null}
+
+      {run.status === "error" ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{run.message}</span>
+        </div>
+      ) : null}
+
+      {run.status === "done" ? (
+        <div className="note-agent-result">
+          <div className="note-agent-result-head">
+            <span>{run.agent.name}</span>
+            <button
+              type="button"
+              className="ghost-icon"
+              title="Clear result"
+              onClick={() => setRun({ status: "idle" })}
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <AgentRunResultView result={run.result} />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -82,3 +82,34 @@ pub(crate) fn agent_get_run_events(
 ) -> Result<Vec<persistence::AgentEventRecord>, String> {
     persistence::get_events(app, run_id)
 }
+
+// --- User-defined agent definitions (Phase 2) -----------------------------
+
+#[tauri::command]
+pub(crate) fn agent_list_definitions(
+    app: AppHandle,
+) -> Result<Vec<persistence::AgentDefinitionRecord>, String> {
+    persistence::list_definitions(app)
+}
+
+#[tauri::command]
+pub(crate) fn agent_create_definition(
+    app: AppHandle,
+    definition: persistence::AgentDefinitionInput,
+) -> Result<persistence::AgentDefinitionRecord, String> {
+    persistence::create_definition(app, definition)
+}
+
+#[tauri::command]
+pub(crate) fn agent_update_definition(
+    app: AppHandle,
+    id: String,
+    definition: persistence::AgentDefinitionInput,
+) -> Result<persistence::AgentDefinitionRecord, String> {
+    persistence::update_definition(app, id, definition)
+}
+
+#[tauri::command]
+pub(crate) fn agent_delete_definition(app: AppHandle, id: String) -> Result<(), String> {
+    persistence::delete_definition(app, id)
+}

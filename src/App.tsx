@@ -49,7 +49,7 @@ import {
   X,
 } from "lucide-react";
 import { Bot } from "lucide-react";
-import { AgentsView, type AgentRunResult } from "./Agents";
+import { AgentsView, NoteAgentsPanel, type AgentRunResult } from "./Agents";
 import { marked } from "marked";
 import {
   useCallback,
@@ -2064,8 +2064,10 @@ function App() {
                 view === "agents" ? "icon-button active" : "icon-button"
               }
               type="button"
-              onClick={() => setView("agents")}
-              title="Agents"
+              onClick={() =>
+                setView((current) => (current === "agents" ? "notes" : "agents"))
+              }
+              title={view === "agents" ? "Back to notes" : "Agents"}
             >
               <Bot size={18} />
             </button>
@@ -2097,6 +2099,7 @@ function App() {
             <AgentsView
               notes={snapshot.notes}
               currentNoteId={activeNote?.id ?? null}
+              onClose={() => setView("notes")}
             />
           ) : (
             <div
@@ -5233,7 +5236,9 @@ function ContextPanel({
   onRenameLink,
   onUnlink,
 }: ContextPanelProps) {
-  const [tab, setTab] = useState<"details" | "links" | "chat">("details");
+  const [tab, setTab] = useState<"details" | "links" | "chat" | "agents">(
+    "details",
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [linkSearch, setLinkSearch] = useState("");
   const [newLinkLabel, setNewLinkLabel] = useState("");
@@ -5330,6 +5335,15 @@ function ContextPanel({
           >
             Chat
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "agents"}
+            className={tab === "agents" ? "active" : ""}
+            onClick={() => setTab("agents")}
+          >
+            Agents
+          </button>
         </div>
       </div>
 
@@ -5345,6 +5359,10 @@ function ContextPanel({
           noteContent={note.content}
           onCreateNote={onCreateNoteFromContent}
         />
+      </div>
+
+      <div className="panel-pane" hidden={tab !== "agents"}>
+        <NoteAgentsPanel key={note.id} note={note} />
       </div>
 
       <div className="panel-pane" hidden={tab !== "links"}>
