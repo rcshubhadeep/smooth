@@ -835,6 +835,9 @@ function App() {
   const lastSystemCapturePathRef = useRef<string | null>(null);
   const meetingVisualSourceIdRef = useRef<string | null>(null);
   const lastMeetingSnapshotAtRef = useRef(0);
+  const shouldShowContextPanel = Boolean(
+    activeNote && !activeNote.deleted_at && panelOpen,
+  );
 
   const MIN_EDITOR = 360;
 
@@ -843,7 +846,7 @@ function App() {
       setSidebarWidth(340);
       return;
     }
-    const reserved = activeNote && panelOpen ? panelWidth : 0;
+    const reserved = shouldShowContextPanel ? panelWidth : 0;
     const max = Math.max(240, window.innerWidth - reserved - MIN_EDITOR);
     setSidebarWidth(Math.min(Math.max(clientX, 240), max));
   }
@@ -996,6 +999,28 @@ function App() {
     return bank;
   }, []);
 
+  function revealNoteInTree(note: Pick<NoteWithContent, "id" | "folder_id" | "deleted_at">) {
+    setCollapsedSections((current) => {
+      if (note.deleted_at) {
+        return current.filter((sectionId) => sectionId !== "trash");
+      }
+      if (note.folder_id) {
+        const key = `open:${note.folder_id}`;
+        return current.includes(key) ? current : [...current, key];
+      }
+      return current.filter((sectionId) => sectionId !== "inbox");
+    });
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const row = Array.from(
+          document.querySelectorAll<HTMLElement>(".notes-pane [data-note-id]"),
+        ).find((element) => element.dataset.noteId === note.id);
+        row?.scrollIntoView({ block: "nearest" });
+      });
+    });
+  }
+
   async function refreshCalendarEvents({ silent = false } = {}) {
     setIsCalendarRefreshing(true);
     try {
@@ -1098,6 +1123,7 @@ function App() {
       setError(null);
       const note = await invoke<NoteWithContent>("get_note", { id });
       setActiveNote(note);
+      revealNoteInTree(note);
       setView("notes");
     } catch (openError) {
       setError(String(openError));
@@ -1627,6 +1653,13 @@ function App() {
   async function moveNoteToFolder(id: string, folderId: string | null) {
     try {
       await moveNote(id, folderId);
+      setCollapsedSections((current) => {
+        if (!folderId) {
+          return current.filter((sectionId) => sectionId !== "inbox");
+        }
+        const key = `open:${folderId}`;
+        return current.includes(key) ? current : [...current, key];
+      });
       const name = folderId
         ? (snapshot.folders.find((folder) => folder.id === folderId)?.name ??
           "folder")
@@ -2301,12 +2334,12 @@ function App() {
           ) : (
             <div
               className={
-                activeNote && panelOpen
+                shouldShowContextPanel
                   ? "notes-workspace with-panel"
                   : "notes-workspace"
               }
               style={
-                activeNote && panelOpen
+                shouldShowContextPanel
                   ? { gridTemplateColumns: `minmax(0, 1fr) ${panelWidth}px` }
                   : undefined
               }
@@ -2315,7 +2348,7 @@ function App() {
                 key={`${activeNote?.id ?? "none"}:${editorReloadKey}`}
                 note={activeNote}
                 folders={snapshot.folders}
-                panelOpen={panelOpen}
+                panelOpen={shouldShowContextPanel}
                 externalRevision={meetingContentRevision}
                 externalNoteId={meetingNoteId}
                 onTogglePanel={() => setPanelOpen((open) => !open)}
@@ -2328,7 +2361,7 @@ function App() {
                 onExport={exportNote}
                 onCreateGmailDraft={createGmailDraft}
               />
-              {activeNote && panelOpen ? (
+              {activeNote && shouldShowContextPanel ? (
                 <>
                   <ResizeHandle
                     side="right"
