@@ -8,7 +8,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 const SESSION_SAMPLE_RATE: u32 = 16_000;
 
@@ -24,7 +24,7 @@ struct DiarizationSession {
     next_speaker_index: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DiarizationTurn {
     pub speaker_id: String,
     pub start_ms: i64,
@@ -38,6 +38,12 @@ pub struct DiarizationResult {
     pub session_id: Option<String>,
     pub chunk_start_ms: i64,
     pub chunk_end_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct HelperDiarizeOutput {
+    turns: Vec<DiarizationTurn>,
+    engine: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -110,61 +116,62 @@ pub async fn diarize_capture_file(
             let duration_ms = wav_duration_ms(&audio_path)?;
             (audio_path, None, 0, duration_ms)
         };
-    let output_path = app_data_dir(&app)?
-        .join("audio-captures")
-        .join(format!("diarization-{}.rttm", now_ms()));
+    let helper = diarization_helper_path(&app)?;
+    let models_cache = app_data_dir(&app)?.join("models").join("polyvoice");
+    fs::create_dir_all(&models_cache)
+        .map_err(|error| format!("Failed to create diarization model cache: {error}"))?;
 
     let raw_turns = tauri::async_runtime::spawn_blocking(move || {
-        diarize_with_polyvoice(diarization_path, output_path)
+        run_diarization_helper(helper, diarization_path, models_cache)
     })
     .await
     .map_err(|error| format!("Diarization worker failed: {error}"))??;
+    let engine = raw_turns.engine;
     let turns = if let Some(session_id) = session_id.as_deref() {
-        reconcile_session_turns(&state, session_id, raw_turns)?
+        reconcile_session_turns(&state, session_id, raw_turns.turns)?
     } else {
-        raw_turns
+        raw_turns.turns
     };
 
     Ok(DiarizationResult {
         turns,
-        engine: "polyvoice-cli".to_string(),
+        engine,
         session_id,
         chunk_start_ms,
         chunk_end_ms,
     })
 }
 
-fn diarize_with_polyvoice(
+fn run_diarization_helper(
+    helper: PathBuf,
     audio_path: PathBuf,
-    output_path: PathBuf,
-) -> Result<Vec<DiarizationTurn>, String> {
-    let polyvoice = find_polyvoice_binary()
-        .ok_or_else(|| "Polyvoice CLI is not installed or not on PATH".to_string())?;
-
-    let output = Command::new(&polyvoice)
+    models_cache: PathBuf,
+) -> Result<HelperDiarizeOutput, String> {
+    let output = Command::new(&helper)
         .arg("diarize")
+        .arg("--input")
         .arg(&audio_path)
-        .arg("--output")
-        .arg(&output_path)
+        .arg("--models-cache")
+        .arg(&models_cache)
+        .arg("--profile")
+        .arg("balanced")
         .output()
-        .map_err(|error| format!("Failed to run Polyvoice: {error}"))?;
+        .map_err(|error| format!("Failed to run diarization helper: {error}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let message = if !stderr.is_empty() { stderr } else { stdout };
         return Err(if message.is_empty() {
-            "Polyvoice diarization failed".to_string()
+            "Diarization helper failed".to_string()
         } else {
-            format!("Polyvoice diarization failed: {message}")
+            format!("Diarization helper failed: {message}")
         });
     }
 
-    let rttm = fs::read_to_string(&output_path)
-        .map_err(|error| format!("Failed to read Polyvoice RTTM output: {error}"))?;
-    let _ = fs::remove_file(&output_path);
-
-    Ok(parse_rttm_turns(&rttm))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<HelperDiarizeOutput>(stdout.trim())
+        .map_err(|error| format!("Failed to parse diarization helper output: {error}"))
 }
 
 fn reconcile_session_turns(
@@ -341,90 +348,77 @@ fn validate_capture_audio_path(app: &AppHandle, path: String) -> Result<PathBuf,
     Ok(canonical_path)
 }
 
-fn find_polyvoice_binary() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from("polyvoice"),
-        PathBuf::from("/opt/homebrew/bin/polyvoice"),
-        PathBuf::from("/usr/local/bin/polyvoice"),
-    ];
+fn diarization_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let name = helper_binary_name();
 
-    candidates.into_iter().find(|candidate| {
-        if candidate.components().count() == 1 {
-            Command::new(candidate)
-                .arg("--help")
-                .output()
-                .map(|_| true)
-                .unwrap_or(false)
-        } else {
-            candidate.is_file() && is_executable(candidate)
-        }
-    })
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.exists()
-}
-
-fn parse_rttm_turns(input: &str) -> Vec<DiarizationTurn> {
-    let mut turns = Vec::new();
-    for line in input.lines() {
-        let parts = line.split_whitespace().collect::<Vec<_>>();
-        if parts.len() < 8 || parts[0] != "SPEAKER" {
-            continue;
-        }
-        let Ok(start_seconds) = parts[3].parse::<f64>() else {
-            continue;
-        };
-        let Ok(duration_seconds) = parts[4].parse::<f64>() else {
-            continue;
-        };
-        let start_ms = (start_seconds * 1000.0).round() as i64;
-        let end_ms = ((start_seconds + duration_seconds) * 1000.0).round() as i64;
-        if end_ms <= start_ms {
-            continue;
-        }
-        turns.push(DiarizationTurn {
-            speaker_id: normalize_speaker_id(parts[7]),
-            start_ms,
-            end_ms,
-        });
-    }
-    turns.sort_by_key(|turn| (turn.start_ms, turn.end_ms));
-    turns
-}
-
-fn normalize_speaker_id(value: &str) -> String {
-    let clean = value
-        .trim()
-        .trim_matches('"')
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        for candidate in [
+            resource_dir.join(&name),
+            resource_dir.join("binaries").join(&name),
+        ] {
+            if candidate.exists() {
+                return Ok(candidate);
             }
-        })
-        .collect::<String>()
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("_");
-
-    if clean.is_empty() {
-        "speaker".to_string()
-    } else {
-        clean
+        }
     }
+
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join(&name);
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+
+    Err(format!(
+        "Diarization helper binary was not found. Expected {}",
+        dev_path.display()
+    ))
+}
+
+fn helper_binary_name() -> String {
+    format!("smooth-diarize-{}", target_triple())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn target_triple() -> &'static str {
+    "aarch64-apple-darwin"
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn target_triple() -> &'static str {
+    "x86_64-apple-darwin"
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn target_triple() -> &'static str {
+    "aarch64-unknown-linux-gnu"
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn target_triple() -> &'static str {
+    "x86_64-unknown-linux-gnu"
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn target_triple() -> &'static str {
+    "x86_64-pc-windows-msvc"
+}
+
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+fn target_triple() -> &'static str {
+    "aarch64-pc-windows-msvc"
+}
+
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "windows", target_arch = "aarch64")
+)))]
+fn target_triple() -> &'static str {
+    "unsupported"
 }
 
 fn now_ms() -> u128 {
@@ -437,20 +431,6 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_rttm_speaker_turns() {
-        let turns = parse_rttm_turns(
-            "SPEAKER meeting 1 0.250 2.500 <NA> <NA> Speaker_0 <NA> <NA>\n\
-             SPEAKER meeting 1 3.000 1.250 <NA> <NA> speaker-1 <NA> <NA>\n",
-        );
-
-        assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0].speaker_id, "speaker_0");
-        assert_eq!(turns[0].start_ms, 250);
-        assert_eq!(turns[0].end_ms, 2750);
-        assert_eq!(turns[1].speaker_id, "speaker_1");
-    }
 
     #[test]
     fn computes_speaker_overlap_across_diarization_runs() {

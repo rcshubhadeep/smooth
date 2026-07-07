@@ -1487,6 +1487,7 @@ function App() {
       return null;
     }
 
+    setMeetingDetail("Preparing diarization");
     return await invoke<DiarizationResult>("diarize_capture_file", {
       input: {
         path,
@@ -1494,9 +1495,9 @@ function App() {
       },
     }).catch((diarizationError) => {
       const message = String(diarizationError);
-      if (message.includes("Polyvoice CLI is not installed")) {
+      if (message.includes("Diarization helper binary was not found")) {
         diarizationUnavailableRef.current = true;
-        toast.info("Polyvoice is not installed; using the participant label");
+        toast.info("Diarization helper is unavailable; using the participant label");
       } else {
         setMeetingDetail(`Diarization skipped: ${message}`);
       }

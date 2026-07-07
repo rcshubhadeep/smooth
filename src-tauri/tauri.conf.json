@@ -33,7 +33,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/smooth-system-audio"],
+    "externalBin": ["binaries/smooth-system-audio", "binaries/smooth-diarize"],
     "macOS": {
       "minimumSystemVersion": "10.15"
     },
