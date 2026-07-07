@@ -58,10 +58,11 @@ struct GoogleCalendarListResponse {
     items: Option<Vec<GoogleCalendarListEntry>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct GoogleCalendarListEntry {
     id: String,
     summary: Option<String>,
+    primary: Option<bool>,
     hidden: Option<bool>,
 }
 
@@ -75,6 +76,9 @@ struct GoogleEvent {
     id: Option<String>,
     summary: Option<String>,
     status: Option<String>,
+    #[serde(rename = "eventType")]
+    event_type: Option<String>,
+    transparency: Option<String>,
     start: Option<GoogleEventTime>,
     end: Option<GoogleEventTime>,
     location: Option<String>,
@@ -310,12 +314,22 @@ async fn list_calendars(
 
     let list = serde_json::from_str::<GoogleCalendarListResponse>(&body)
         .map_err(|error| format!("Google returned an unexpected Calendar list: {error}"))?;
-    Ok(list
+    let visible_calendars: Vec<_> = list
         .items
         .unwrap_or_default()
         .into_iter()
         .filter(|calendar| !calendar.hidden.unwrap_or(false))
-        .collect())
+        .collect();
+    let primary_calendars: Vec<_> = visible_calendars
+        .iter()
+        .filter(|calendar| calendar.primary.unwrap_or(false))
+        .cloned()
+        .collect();
+    if primary_calendars.is_empty() {
+        Ok(visible_calendars)
+    } else {
+        Ok(primary_calendars)
+    }
 }
 
 async fn list_calendar_events(
@@ -377,14 +391,30 @@ fn convert_event(calendar: &GoogleCalendarListEntry, event: GoogleEvent) -> Opti
     if event.status.as_deref() == Some("cancelled") {
         return None;
     }
+    if event.event_type.as_deref().unwrap_or("default") != "default" {
+        return None;
+    }
+    if event.transparency.as_deref() == Some("transparent") {
+        return None;
+    }
 
     let start = event.start?;
     let end = event.end;
     let (starts_at, is_all_day) = google_event_time(start)?;
+    if is_all_day {
+        return None;
+    }
     let ends_at = end.and_then(google_event_time).map(|(value, _)| value);
     let video_link = event
         .hangout_link
         .or_else(|| conference_video_link(event.conference_data));
+    let attendee_count = event
+        .attendees
+        .map(|attendees| attendees.len())
+        .unwrap_or(0);
+    if attendee_count == 0 && video_link.is_none() {
+        return None;
+    }
 
     Some(CalendarEvent {
         id: event
@@ -401,10 +431,7 @@ fn convert_event(calendar: &GoogleCalendarListEntry, event: GoogleEvent) -> Opti
         location: event.location.filter(|value| !value.trim().is_empty()),
         html_link: event.html_link,
         video_link,
-        attendee_count: event
-            .attendees
-            .map(|attendees| attendees.len())
-            .unwrap_or(0),
+        attendee_count,
     })
 }
 

@@ -2487,32 +2487,41 @@ select:hover {
 
 .meeting-capsule.calendar-ready::before {
   position: absolute;
-  inset: -2px;
-  z-index: -1;
+  inset: 0;
+  z-index: 0;
   border-radius: inherit;
+  padding: 1px;
   background: conic-gradient(
     from 0deg,
-    transparent 0deg,
-    transparent 260deg,
-    var(--accent) 300deg,
-    var(--accent-strong) 330deg,
-    transparent 360deg
+    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 0deg,
+    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 296deg,
+    color-mix(in srgb, var(--accent) 50%, var(--border-strong)) 309deg,
+    var(--accent-strong) 321deg,
+    color-mix(in srgb, var(--accent) 50%, var(--border-strong)) 333deg,
+    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 346deg,
+    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 360deg
   );
   content: "";
-  animation: meeting-ready-orbit 1.9s linear infinite;
-}
-
-.meeting-capsule.calendar-ready::after {
-  position: absolute;
-  inset: 1px;
-  z-index: -1;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--panel-strong) 94%, transparent);
-  content: "";
+  pointer-events: none;
+  opacity: 0.78;
+  animation: meeting-ready-orbit 2.8s linear infinite;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
 }
 
 .meeting-capsule.calendar-ready {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong));
+  border-color: transparent;
+}
+
+.meeting-capsule.calendar-ready > * {
+  position: relative;
+  z-index: 1;
 }
 
 .meeting-capsule.calendar-ready .meeting-dot {
