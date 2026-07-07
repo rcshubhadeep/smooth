@@ -10,6 +10,7 @@ import {
   ArrowDownUp,
   Bold,
   BookOpen,
+  CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -142,6 +143,34 @@ type GmailDraftInput = {
 type GmailDraftResult = {
   id: string;
   message_id: string | null;
+};
+
+type CalendarConfig = {
+  client_id: string;
+  client_secret: string;
+  has_access_token: boolean;
+  has_refresh_token: boolean;
+  access_token_expires_at: number | null;
+};
+
+type CalendarTokenPayload = {
+  access_token: string;
+  refresh_token: string | null;
+  expires_at: number | null;
+};
+
+type CalendarEvent = {
+  id: string;
+  calendar_id: string;
+  calendar_name: string;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+  is_all_day: boolean;
+  location: string | null;
+  html_link: string | null;
+  video_link: string | null;
+  attendee_count: number;
 };
 
 type LlamaConfig = {
@@ -327,7 +356,10 @@ const ENTITY_PREVIEW_LIMIT = 12;
 const DICTATION_CHUNK_MS = 5_000;
 const MEETING_CHUNK_MS = 10_000;
 const MEETING_SNAPSHOT_MS = 30_000;
+const CALENDAR_CUE_WINDOW_MS = 10 * 60 * 1000;
 const GMAIL_DRAFT_SCOPE = "https://www.googleapis.com/auth/gmail.drafts.create";
+const CALENDAR_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/calendar.readonly";
 
 function markdownToHtml(markdown: string) {
   return marked.parse(markdown || "", { async: false }) as string;
@@ -386,6 +418,50 @@ function formatDuration(ms: number | null | undefined) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatCalendarEventTime(event: CalendarEvent) {
+  const start = new Date(event.starts_at);
+  if (Number.isNaN(start.getTime())) {
+    return event.is_all_day ? "All day" : "";
+  }
+
+  if (event.is_all_day) {
+    return start.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  const end = event.ends_at ? new Date(event.ends_at) : null;
+  const startsToday = start.toDateString() === new Date().toDateString();
+  const datePart = startsToday
+    ? "Today"
+    : start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const timePart = start.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const endPart =
+    end && !Number.isNaN(end.getTime())
+      ? `-${end.toLocaleTimeString(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+        })}`
+      : "";
+  return `${datePart} ${timePart}${endPart}`;
+}
+
+function isCalendarEventActionable(event: CalendarEvent, nowMs: number) {
+  if (event.is_all_day) {
+    return false;
+  }
+  const startMs = new Date(event.starts_at).getTime();
+  const endMs = event.ends_at ? new Date(event.ends_at).getTime() : startMs;
+  if (!Number.isFinite(startMs)) {
+    return false;
+  }
+  return startMs <= nowMs + CALENDAR_CUE_WINDOW_MS && endMs >= nowMs;
 }
 
 function formatDb(value: number | null | undefined) {
@@ -731,6 +807,13 @@ function App() {
   const [meetingVisualSourceName, setMeetingVisualSourceName] = useState<
     string | null
   >(null);
+  const [calendarConfig, setCalendarConfig] = useState<CalendarConfig | null>(
+    null,
+  );
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [isCalendarRefreshing, setIsCalendarRefreshing] = useState(false);
+  const [calendarNow, setCalendarNow] = useState(() => Date.now());
   const [meetingMicLabel, setMeetingMicLabel] = useState(
     () => localStorage.getItem("smooth-meeting-you") || "You",
   );
@@ -822,6 +905,10 @@ function App() {
   }, [filteredNotes, snapshot.folders, renamingFolderId]);
 
   const inboxNotes = filteredNotes.filter((note) => !note.folder_id);
+  const actionableCalendarEvent =
+    calendarEvents.find((event) =>
+      isCalendarEventActionable(event, calendarNow),
+    ) ?? null;
 
   const paletteNotes = useMemo(
     () =>
@@ -859,14 +946,22 @@ function App() {
   }, []);
 
   function isSectionOpen(id: string) {
+    const isFolder = snapshot.folders.some((folder) => folder.id === id);
+    if (isFolder) {
+      return (
+        collapsedSections.includes(`open:${id}`) || renamingFolderId === id
+      );
+    }
     return !collapsedSections.includes(id);
   }
 
   function toggleSection(id: string) {
+    const isFolder = snapshot.folders.some((folder) => folder.id === id);
+    const key = isFolder ? `open:${id}` : id;
     setCollapsedSections((current) =>
-      current.includes(id)
-        ? current.filter((sectionId) => sectionId !== id)
-        : [...current, id],
+      current.includes(key)
+        ? current.filter((sectionId) => sectionId !== key)
+        : [...current, key],
     );
   }
 
@@ -901,9 +996,44 @@ function App() {
     return bank;
   }, []);
 
+  async function refreshCalendarEvents({ silent = false } = {}) {
+    setIsCalendarRefreshing(true);
+    try {
+      const config = await invoke<CalendarConfig>("get_calendar_config");
+      setCalendarConfig(config);
+      if (!config.has_access_token && !config.has_refresh_token) {
+        setCalendarEvents([]);
+        setCalendarError(null);
+        return [];
+      }
+
+      const events = await invoke<CalendarEvent[]>(
+        "list_upcoming_calendar_events",
+      );
+      setCalendarEvents(events);
+      setCalendarError(null);
+      return events;
+    } catch (calendarRefreshError) {
+      const message = String(calendarRefreshError);
+      setCalendarError(message);
+      if (!silent) {
+        toast.error(message);
+      }
+      return [];
+    } finally {
+      setIsCalendarRefreshing(false);
+    }
+  }
+
   useEffect(() => {
     loadBank().catch((loadError: unknown) => setError(String(loadError)));
+    void refreshCalendarEvents({ silent: true });
   }, [loadBank]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setCalendarNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("smooth-theme", theme);
@@ -1452,9 +1582,10 @@ function App() {
       setSnapshot(bank);
       const created = bank.folders.find((folder) => !before.has(folder.id));
       if (created) {
-        setCollapsedSections((current) =>
-          current.filter((id) => id !== created.id),
-        );
+        setCollapsedSections((current) => [
+          ...current.filter((id) => id !== created.id && id !== `open:${created.id}`),
+          `open:${created.id}`,
+        ]);
         setRenamingFolderId(created.id);
       }
     } catch (folderError) {
@@ -2056,6 +2187,69 @@ function App() {
                 ))}
               </TreeSection>
             ) : null}
+
+            <div className="sidebar-divider" role="separator" />
+
+            <section className="meetings-panel" aria-label="Upcoming meetings">
+              <div className="meetings-header">
+                <div>
+                  <CalendarDays size={15} />
+                  <span>Meetings</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void refreshCalendarEvents()}
+                  disabled={isCalendarRefreshing}
+                  title="Refresh meetings"
+                >
+                  <RefreshCw
+                    className={isCalendarRefreshing ? "spin" : ""}
+                    size={14}
+                  />
+                  Refresh
+                </button>
+              </div>
+
+              {calendarConfig?.has_access_token ||
+              calendarConfig?.has_refresh_token ? (
+                calendarEvents.length > 0 ? (
+                  <div className="meetings-list">
+                    {calendarEvents.map((event) => {
+                      const actionable = isCalendarEventActionable(
+                        event,
+                        calendarNow,
+                      );
+                      return (
+                        <div
+                          key={`${event.calendar_id}:${event.id}`}
+                          className={
+                            actionable ? "meeting-row actionable" : "meeting-row"
+                          }
+                        >
+                          <div>
+                            <strong>{event.title}</strong>
+                            <span>{formatCalendarEventTime(event)}</span>
+                          </div>
+                          <small>{event.calendar_name}</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="meetings-empty">
+                    {isCalendarRefreshing
+                      ? "Loading meetings"
+                      : "No upcoming meetings"}
+                  </p>
+                )
+              ) : (
+                <p className="meetings-empty">Connect Calendar in Settings</p>
+              )}
+
+              {calendarError ? (
+                <p className="meetings-error">{calendarError}</p>
+              ) : null}
+            </section>
           </div>
 
           <div className="sidebar-footer">
@@ -2094,7 +2288,10 @@ function App() {
 
         <section className="workspace">
           {view === "settings" ? (
-            <SettingsView onClose={() => setView("notes")} />
+            <SettingsView
+              onCalendarChanged={() => void refreshCalendarEvents()}
+              onClose={() => setView("notes")}
+            />
           ) : view === "agents" ? (
             <AgentsView
               notes={snapshot.notes}
@@ -2199,6 +2396,7 @@ function App() {
         noteTitle={meetingNoteTitle}
         visualSourceName={meetingVisualSourceName}
         state={meetingState}
+        calendarCueTitle={actionableCalendarEvent?.title ?? null}
         micLabel={meetingMicLabel}
         systemLabel={meetingSystemLabel}
         onMicLabelChange={setMeetingMicLabel}
@@ -2228,6 +2426,7 @@ type MeetingCapsuleProps = {
   noteTitle: string;
   visualSourceName: string | null;
   state: MeetingState;
+  calendarCueTitle: string | null;
   micLabel: string;
   systemLabel: string;
   onMicLabelChange: (value: string) => void;
@@ -2243,6 +2442,7 @@ function MeetingCapsule({
   noteTitle,
   visualSourceName,
   state,
+  calendarCueTitle,
   micLabel,
   systemLabel,
   onMicLabelChange,
@@ -2255,19 +2455,22 @@ function MeetingCapsule({
   const isBusy = state === "starting" || state === "stopping";
   const isActive = state === "recording";
   const isPaused = state === "paused";
+  const isCalendarReady = state === "idle" && Boolean(calendarCueTitle);
 
   return (
-    <div className={`meeting-capsule ${state}`}>
+    <div
+      className={`meeting-capsule ${state}${isCalendarReady ? " calendar-ready" : ""}`}
+    >
       <div className="meeting-capsule-status">
         <span className="meeting-dot" aria-hidden="true" />
         <div>
           <strong>
             {isActive || isPaused || isBusy
               ? noteTitle || "Meeting"
-              : "Meeting mode"}
+              : calendarCueTitle || "Meeting mode"}
           </strong>
           <small>
-            {isBusy ? state : detail}
+            {isCalendarReady ? "Ready to start" : isBusy ? state : detail}
             {visualSourceName ? ` · ${visualSourceName}` : ""}
           </small>
         </div>
@@ -2601,10 +2804,11 @@ function CommandPalette({
 }
 
 type SettingsViewProps = {
+  onCalendarChanged: () => void;
   onClose: () => void;
 };
 
-function SettingsView({ onClose }: SettingsViewProps) {
+function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   const [config, setConfig] = useState<LlamaConfig>({
     base_url: "http://127.0.0.1:8080",
     preferred_model: null,
@@ -2626,6 +2830,13 @@ function SettingsView({ onClose }: SettingsViewProps) {
     threads: 4,
   });
   const [gmailConfig, setGmailConfig] = useState<GmailConfig>({
+    client_id: "",
+    client_secret: "",
+    has_access_token: false,
+    has_refresh_token: false,
+    access_token_expires_at: null,
+  });
+  const [calendarConfig, setCalendarConfig] = useState<CalendarConfig>({
     client_id: "",
     client_secret: "",
     has_access_token: false,
@@ -2656,6 +2867,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
   const [isSystemCaptureBusy, setIsSystemCaptureBusy] = useState(false);
   const [isSttBusy, setIsSttBusy] = useState(false);
   const [isGmailBusy, setIsGmailBusy] = useState(false);
+  const [isCalendarBusy, setIsCalendarBusy] = useState(false);
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
@@ -2728,6 +2940,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
         return refreshSttStatus();
       }),
       invoke<GmailConfig>("get_gmail_config").then(setGmailConfig),
+      invoke<CalendarConfig>("get_calendar_config").then(setCalendarConfig),
       invoke<AgentToolDescriptor[]>("agent_list_tools").then((tools) => {
         const sortedTools = [...tools].sort((left, right) =>
           left.name.localeCompare(right.name),
@@ -2948,6 +3161,9 @@ function SettingsView({ onClose }: SettingsViewProps) {
         config: gmailConfig,
       });
       setGmailConfig(savedConfig);
+      const nextCalendarConfig =
+        await invoke<CalendarConfig>("get_calendar_config");
+      setCalendarConfig(nextCalendarConfig);
       toast.success("Gmail OAuth settings saved");
     } catch (gmailError) {
       setSettingsError(String(gmailError));
@@ -3009,6 +3225,59 @@ function SettingsView({ onClose }: SettingsViewProps) {
       setSettingsError(String(gmailError));
     } finally {
       setIsGmailBusy(false);
+    }
+  }
+
+  async function connectCalendar() {
+    setIsCalendarBusy(true);
+    setSettingsError(null);
+    try {
+      const savedConfig = await invoke<GmailConfig>("save_gmail_config", {
+        config: gmailConfig,
+      });
+      setGmailConfig(savedConfig);
+      const { signIn } =
+        await import("@choochmeque/tauri-plugin-google-auth-api");
+      const tokens = await signIn({
+        clientId: savedConfig.client_id,
+        clientSecret: savedConfig.client_secret,
+        scopes: [CALENDAR_READONLY_SCOPE],
+        successHtmlResponse:
+          "<h1>Calendar connected</h1><p>You can close this window and return to Smooth.</p>",
+      });
+      const nextConfig = await saveCalendarTokens(tokens);
+      setCalendarConfig(nextConfig);
+      onCalendarChanged();
+      toast.success("Calendar connected");
+    } catch (calendarError) {
+      setSettingsError(String(calendarError));
+    } finally {
+      setIsCalendarBusy(false);
+    }
+  }
+
+  async function saveCalendarTokens(tokens: TokenResponse) {
+    return invoke<CalendarConfig>("save_calendar_tokens", {
+      tokens: {
+        access_token: tokens.accessToken,
+        refresh_token: tokens.refreshToken ?? null,
+        expires_at: tokens.expiresAt ?? null,
+      } satisfies CalendarTokenPayload,
+    });
+  }
+
+  async function disconnectCalendar() {
+    setIsCalendarBusy(true);
+    setSettingsError(null);
+    try {
+      const nextConfig = await invoke<CalendarConfig>("clear_calendar_auth");
+      setCalendarConfig(nextConfig);
+      onCalendarChanged();
+      toast.success("Calendar disconnected");
+    } catch (calendarError) {
+      setSettingsError(String(calendarError));
+    } finally {
+      setIsCalendarBusy(false);
     }
   }
 
@@ -3405,10 +3674,12 @@ function SettingsView({ onClose }: SettingsViewProps) {
 
       <section className="settings-section">
         <div className="section-heading">
-          <Mail size={18} />
-          <span>Gmail drafts</span>
+          <CalendarDays size={18} />
+          <span>Google integrations</span>
           <small>
-            {gmailConfig.has_access_token ? "Connected" : "Not connected"}
+            {gmailConfig.has_access_token || calendarConfig.has_access_token
+              ? "Connected"
+              : "Not connected"}
           </small>
         </div>
 
@@ -3453,7 +3724,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
           )}
           <div>
             <strong>
-              {gmailConfig.has_access_token ? "connected" : "not connected"}
+              Gmail {gmailConfig.has_access_token ? "connected" : "not connected"}
             </strong>
             <span>
               Scope: gmail.drafts.create
@@ -3469,10 +3740,37 @@ function SettingsView({ onClose }: SettingsViewProps) {
           ) : null}
         </div>
 
+        <div
+          className={`connection-status ${calendarConfig.has_access_token ? "ready" : "offline"}`}
+        >
+          {calendarConfig.has_access_token ? (
+            <CheckCircle2 size={19} />
+          ) : (
+            <CircleAlert size={19} />
+          )}
+          <div>
+            <strong>
+              Calendar{" "}
+              {calendarConfig.has_access_token ? "connected" : "not connected"}
+            </strong>
+            <span>
+              Scope: calendar.readonly
+              {calendarConfig.has_refresh_token ? " · refresh enabled" : ""}
+            </span>
+          </div>
+          {calendarConfig.access_token_expires_at ? (
+            <small>
+              {new Date(
+                calendarConfig.access_token_expires_at * 1000,
+              ).toLocaleTimeString()}
+            </small>
+          ) : null}
+        </div>
+
         <p className="settings-help">
           Use a Google OAuth Web client with an authorized redirect URI of
-          http://localhost. Draft creation requires only the Gmail drafts create
-          scope.
+          http://localhost. Smooth asks for Gmail draft creation and Calendar
+          read-only access separately.
         </p>
 
         <div className="settings-actions">
@@ -3481,7 +3779,7 @@ function SettingsView({ onClose }: SettingsViewProps) {
             onClick={() => void saveGmailConfig()}
             disabled={isGmailBusy}
           >
-            Save Gmail Settings
+            Save Google Settings
           </button>
           <button
             type="button"
@@ -3490,6 +3788,15 @@ function SettingsView({ onClose }: SettingsViewProps) {
           >
             {gmailConfig.has_access_token ? "Reconnect Gmail" : "Connect Gmail"}
           </button>
+          <button
+            type="button"
+            onClick={() => void connectCalendar()}
+            disabled={isCalendarBusy || isGmailBusy}
+          >
+            {calendarConfig.has_access_token
+              ? "Reconnect Calendar"
+              : "Connect Calendar"}
+          </button>
           {gmailConfig.has_access_token || gmailConfig.has_refresh_token ? (
             <button
               type="button"
@@ -3497,6 +3804,16 @@ function SettingsView({ onClose }: SettingsViewProps) {
               disabled={isGmailBusy}
             >
               Disconnect
+            </button>
+          ) : null}
+          {calendarConfig.has_access_token ||
+          calendarConfig.has_refresh_token ? (
+            <button
+              type="button"
+              onClick={() => void disconnectCalendar()}
+              disabled={isCalendarBusy}
+            >
+              Disconnect Calendar
             </button>
           ) : null}
         </div>

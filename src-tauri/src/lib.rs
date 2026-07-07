@@ -1,6 +1,7 @@
 mod agents;
 mod audio_capture;
 mod audio_preprocess;
+mod calendar;
 mod chat;
 mod export_notes;
 mod gmail;
@@ -3058,6 +3059,10 @@ pub fn run() {
             gmail::save_gmail_tokens,
             gmail::clear_gmail_auth,
             gmail::create_gmail_draft,
+            calendar::get_calendar_config,
+            calendar::save_calendar_tokens,
+            calendar::clear_calendar_auth,
+            calendar::list_upcoming_calendar_events,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,
