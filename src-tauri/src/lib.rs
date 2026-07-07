@@ -3,6 +3,7 @@ mod audio_capture;
 mod audio_preprocess;
 mod calendar;
 mod chat;
+mod diarization;
 mod export_notes;
 mod gmail;
 mod stt;
@@ -3063,6 +3064,7 @@ pub fn run() {
             calendar::save_calendar_tokens,
             calendar::clear_calendar_auth,
             calendar::list_upcoming_calendar_events,
+            diarization::diarize_capture_file,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,

@@ -275,6 +275,22 @@ type MeetingSnapshot = {
   captured_at_ms: number;
 };
 
+type DiarizationTurn = {
+  speaker_id: string;
+  start_ms: number;
+  end_ms: number;
+};
+
+type DiarizationResult = {
+  turns: DiarizationTurn[];
+  engine: string;
+};
+
+type DiarizationSpeakerPrompt = {
+  speakerId: string;
+  fallbackName: string;
+};
+
 type SttConfig = {
   model_path: string;
   language: string | null;
@@ -547,6 +563,50 @@ function appendMeetingTranscript(
 function appendMeetingSnapshot(content: string, snapshotLine: string) {
   const trimmed = content.trimEnd();
   return `${trimmed}\n${snapshotLine}\n`;
+}
+
+function diarizedSpeakerForSegment(
+  segment: SttSegment,
+  turns: DiarizationTurn[],
+): string | null {
+  if (turns.length === 0) {
+    return null;
+  }
+  if (turns.length === 1) {
+    return turns[0].speaker_id;
+  }
+
+  let bestTurn: DiarizationTurn | null = null;
+  let bestOverlap = 0;
+  for (const turn of turns) {
+    const overlap =
+      Math.min(segment.end_ms, turn.end_ms) -
+      Math.max(segment.start_ms, turn.start_ms);
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      bestTurn = turn;
+    }
+  }
+  if (bestTurn && bestOverlap > 0) {
+    return bestTurn.speaker_id;
+  }
+
+  const midpoint = (segment.start_ms + segment.end_ms) / 2;
+  let nearestTurn = turns[0];
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const turn of turns) {
+    const distance =
+      midpoint < turn.start_ms
+        ? turn.start_ms - midpoint
+        : midpoint > turn.end_ms
+          ? midpoint - turn.end_ms
+          : 0;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestTurn = turn;
+    }
+  }
+  return nearestTurn.speaker_id;
 }
 
 /** Distinct speaker names, in first-seen order, found in transcript lines. */
@@ -851,6 +911,8 @@ function App() {
   const [meetingSystemLabel, setMeetingSystemLabel] = useState(
     () => localStorage.getItem("smooth-meeting-others") || "Participants",
   );
+  const [diarizationPrompt, setDiarizationPrompt] =
+    useState<DiarizationSpeakerPrompt | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const meetingMicLabelRef = useRef(meetingMicLabel);
   meetingMicLabelRef.current = meetingMicLabel;
@@ -866,6 +928,12 @@ function App() {
   const lastSystemCapturePathRef = useRef<string | null>(null);
   const meetingVisualSourceIdRef = useRef<string | null>(null);
   const lastMeetingSnapshotAtRef = useRef(0);
+  const diarizationSpeakerNamesRef = useRef<Record<string, string>>({});
+  const diarizationSpeakerOrderRef = useRef<string[]>([]);
+  const diarizationPromptedSpeakersRef = useRef<Set<string>>(new Set());
+  const diarizationPromptQueueRef = useRef<DiarizationSpeakerPrompt[]>([]);
+  const diarizationPromptRef = useRef<DiarizationSpeakerPrompt | null>(null);
+  const diarizationUnavailableRef = useRef(false);
   const shouldShowContextPanel = Boolean(
     activeNote && !activeNote.deleted_at && panelOpen,
   );
@@ -1305,6 +1373,125 @@ function App() {
     [applySavedNote],
   );
 
+  function resetMeetingDiarization() {
+    diarizationSpeakerNamesRef.current = {};
+    diarizationSpeakerOrderRef.current = [];
+    diarizationPromptedSpeakersRef.current = new Set();
+    diarizationPromptQueueRef.current = [];
+    diarizationPromptRef.current = null;
+    diarizationUnavailableRef.current = false;
+    setDiarizationPrompt(null);
+  }
+
+  function showNextDiarizationPrompt() {
+    if (diarizationPromptRef.current) {
+      return;
+    }
+    const next = diarizationPromptQueueRef.current.shift() ?? null;
+    diarizationPromptRef.current = next;
+    setDiarizationPrompt(next);
+  }
+
+  function enqueueDiarizationPrompt(prompt: DiarizationSpeakerPrompt) {
+    if (diarizationPromptedSpeakersRef.current.has(prompt.speakerId)) {
+      return;
+    }
+    diarizationPromptedSpeakersRef.current.add(prompt.speakerId);
+    diarizationPromptQueueRef.current.push(prompt);
+    showNextDiarizationPrompt();
+  }
+
+  function dismissDiarizationPrompt() {
+    diarizationPromptRef.current = null;
+    setDiarizationPrompt(null);
+    window.setTimeout(showNextDiarizationPrompt, 0);
+  }
+
+  function resolveDiarizedSpeakerLabel(speakerId: string | null) {
+    if (!speakerId) {
+      return meetingSystemLabelRef.current;
+    }
+
+    let speakerIndex = diarizationSpeakerOrderRef.current.indexOf(speakerId);
+    if (speakerIndex === -1) {
+      diarizationSpeakerOrderRef.current.push(speakerId);
+      speakerIndex = diarizationSpeakerOrderRef.current.length - 1;
+    }
+
+    const fallbackName = `Speaker ${speakerIndex + 1}`;
+    if (!diarizationSpeakerNamesRef.current[speakerId]) {
+      diarizationSpeakerNamesRef.current[speakerId] = fallbackName;
+      enqueueDiarizationPrompt({ speakerId, fallbackName });
+    }
+
+    return diarizationSpeakerNamesRef.current[speakerId] || fallbackName;
+  }
+
+  async function renameDiarizedSpeaker(speakerId: string, requestedName: string) {
+    const nextName = requestedName.trim();
+    if (!nextName) {
+      dismissDiarizationPrompt();
+      return;
+    }
+
+    const previousName =
+      diarizationSpeakerNamesRef.current[speakerId] ||
+      diarizationPromptRef.current?.fallbackName ||
+      "Speaker";
+    diarizationSpeakerNamesRef.current[speakerId] = nextName;
+    dismissDiarizationPrompt();
+
+    if (previousName === nextName) {
+      return;
+    }
+
+    const noteId = meetingNoteIdRef.current;
+    if (!noteId) {
+      return;
+    }
+
+    const nextContent = renameSpeakerInContent(
+      meetingContentRef.current,
+      previousName,
+      nextName,
+    );
+    if (nextContent === meetingContentRef.current) {
+      return;
+    }
+
+    try {
+      meetingContentRef.current = nextContent;
+      const saved = await saveMeetingNote(
+        noteId,
+        meetingTitleRef.current,
+        nextContent,
+        meetingFolderIdRef.current,
+      );
+      meetingFolderIdRef.current = saved.folder_id;
+    } catch (renameError) {
+      toast.error(renameError);
+    }
+  }
+
+  async function diarizeSystemCapture(path: string) {
+    if (diarizationUnavailableRef.current) {
+      return null;
+    }
+
+    return await invoke<DiarizationResult>("diarize_capture_file", {
+      path,
+    }).catch((diarizationError) => {
+      const message = String(diarizationError);
+      if (message.includes("Polyvoice CLI is not installed")) {
+        diarizationUnavailableRef.current = true;
+        toast.info("Polyvoice is not installed; using the participant label");
+      } else {
+        setMeetingDetail(`Diarization skipped: ${message}`);
+      }
+      return null;
+    });
+  }
+
   async function startMeetingMode() {
     if (meetingState !== "idle") {
       return;
@@ -1352,6 +1539,7 @@ function App() {
       lastSystemCapturePathRef.current = null;
       meetingVisualSourceIdRef.current = visualSourceId;
       lastMeetingSnapshotAtRef.current = 0;
+      resetMeetingDiarization();
       setMeetingVisualSourceName(visualSourceName);
       setMeetingNoteTitle(title);
       await saveMeetingNote(note.id, title, content, note.folder_id);
@@ -1433,6 +1621,7 @@ function App() {
     meetingChunkRef.current = null;
     meetingNoteIdRef.current = null;
     meetingVisualSourceIdRef.current = null;
+    resetMeetingDiarization();
     setMeetingNoteId(null);
     setMeetingVisualSourceName(null);
     setMeetingState("idle");
@@ -1577,11 +1766,34 @@ function App() {
       });
       const text = result?.text.trim();
       if (text) {
-        const label =
-          item.source === "Mic"
-            ? meetingMicLabelRef.current
-            : meetingSystemLabelRef.current;
-        nextContent = appendMeetingTranscript(nextContent, label, text);
+        if (item.source === "Mic") {
+          nextContent = appendMeetingTranscript(
+            nextContent,
+            meetingMicLabelRef.current,
+            text,
+          );
+        } else {
+          const diarization = await diarizeSystemCapture(item.preview.path);
+          if (diarization?.turns.length && result?.segments.length) {
+            for (const segment of result.segments) {
+              const speakerId = diarizedSpeakerForSegment(
+                segment,
+                diarization.turns,
+              );
+              nextContent = appendMeetingTranscript(
+                nextContent,
+                resolveDiarizedSpeakerLabel(speakerId),
+                segment.text,
+              );
+            }
+          } else {
+            nextContent = appendMeetingTranscript(
+              nextContent,
+              meetingSystemLabelRef.current,
+              text,
+            );
+          }
+        }
         hasNoteChanges = true;
       }
     }
@@ -2473,6 +2685,16 @@ function App() {
         onStop={() => void stopMeetingMode()}
       />
 
+      {diarizationPrompt ? (
+        <DiarizationSpeakerPromptBox
+          prompt={diarizationPrompt}
+          onDismiss={dismissDiarizationPrompt}
+          onRename={(speakerId, name) =>
+            void renameDiarizedSpeaker(speakerId, name)
+          }
+        />
+      ) : null}
+
       {meetingSourcePickerOpen ? (
         <MeetingSourcePicker
           sources={meetingVisualSources}
@@ -2601,6 +2823,64 @@ function MeetingCapsule({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function DiarizationSpeakerPromptBox({
+  prompt,
+  onDismiss,
+  onRename,
+}: {
+  prompt: DiarizationSpeakerPrompt;
+  onDismiss: () => void;
+  onRename: (speakerId: string, name: string) => void;
+}) {
+  const [value, setValue] = useState(prompt.fallbackName);
+
+  useEffect(() => {
+    setValue(prompt.fallbackName);
+  }, [prompt]);
+
+  function commit() {
+    const next = value.trim();
+    if (next && next !== prompt.fallbackName) {
+      onRename(prompt.speakerId, next);
+    } else {
+      onDismiss();
+    }
+  }
+
+  return (
+    <section
+      className="diarization-prompt"
+      aria-label="Name newly detected speaker"
+    >
+      <div>
+        <strong>New speaker detected</strong>
+        <small>{prompt.fallbackName}</small>
+      </div>
+      <input
+        value={value}
+        onChange={(event) => setValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            onDismiss();
+          }
+        }}
+        aria-label={`Name ${prompt.fallbackName}`}
+        autoFocus
+      />
+      <button type="button" onClick={commit}>
+        Save
+      </button>
+      <button type="button" className="ghost" onClick={onDismiss}>
+        Later
+      </button>
+    </section>
   );
 }
 

@@ -2677,6 +2677,89 @@ select:hover {
   opacity: 0.55;
 }
 
+.diarization-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 80px;
+  z-index: 41;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(520px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-strong) 94%, transparent);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+  backdrop-filter: blur(18px);
+}
+
+.diarization-prompt > div {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.diarization-prompt strong,
+.diarization-prompt small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diarization-prompt strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.diarization-prompt small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.diarization-prompt input {
+  width: 150px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: 0;
+}
+
+.diarization-prompt input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.diarization-prompt button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.diarization-prompt button.ghost {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--muted);
+}
+
 .meeting-source-backdrop {
   position: fixed;
   inset: 0;
