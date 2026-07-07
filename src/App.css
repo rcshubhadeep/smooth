@@ -2485,26 +2485,38 @@ select:hover {
   backdrop-filter: blur(18px);
 }
 
+/* Animatable angle for the running-highlight. Registering it as a typed
+   custom property lets the conic-gradient's start angle be transitioned/
+   animated smoothly (raw CSS vars can't animate). */
+@property --mc-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* A bright "comet" (sharp head + soft trailing tail) that travels ALONG the
+   border. We rotate the gradient's start angle in place — not the element —
+   so the ring stays glued to the capsule outline and the highlight reads as a
+   line running across the border rather than a wedge sweeping from the centre. */
 .meeting-capsule.calendar-ready::before {
   position: absolute;
   inset: 0;
   z-index: 0;
   border-radius: inherit;
-  padding: 1px;
+  padding: 1.5px;
   background: conic-gradient(
-    from 0deg,
-    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 0deg,
-    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 296deg,
-    color-mix(in srgb, var(--accent) 50%, var(--border-strong)) 309deg,
-    var(--accent-strong) 321deg,
-    color-mix(in srgb, var(--accent) 50%, var(--border-strong)) 333deg,
-    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 346deg,
-    color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 360deg
+    from var(--mc-angle),
+    transparent 0deg,
+    transparent 34deg,
+    color-mix(in srgb, var(--accent) 28%, transparent) 52deg,
+    color-mix(in srgb, var(--accent) 72%, transparent) 68deg,
+    var(--accent-strong) 76deg,
+    transparent 82deg,
+    transparent 360deg
   );
   content: "";
   pointer-events: none;
-  opacity: 0.78;
-  animation: meeting-ready-orbit 2.8s linear infinite;
+  animation: meeting-ready-trace 2.6s linear infinite;
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -2515,8 +2527,9 @@ select:hover {
   mask-composite: exclude;
 }
 
+/* Always-visible faint accent border underneath the running comet. */
 .meeting-capsule.calendar-ready {
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong));
 }
 
 .meeting-capsule.calendar-ready > * {
@@ -2529,9 +2542,16 @@ select:hover {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
-@keyframes meeting-ready-orbit {
+@keyframes meeting-ready-trace {
   to {
-    transform: rotate(360deg);
+    --mc-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meeting-capsule.calendar-ready::before {
+    animation: none;
+    opacity: 0.6;
   }
 }
 
