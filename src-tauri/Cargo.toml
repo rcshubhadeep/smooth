@@ -18,7 +18,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = []
+# Smooth's primary packaged target is macOS, and whisper.cpp's Metal backend is
+# the tested path on Apple Silicon. Keeping it as the default also makes plain
+# `tauri build` match `tauri dev -- --features metal`.
+default = ["metal"]
 metal = ["whisper-rs/metal"]
 coreml = ["whisper-rs/coreml"]
 cuda = ["whisper-rs/cuda"]

@@ -1208,6 +1208,8 @@ async fn extract_chunk_entities(
         }
         false
     };
+    #[cfg(not(debug_assertions))]
+    let _ = used_fallback;
 
     #[cfg(debug_assertions)]
     println!(

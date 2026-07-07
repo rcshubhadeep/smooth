@@ -1,0 +1,5 @@
+[env]
+# whisper.cpp/ggml uses C++ std::filesystem APIs that Apple marks available
+# from macOS 10.15. Tauri/Cargo otherwise default to 10.13 for release builds,
+# which makes `npm run tauri build` fail while compiling whisper-rs-sys.
+MACOSX_DEPLOYMENT_TARGET = "10.15"

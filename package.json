@@ -10,8 +10,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:dev:metal": "tauri dev -- --features metal",
-    "tauri:build": "tauri build",
-    "tauri:build:metal": "tauri build -- --features metal"
+    "tauri:build": "tauri build -- --features metal",
+    "tauri:build:metal": "tauri build -- --features metal",
+    "tauri:build:cpu": "tauri build -- --no-default-features"
   },
   "dependencies": {
     "@choochmeque/tauri-plugin-google-auth-api": "^0.5.1",
