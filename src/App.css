@@ -46,8 +46,8 @@
   --border: #e6e6e9;
   --border-strong: #d7d7db;
   /* Terracotta accent — used sparingly: primary actions, active marker, focus, small labels */
-  --accent: #c05a34;
-  --accent-strong: #a6472b;
+  --accent: #b35f3f;
+  --accent-strong: #9c4f33;
   --accent-soft: color-mix(in srgb, var(--accent) 12%, var(--panel-strong));
   --on-accent: #ffffff;
   --danger: #e5484d;
@@ -100,8 +100,8 @@
   --faint: #5c5c60;
   --border: #2a2a2d;
   --border-strong: #3a3a3e;
-  --accent: #d2724a;
-  --accent-strong: #e39069;
+  --accent: #c77457;
+  --accent-strong: #d9906f;
   --accent-soft: color-mix(in srgb, var(--accent) 20%, var(--panel-strong));
   --on-accent: #ffffff;
   --danger: #ff6b6b;
@@ -123,8 +123,8 @@
     --faint: #5c5c60;
     --border: #2a2a2d;
     --border-strong: #3a3a3e;
-    --accent: #d2724a;
-    --accent-strong: #e39069;
+    --accent: #c77457;
+    --accent-strong: #d9906f;
     --accent-soft: color-mix(in srgb, var(--accent) 20%, var(--panel-strong));
     --on-accent: #ffffff;
     --danger: #ff6b6b;
