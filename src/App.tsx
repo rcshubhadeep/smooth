@@ -517,6 +517,37 @@ function meetingTranscriptLine(label: string, text: string) {
 // Matches the structural speaker slot of a transcript line:
 // `- <time> · **<speaker>:** <text>` → [full prefix, "- <time> · **", speaker, ":** "]
 const TRANSCRIPT_SPEAKER = /^(- .+? · \*\*)(.+?)(:\*\* )/;
+const TRANSCRIPT_LINE = /^(- .+? · \*\*)(.+?)(:\*\* )(.*)$/;
+
+function appendMeetingTranscript(
+  content: string,
+  label: string,
+  text: string,
+): string {
+  const speaker = label.trim() || "Speaker";
+  const cleanText = text.trim();
+  if (!cleanText) {
+    return content;
+  }
+
+  const trimmed = content.trimEnd();
+  const lines = trimmed.split("\n");
+  const lastIndex = lines.length - 1;
+  const lastLine = lines[lastIndex] ?? "";
+  const match = lastLine.match(TRANSCRIPT_LINE);
+  if (match && match[2] === speaker) {
+    const currentText = match[4].trimEnd();
+    lines[lastIndex] = `${match[1]}${match[2]}${match[3]}${currentText} ${cleanText}`;
+    return `${lines.join("\n")}\n`;
+  }
+
+  return `${trimmed}\n${meetingTranscriptLine(speaker, cleanText)}\n`;
+}
+
+function appendMeetingSnapshot(content: string, snapshotLine: string) {
+  const trimmed = content.trimEnd();
+  return `${trimmed}\n${snapshotLine}\n`;
+}
 
 /** Distinct speaker names, in first-seen order, found in transcript lines. */
 function parseSpeakers(content: string): string[] {
@@ -1535,7 +1566,8 @@ function App() {
       });
     }
 
-    const noteLines: string[] = [];
+    let nextContent = meetingContentRef.current;
+    let hasNoteChanges = false;
     for (const item of previews) {
       const result = await invoke<SttTranscription>("transcribe_capture_file", {
         path: item.preview.path,
@@ -1549,21 +1581,22 @@ function App() {
           item.source === "Mic"
             ? meetingMicLabelRef.current
             : meetingSystemLabelRef.current;
-        noteLines.push(meetingTranscriptLine(label, text));
+        nextContent = appendMeetingTranscript(nextContent, label, text);
+        hasNoteChanges = true;
       }
     }
 
     const snapshotLine = await maybeCaptureMeetingSnapshot();
     if (snapshotLine) {
-      noteLines.push(snapshotLine);
+      nextContent = appendMeetingSnapshot(nextContent, snapshotLine);
+      hasNoteChanges = true;
     }
 
-    if (noteLines.length === 0) {
+    if (!hasNoteChanges) {
       setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
       return;
     }
 
-    const nextContent = `${meetingContentRef.current.trimEnd()}\n${noteLines.join("\n")}\n`;
     meetingContentRef.current = nextContent;
     const saved = await saveMeetingNote(
       noteId,
