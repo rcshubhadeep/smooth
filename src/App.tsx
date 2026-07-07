@@ -284,6 +284,13 @@ type DiarizationTurn = {
 type DiarizationResult = {
   turns: DiarizationTurn[];
   engine: string;
+  session_id: string | null;
+  chunk_start_ms: number;
+  chunk_end_ms: number;
+};
+
+type DiarizationSessionStarted = {
+  session_id: string;
 };
 
 type DiarizationSpeakerPrompt = {
@@ -928,6 +935,7 @@ function App() {
   const lastSystemCapturePathRef = useRef<string | null>(null);
   const meetingVisualSourceIdRef = useRef<string | null>(null);
   const lastMeetingSnapshotAtRef = useRef(0);
+  const diarizationSessionIdRef = useRef<string | null>(null);
   const diarizationSpeakerNamesRef = useRef<Record<string, string>>({});
   const diarizationSpeakerOrderRef = useRef<string[]>([]);
   const diarizationPromptedSpeakersRef = useRef<Set<string>>(new Set());
@@ -1380,6 +1388,7 @@ function App() {
     diarizationPromptQueueRef.current = [];
     diarizationPromptRef.current = null;
     diarizationUnavailableRef.current = false;
+    diarizationSessionIdRef.current = null;
     setDiarizationPrompt(null);
   }
 
@@ -1479,7 +1488,10 @@ function App() {
     }
 
     return await invoke<DiarizationResult>("diarize_capture_file", {
-      path,
+      input: {
+        path,
+        sessionId: diarizationSessionIdRef.current,
+      },
     }).catch((diarizationError) => {
       const message = String(diarizationError);
       if (message.includes("Polyvoice CLI is not installed")) {
@@ -1540,6 +1552,14 @@ function App() {
       meetingVisualSourceIdRef.current = visualSourceId;
       lastMeetingSnapshotAtRef.current = 0;
       resetMeetingDiarization();
+      const diarizationSession = await invoke<DiarizationSessionStarted>(
+        "start_diarization_session",
+      ).catch((sessionError) => {
+        setMeetingDetail(`Diarization session skipped: ${String(sessionError)}`);
+        return null;
+      });
+      diarizationSessionIdRef.current =
+        diarizationSession?.session_id ?? null;
       setMeetingVisualSourceName(visualSourceName);
       setMeetingNoteTitle(title);
       await saveMeetingNote(note.id, title, content, note.folder_id);
@@ -1552,6 +1572,7 @@ function App() {
       meetingLoopRef.current = runMeetingLoop();
     } catch (meetingError) {
       meetingLoopActiveRef.current = false;
+      await stopDiarizationSession();
       await stopMeetingSources();
       meetingVisualSourceIdRef.current = null;
       setMeetingVisualSourceName(null);
@@ -1617,6 +1638,7 @@ function App() {
     await meetingLoopRef.current;
     await processMeetingChunk(250, false);
     await stopMeetingSources();
+    await stopDiarizationSession();
     meetingLoopRef.current = null;
     meetingChunkRef.current = null;
     meetingNoteIdRef.current = null;
@@ -1643,6 +1665,17 @@ function App() {
         toast.error(extractionError);
       }
     }
+  }
+
+  async function stopDiarizationSession() {
+    const sessionId = diarizationSessionIdRef.current;
+    diarizationSessionIdRef.current = null;
+    if (!sessionId) {
+      return;
+    }
+    await invoke("stop_diarization_session", {
+      sessionId,
+    }).catch(() => undefined);
   }
 
   async function startMeetingSources() {
@@ -1776,8 +1809,13 @@ function App() {
           const diarization = await diarizeSystemCapture(item.preview.path);
           if (diarization?.turns.length && result?.segments.length) {
             for (const segment of result.segments) {
+              const sessionSegment = {
+                ...segment,
+                start_ms: segment.start_ms + diarization.chunk_start_ms,
+                end_ms: segment.end_ms + diarization.chunk_start_ms,
+              };
               const speakerId = diarizedSpeakerForSegment(
-                segment,
+                sessionSegment,
                 diarization.turns,
               );
               nextContent = appendMeetingTranscript(

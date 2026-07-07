@@ -3032,6 +3032,7 @@ pub fn run() {
         .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
+        .manage(diarization::DiarizationState::default())
         .manage(agents::AgentRuntime::new())
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
@@ -3064,7 +3065,9 @@ pub fn run() {
             calendar::save_calendar_tokens,
             calendar::clear_calendar_auth,
             calendar::list_upcoming_calendar_events,
+            diarization::start_diarization_session,
             diarization::diarize_capture_file,
+            diarization::stop_diarization_session,
             get_audio_capture_status,
             start_audio_capture,
             flush_audio_capture_chunk,
