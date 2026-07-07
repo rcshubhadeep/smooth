@@ -9,6 +9,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
   X,
@@ -209,6 +210,67 @@ export async function deleteUserAgent(id: string): Promise<void> {
   await invoke("agent_delete_definition", { id });
 }
 
+// ---------------------------------------------------------------------------
+// Run history (Phase 3) — reads the persisted runs/events the backend already
+// records for every `agent_run`. Detail view reuses `AgentRunResultView` by
+// reconstructing its step trace from the stored `tool_execution` events.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `persistence::AgentRunRecord`. */
+export type AgentRunRecord = {
+  id: string;
+  run_kind: string;
+  status: string;
+  prompt: string;
+  model: string | null;
+  max_steps: number;
+  answer: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+  updated_at: string;
+};
+
+/** Mirrors `persistence::AgentEventRecord`. */
+export type AgentEventRecord = {
+  id: string;
+  run_id: string;
+  sequence: number;
+  event_type: string;
+  role: string | null;
+  tool_name: string | null;
+  content: string | null;
+  input_json: unknown | null;
+  output_json: unknown | null;
+  error: string | null;
+  created_at: string;
+};
+
+export async function listRuns(limit = 50): Promise<AgentRunRecord[]> {
+  return invoke<AgentRunRecord[]>("agent_list_runs", { options: { limit } });
+}
+
+export async function getRunEvents(runId: string): Promise<AgentEventRecord[]> {
+  return invoke<AgentEventRecord[]>("agent_get_run_events", { runId });
+}
+
+function formatTimestamp(value: string): string {
+  const ms = Number(value);
+  return Number.isFinite(ms) ? new Date(ms).toLocaleString() : value;
+}
+
+/** Rebuild the tool-step trace from stored events for `AgentRunResultView`. */
+function eventsToSteps(events: AgentEventRecord[]): AgentRunStep[] {
+  return events
+    .filter((event) => event.event_type === "tool_execution")
+    .map((event) => ({
+      tool_name: event.tool_name ?? "tool",
+      input: event.input_json ?? null,
+      output: event.output_json ?? null,
+      error: event.error,
+    }));
+}
+
 function renderMarkdown(text: string) {
   return { __html: marked.parse(text, { async: false }) as string };
 }
@@ -311,6 +373,7 @@ export function AgentsView({
   currentNoteId?: string | null;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"agents" | "history">("agents");
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const [userAgents, setUserAgents] = useState<AgentDefinition[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -488,14 +551,16 @@ export function AgentsView({
           <p>Run an assistant over a note or across your whole knowledge bank.</p>
         </div>
         <div className="agents-header-actions">
-          <button
-            type="button"
-            className="agent-run-btn"
-            onClick={() => setEditor({ mode: "create" })}
-          >
-            <Plus size={15} />
-            New agent
-          </button>
+          {tab === "agents" ? (
+            <button
+              type="button"
+              className="agent-run-btn"
+              onClick={() => setEditor({ mode: "create" })}
+            >
+              <Plus size={15} />
+              New agent
+            </button>
+          ) : null}
           <button
             type="button"
             className="agent-back"
@@ -508,7 +573,32 @@ export function AgentsView({
         </div>
       </header>
 
-      <div className="agent-target">
+      <div className="agents-tabs">
+        <div className="segmented" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "agents"}
+            className={tab === "agents" ? "active" : ""}
+            onClick={() => setTab("agents")}
+          >
+            Agents
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "history"}
+            className={tab === "history" ? "active" : ""}
+            onClick={() => setTab("history")}
+          >
+            History
+          </button>
+        </div>
+      </div>
+
+      {tab === "history" ? <RunHistory /> : null}
+
+      <div className="agent-target" hidden={tab !== "agents"}>
         <label htmlFor="agent-target-note">Note for note-scoped agents</label>
         <select
           id="agent-target-note"
@@ -528,25 +618,29 @@ export function AgentsView({
         </select>
       </div>
 
-      {loadError ? (
-        <div className="agent-run-state error sm">
-          <AlertTriangle size={15} />
-          <span>{loadError}</span>
-        </div>
+      {tab === "agents" ? (
+        <>
+          {loadError ? (
+            <div className="agent-run-state error sm">
+              <AlertTriangle size={15} />
+              <span>{loadError}</span>
+            </div>
+          ) : null}
+
+          <h3 className="agent-section-label">Built-in</h3>
+          <div className="agent-grid">{BUILTIN_AGENTS.map(renderCard)}</div>
+
+          <h3 className="agent-section-label">Your agents</h3>
+          {userAgents.length > 0 ? (
+            <div className="agent-grid">{userAgents.map(renderCard)}</div>
+          ) : (
+            <p className="agent-empty">
+              No custom agents yet. Use <strong>New agent</strong> to create one
+              from your own instructions.
+            </p>
+          )}
+        </>
       ) : null}
-
-      <h3 className="agent-section-label">Built-in</h3>
-      <div className="agent-grid">{BUILTIN_AGENTS.map(renderCard)}</div>
-
-      <h3 className="agent-section-label">Your agents</h3>
-      {userAgents.length > 0 ? (
-        <div className="agent-grid">{userAgents.map(renderCard)}</div>
-      ) : (
-        <p className="agent-empty">
-          No custom agents yet. Use <strong>New agent</strong> to create one from
-          your own instructions.
-        </p>
-      )}
     </div>
   );
 }
@@ -686,6 +780,153 @@ function AgentEditor({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Run history tab
+// ---------------------------------------------------------------------------
+
+function RunHistory() {
+  const [runs, setRuns] = useState<AgentRunRecord[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<AgentRunRecord | null>(null);
+  const [events, setEvents] = useState<AgentEventRecord[] | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  async function refresh() {
+    setRuns(null);
+    setError(null);
+    try {
+      setRuns(await listRuns());
+    } catch (loadError) {
+      setError(String(loadError));
+      setRuns([]);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function open(run: AgentRunRecord) {
+    setSelected(run);
+    setEvents(null);
+    setDetailError(null);
+    try {
+      setEvents(await getRunEvents(run.id));
+    } catch (loadError) {
+      setDetailError(String(loadError));
+      setEvents([]);
+    }
+  }
+
+  if (selected) {
+    const result: AgentRunResult = {
+      run_id: selected.id,
+      model: selected.model ?? "",
+      answer: selected.answer ?? "",
+      steps: events ? eventsToSteps(events) : [],
+      raw_model_output: "",
+    };
+    return (
+      <div className="run-detail">
+        <button
+          type="button"
+          className="agent-back"
+          onClick={() => setSelected(null)}
+        >
+          <ArrowLeft size={16} />
+          All runs
+        </button>
+
+        <div className="run-detail-head">
+          <span className={`run-status ${selected.status}`}>
+            {selected.status}
+          </span>
+          <span className="run-detail-time">
+            {formatTimestamp(selected.started_at)}
+          </span>
+          {selected.model ? (
+            <span className="run-detail-model">{selected.model}</span>
+          ) : null}
+        </div>
+
+        <div className="run-prompt">{selected.prompt}</div>
+
+        {selected.error ? (
+          <div className="agent-run-state error sm">
+            <AlertTriangle size={15} />
+            <span>{selected.error}</span>
+          </div>
+        ) : null}
+
+        {events === null ? (
+          <div className="agent-run-state busy sm">
+            <Loader2 size={15} className="spin" />
+            <span>Loading trace…</span>
+          </div>
+        ) : detailError ? (
+          <div className="agent-run-state error sm">
+            <AlertTriangle size={15} />
+            <span>{detailError}</span>
+          </div>
+        ) : (
+          <AgentRunResultView result={result} />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="run-history">
+      <div className="run-history-bar">
+        <button
+          type="button"
+          className="agent-back"
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={14} />
+          Refresh
+        </button>
+      </div>
+
+      {error ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
+      {runs === null ? (
+        <div className="agent-run-state busy sm">
+          <Loader2 size={15} className="spin" />
+          <span>Loading runs…</span>
+        </div>
+      ) : runs.length === 0 ? (
+        <p className="agent-empty">
+          No runs yet. Run an agent and it will show up here.
+        </p>
+      ) : (
+        <ul className="run-list">
+          {runs.map((run) => (
+            <li key={run.id}>
+              <button
+                type="button"
+                className="run-row"
+                onClick={() => void open(run)}
+              >
+                <span className={`run-status-dot ${run.status}`} />
+                <span className="run-row-prompt">{run.prompt}</span>
+                <span className="run-row-meta">
+                  {formatTimestamp(run.started_at)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
