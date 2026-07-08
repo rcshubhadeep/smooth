@@ -379,7 +379,9 @@ pub(crate) struct AgentDefinitionInput {
 
 /// Validate + normalize user input. Keeping this in one place means both create
 /// and update enforce the same rules.
-fn clean_definition(input: &AgentDefinitionInput) -> Result<(String, String, String, Option<i64>), String> {
+fn clean_definition(
+    input: &AgentDefinitionInput,
+) -> Result<(String, String, String, Option<i64>), String> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err("Agent name is required".to_string());

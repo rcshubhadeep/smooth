@@ -208,6 +208,13 @@ struct ExtractedEntity {
     aliases: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+struct MentionLocation {
+    start_offset: Option<i64>,
+    end_offset: Option<i64>,
+    match_status: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatCompletionChoice>,
@@ -238,10 +245,31 @@ pub(crate) struct NoteEntity {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct NoteEntityMention {
+    id: i64,
+    entity_id: i64,
+    surface_text: String,
+    context: Option<String>,
+    start_offset: Option<i64>,
+    end_offset: Option<i64>,
+    match_status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct NoteExtractionView {
     status: String,
     error: Option<String>,
     entities: Vec<NoteEntity>,
+    mentions: Vec<NoteEntityMention>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct EntityInterestDefinition {
+    id: Option<i64>,
+    name: String,
+    description: String,
+    enabled: bool,
+    sort_order: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -394,6 +422,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
                 alias TEXT NOT NULL,
                 normalized_alias TEXT NOT NULL,
+                entity_type TEXT,
                 PRIMARY KEY (entity_id, normalized_alias)
             );
 
@@ -408,6 +437,9 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 context TEXT,
                 chunk_index INTEGER NOT NULL,
                 confidence REAL,
+                start_offset INTEGER,
+                end_offset INTEGER,
+                match_status TEXT NOT NULL DEFAULT 'unresolved',
                 created_at TEXT NOT NULL
             );
 
@@ -415,6 +447,17 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 ON entity_mentions(note_id);
             CREATE INDEX IF NOT EXISTS entity_mentions_entity_id_idx
                 ON entity_mentions(entity_id);
+
+            CREATE TABLE IF NOT EXISTS entity_interest_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(name COLLATE NOCASE)
+            );
 
             CREATE TABLE IF NOT EXISTS extraction_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -442,9 +485,59 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     chat::init_schema(&connection)?;
     agents::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
+    migrate_entity_schema(&connection)?;
+    seed_default_entity_interests(&connection)?;
     migrate_legacy_store(app, &mut connection)?;
     Ok(connection)
 }
+
+const DEFAULT_ENTITY_INTERESTS: &[(&str, &str)] = &[
+    (
+        "People",
+        "Named people, speakers, buyers, stakeholders, and owners.",
+    ),
+    (
+        "Organizations",
+        "Companies, customers, partners, vendors, and institutions.",
+    ),
+    (
+        "Products",
+        "Products, product areas, SKUs, packages, and named offerings.",
+    ),
+    (
+        "Projects",
+        "Internal or customer-facing projects, initiatives, and workstreams.",
+    ),
+    (
+        "Customers",
+        "Customer names, accounts, segments, and customer teams.",
+    ),
+    ("Competitors", "Competitor names and competing products."),
+    (
+        "Objections",
+        "Sales objections, blockers, concerns, and risks.",
+    ),
+    (
+        "Requirements",
+        "Requested capabilities, acceptance criteria, and constraints.",
+    ),
+    (
+        "Decisions",
+        "Explicit decisions, approvals, rejections, and commitments.",
+    ),
+    (
+        "Follow-ups",
+        "Action items, next steps, owners, and due dates.",
+    ),
+    (
+        "Technologies",
+        "Frameworks, tools, models, APIs, and infrastructure.",
+    ),
+    (
+        "Dates",
+        "Important dates, times, deadlines, and meeting references.",
+    ),
+];
 
 fn migrate_note_links_schema(connection: &Connection) -> Result<(), String> {
     let existing_columns = {
@@ -474,6 +567,119 @@ fn migrate_note_links_schema(connection: &Connection) -> Result<(), String> {
             .map_err(db_error)?;
     }
 
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(db_error)?;
+    Ok(columns)
+}
+
+fn migrate_entity_schema(connection: &Connection) -> Result<(), String> {
+    let mention_columns = table_columns(connection, "entity_mentions")?;
+    if !mention_columns.contains("start_offset") {
+        connection
+            .execute(
+                "ALTER TABLE entity_mentions ADD COLUMN start_offset INTEGER",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    if !mention_columns.contains("end_offset") {
+        connection
+            .execute(
+                "ALTER TABLE entity_mentions ADD COLUMN end_offset INTEGER",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    if !mention_columns.contains("match_status") {
+        connection
+            .execute(
+                "ALTER TABLE entity_mentions ADD COLUMN match_status TEXT NOT NULL DEFAULT 'unresolved'",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+
+    let alias_columns = table_columns(connection, "entity_aliases")?;
+    if !alias_columns.contains("entity_type") {
+        connection
+            .execute("ALTER TABLE entity_aliases ADD COLUMN entity_type TEXT", [])
+            .map_err(db_error)?;
+    }
+    connection
+        .execute(
+            "
+            UPDATE entity_aliases
+            SET entity_type = (
+                SELECT entities.entity_type
+                FROM entities
+                WHERE entities.id = entity_aliases.entity_id
+            )
+            WHERE entity_type IS NULL OR entity_type = ''
+            ",
+            [],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "
+            DELETE FROM entity_aliases
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM entity_aliases
+                GROUP BY normalized_alias, entity_type
+            )
+            ",
+            [],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "
+            CREATE UNIQUE INDEX IF NOT EXISTS entity_aliases_lookup_unique_idx
+                ON entity_aliases(normalized_alias, entity_type)
+            ",
+            [],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "
+            CREATE INDEX IF NOT EXISTS entity_mentions_offsets_idx
+                ON entity_mentions(note_id, start_offset)
+            ",
+            [],
+        )
+        .map_err(db_error)?;
+
+    Ok(())
+}
+
+fn seed_default_entity_interests(connection: &Connection) -> Result<(), String> {
+    let now = now_string();
+    for (index, (name, description)) in DEFAULT_ENTITY_INTERESTS.iter().enumerate() {
+        connection
+            .execute(
+                "
+                INSERT INTO entity_interest_definitions (
+                    name, description, enabled, sort_order, created_at, updated_at
+                )
+                VALUES (?1, ?2, 1, ?3, ?4, ?4)
+                ON CONFLICT(name) DO NOTHING
+                ",
+                params![name, description, index as i64, now],
+            )
+            .map_err(db_error)?;
+    }
     Ok(())
 }
 
@@ -860,7 +1066,31 @@ fn extraction_schema(max_entities: usize) -> serde_json::Value {
     })
 }
 
-fn extraction_messages(title: &str, chunk: &str) -> serde_json::Value {
+fn extraction_messages(
+    title: &str,
+    chunk: &str,
+    interests: &[EntityInterestDefinition],
+) -> serde_json::Value {
+    let interest_guidance = if interests.is_empty() {
+        "No custom user interests are configured.".to_string()
+    } else {
+        interests
+            .iter()
+            .filter(|interest| interest.enabled)
+            .map(|interest| {
+                if interest.description.trim().is_empty() {
+                    format!("- {}", interest.name.trim())
+                } else {
+                    format!(
+                        "- {}: {}",
+                        interest.name.trim(),
+                        interest.description.trim()
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     json!([
         {
             "role": "system",
@@ -877,7 +1107,9 @@ fn extraction_messages(title: &str, chunk: &str) -> serde_json::Value {
         },
         {
             "role": "user",
-            "content": format!("Note title: {title}\n\nNote chunk:\n{chunk}")
+            "content": format!(
+                "User is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
+            )
         }
     ])
 }
@@ -887,11 +1119,12 @@ fn extraction_request_payload(
     budget: ExtractionBudget,
     title: &str,
     chunk: &str,
+    interests: &[EntityInterestDefinition],
     strict_schema: bool,
 ) -> serde_json::Value {
     let mut payload = json!({
         "model": model,
-        "messages": extraction_messages(title, chunk),
+        "messages": extraction_messages(title, chunk, interests),
         "temperature": 0.1,
         "top_p": 0.9,
         "max_tokens": budget.max_output_tokens,
@@ -945,6 +1178,93 @@ fn normalize_entity_name(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn find_mention_location(
+    content: &str,
+    surface_text: &str,
+    context: Option<&str>,
+    used_ranges: &[(usize, usize)],
+) -> MentionLocation {
+    let surface = surface_text.trim();
+    if surface.is_empty() {
+        return MentionLocation {
+            start_offset: None,
+            end_offset: None,
+            match_status: "missing".to_string(),
+        };
+    }
+
+    let mut candidates = find_case_insensitive_ranges(content, surface);
+    let mut status = "exact";
+    if candidates.is_empty() {
+        candidates = find_case_insensitive_ranges(content, &normalize_entity_name(surface));
+        status = "approximate";
+    }
+
+    if candidates.is_empty() {
+        return MentionLocation {
+            start_offset: None,
+            end_offset: None,
+            match_status: "missing".to_string(),
+        };
+    }
+
+    let context_center = context.and_then(|value| {
+        let context_ranges = find_case_insensitive_ranges(content, value.trim());
+        context_ranges
+            .first()
+            .map(|(start, end)| start.saturating_add((end - start) / 2))
+    });
+
+    candidates.sort_by_key(|(start, end)| {
+        let used_penalty = if used_ranges
+            .iter()
+            .any(|(used_start, used_end)| start < used_end && end > used_start)
+        {
+            content.len()
+        } else {
+            0
+        };
+        let context_distance = context_center
+            .map(|center| {
+                let candidate_center = start.saturating_add((end - start) / 2);
+                candidate_center.abs_diff(center)
+            })
+            .unwrap_or(0);
+        used_penalty + context_distance + *start
+    });
+
+    let (start, end) = candidates[0];
+    MentionLocation {
+        start_offset: Some(start as i64),
+        end_offset: Some(end as i64),
+        match_status: status.to_string(),
+    }
+}
+
+fn find_case_insensitive_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let haystack_lower = haystack.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let mut ranges = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative) = haystack_lower[search_from..].find(&needle_lower) {
+        let start = search_from + relative;
+        let end = start + needle_lower.len();
+        if haystack.is_char_boundary(start) && haystack.is_char_boundary(end) {
+            ranges.push((start, end));
+        }
+        search_from = end;
+        if search_from >= haystack_lower.len() {
+            break;
+        }
+    }
+    ranges
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -1036,6 +1356,7 @@ async fn count_extraction_input_tokens(
     model: &str,
     title: &str,
     chunk: &str,
+    interests: &[EntityInterestDefinition],
 ) -> Option<usize> {
     let response = client
         .post(llama_endpoint(
@@ -1044,7 +1365,7 @@ async fn count_extraction_input_tokens(
         ))
         .json(&json!({
             "model": model,
-            "messages": extraction_messages(title, chunk)
+            "messages": extraction_messages(title, chunk, interests)
         }))
         .send()
         .await
@@ -1066,12 +1387,14 @@ async fn fit_chunks_to_context(
     budget: ExtractionBudget,
     title: &str,
     content: &str,
+    interests: &[EntityInterestDefinition],
 ) -> Result<Vec<String>, String> {
     let mut pending = VecDeque::from(initial_note_chunks(content, budget.initial_chars));
     let mut chunks = Vec::new();
 
     while let Some(chunk) = pending.pop_front() {
-        let token_count = count_extraction_input_tokens(client, config, model, title, &chunk).await;
+        let token_count =
+            count_extraction_input_tokens(client, config, model, title, &chunk, interests).await;
         let fits = token_count
             .map(|count| count <= budget.input_tokens)
             .unwrap_or_else(|| chunk.chars().count() <= budget.initial_chars);
@@ -1145,6 +1468,7 @@ async fn extract_chunk_entities(
     budget: ExtractionBudget,
     title: &str,
     chunk: &str,
+    interests: &[EntityInterestDefinition],
 ) -> Result<Vec<ExtractedEntity>, ChunkExtractionError> {
     async fn request_completion(
         client: &reqwest::Client,
@@ -1153,6 +1477,7 @@ async fn extract_chunk_entities(
         budget: ExtractionBudget,
         title: &str,
         chunk: &str,
+        interests: &[EntityInterestDefinition],
         strict_schema: bool,
     ) -> Result<(reqwest::StatusCode, String), ChunkExtractionError> {
         let response = client
@@ -1162,6 +1487,7 @@ async fn extract_chunk_entities(
                 budget,
                 title,
                 chunk,
+                interests,
                 strict_schema,
             ))
             .send()
@@ -1190,15 +1516,17 @@ async fn extract_chunk_entities(
     }
 
     let (status, mut response) =
-        request_completion(client, config, model, budget, title, chunk, true).await?;
+        request_completion(client, config, model, budget, title, chunk, interests, true).await?;
     let used_fallback = if !status.is_success() && is_grammar_sampler_error(&response) {
         #[cfg(debug_assertions)]
         eprintln!(
             "[smooth:llm-extraction-fallback]\nmodel={model}\nreason=strict_schema_grammar_error\nerror={}",
             truncate_chars(response.trim(), 1000)
         );
-        let (fallback_status, fallback_response) =
-            request_completion(client, config, model, budget, title, chunk, false).await?;
+        let (fallback_status, fallback_response) = request_completion(
+            client, config, model, budget, title, chunk, interests, false,
+        )
+        .await?;
         if !fallback_status.is_success() {
             return Err(http_extraction_error(fallback_status, &fallback_response));
         }
@@ -1252,12 +1580,13 @@ async fn extract_entities_adaptively(
     budget: ExtractionBudget,
     title: &str,
     chunk: String,
+    interests: &[EntityInterestDefinition],
 ) -> Result<Vec<ExtractedEntity>, String> {
     let mut pending = VecDeque::from([chunk]);
     let mut entities = Vec::new();
 
     while let Some(part) = pending.pop_front() {
-        match extract_chunk_entities(client, config, model, budget, title, &part).await {
+        match extract_chunk_entities(client, config, model, budget, title, &part, interests).await {
             Ok(extracted) => entities.extend(extracted),
             Err(ChunkExtractionError::Retry(error)) => return Err(error),
             Err(ChunkExtractionError::Split(error)) => {
@@ -1561,6 +1890,74 @@ fn extraction_job_matches(
         .map_err(db_error)
 }
 
+fn resolve_or_create_entity(
+    transaction: &rusqlite::Transaction<'_>,
+    canonical_name: &str,
+    normalized_name: &str,
+    entity_type: &str,
+    now: &str,
+) -> Result<i64, String> {
+    if let Some(alias_entity_id) = transaction
+        .query_row(
+            "
+            SELECT entity_id
+            FROM entity_aliases
+            WHERE normalized_alias = ?1 AND entity_type = ?2
+            ORDER BY entity_id ASC
+            LIMIT 1
+            ",
+            params![normalized_name, entity_type],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_error)?
+    {
+        transaction
+            .execute(
+                "UPDATE entities SET updated_at = ?1 WHERE id = ?2",
+                params![now, alias_entity_id],
+            )
+            .map_err(db_error)?;
+        return Ok(alias_entity_id);
+    }
+
+    transaction
+        .execute(
+            "
+            INSERT INTO entities (
+                canonical_name, normalized_name, entity_type, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?4)
+            ON CONFLICT(normalized_name, entity_type) DO UPDATE SET
+                updated_at = excluded.updated_at
+            ",
+            params![canonical_name, normalized_name, entity_type, now],
+        )
+        .map_err(db_error)?;
+    let entity_id = transaction
+        .query_row(
+            "
+            SELECT id FROM entities
+            WHERE normalized_name = ?1 AND entity_type = ?2
+            ",
+            params![normalized_name, entity_type],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(db_error)?;
+    transaction
+        .execute(
+            "
+            INSERT OR IGNORE INTO entity_aliases (
+                entity_id, alias, normalized_alias, entity_type
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![entity_id, canonical_name, normalized_name, entity_type],
+        )
+        .map_err(db_error)?;
+    Ok(entity_id)
+}
+
 fn persist_extraction_results(
     app: &AppHandle,
     job: &ExtractionJob,
@@ -1603,38 +2000,24 @@ fn persist_extraction_results(
         )
         .map_err(db_error)?;
 
+    let content = read_note_content(app, &job.note_id)?;
     let now = now_string();
     let mut entity_ids = HashMap::<(String, String), i64>::new();
     let mut mention_keys = HashSet::new();
+    let mut used_ranges = Vec::<(usize, usize)>::new();
     for (chunk_index, entity) in entities {
         let normalized_name = normalize_entity_name(&entity.name);
         let entity_key = (normalized_name.clone(), entity.entity_type.clone());
         let entity_id = if let Some(id) = entity_ids.get(&entity_key) {
             *id
         } else {
-            transaction
-                .execute(
-                    "
-                    INSERT INTO entities (
-                        canonical_name, normalized_name, entity_type, created_at, updated_at
-                    )
-                    VALUES (?1, ?2, ?3, ?4, ?4)
-                    ON CONFLICT(normalized_name, entity_type) DO UPDATE SET
-                        updated_at = excluded.updated_at
-                    ",
-                    params![entity.name, normalized_name, entity.entity_type, now],
-                )
-                .map_err(db_error)?;
-            let id = transaction
-                .query_row(
-                    "
-                    SELECT id FROM entities
-                    WHERE normalized_name = ?1 AND entity_type = ?2
-                    ",
-                    params![entity_key.0, entity_key.1],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(db_error)?;
+            let id = resolve_or_create_entity(
+                &transaction,
+                &entity.name,
+                &normalized_name,
+                &entity.entity_type,
+                &now,
+            )?;
             entity_ids.insert(entity_key.clone(), id);
             id
         };
@@ -1650,22 +2033,32 @@ fn persist_extraction_results(
                 .execute(
                     "
                     INSERT OR IGNORE INTO entity_aliases (
-                        entity_id, alias, normalized_alias
+                        entity_id, alias, normalized_alias, entity_type
                     )
-                    VALUES (?1, ?2, ?3)
+                    VALUES (?1, ?2, ?3, ?4)
                     ",
-                    params![entity_id, alias, normalized_alias],
+                    params![entity_id, alias, normalized_alias, entity.entity_type],
                 )
                 .map_err(db_error)?;
         }
 
         let context = entity.context.as_deref().unwrap_or("");
+        let location = find_mention_location(
+            &content,
+            &entity.surface_text,
+            entity.context.as_deref(),
+            &used_ranges,
+        );
+        if let (Some(start), Some(end)) = (location.start_offset, location.end_offset) {
+            used_ranges.push((start as usize, end as usize));
+        }
         let mention_key = format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}",
             entity_key.0,
             entity_key.1,
             normalize_entity_name(&entity.surface_text),
-            normalize_entity_name(context)
+            normalize_entity_name(context),
+            location.start_offset.unwrap_or(-1)
         );
         if !mention_keys.insert(mention_key) {
             continue;
@@ -1675,9 +2068,9 @@ fn persist_extraction_results(
                 "
                 INSERT INTO entity_mentions (
                     note_id, entity_id, surface_text, context, chunk_index,
-                    confidence, created_at
+                    confidence, start_offset, end_offset, match_status, created_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 ",
                 params![
                     job.note_id,
@@ -1686,6 +2079,9 @@ fn persist_extraction_results(
                     entity.context,
                     chunk_index as i64,
                     entity.confidence,
+                    location.start_offset,
+                    location.end_offset,
+                    location.match_status,
                     now
                 ],
             )
@@ -1796,8 +2192,17 @@ async fn process_extraction_job(
     }
 
     let budget = extraction_budget(model.context_tokens);
-    let chunks =
-        fit_chunks_to_context(client, config, &model.id, budget, &note.title, &content).await?;
+    let interests = load_enabled_entity_interests(app)?;
+    let chunks = fit_chunks_to_context(
+        client,
+        config,
+        &model.id,
+        budget,
+        &note.title,
+        &content,
+        &interests,
+    )
+    .await?;
     let mut all_entities = Vec::new();
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         if !extraction_job_is_current(app, job)? {
@@ -1810,6 +2215,7 @@ async fn process_extraction_job(
             budget,
             &note.title,
             chunk.clone(),
+            &interests,
         )
         .await?;
         all_entities.extend(entities.into_iter().map(|entity| (chunk_index, entity)));
@@ -2233,7 +2639,8 @@ fn get_extraction_queue_status(app: AppHandle) -> Result<ExtractionQueueStatus, 
 
 #[tauri::command]
 fn get_note_extraction(app: AppHandle, id: String) -> Result<NoteExtractionView, String> {
-    let connection = open_database(&app)?;
+    let mut connection = open_database(&app)?;
+    backfill_note_mention_offsets(&app, &mut connection, &id)?;
     let (status, error) = connection
         .query_row(
             "
@@ -2277,11 +2684,385 @@ fn get_note_extraction(app: AppHandle, id: String) -> Result<NoteExtractionView,
             .map_err(db_error)?;
         rows
     };
+    let mentions = {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id,
+                       entity_id,
+                       surface_text,
+                       context,
+                       start_offset,
+                       end_offset,
+                       match_status
+                FROM entity_mentions
+                WHERE note_id = ?1
+                ORDER BY COALESCE(start_offset, 9223372036854775807), id
+                ",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![id], |row| {
+                Ok(NoteEntityMention {
+                    id: row.get(0)?,
+                    entity_id: row.get(1)?,
+                    surface_text: row.get(2)?,
+                    context: row.get(3)?,
+                    start_offset: row.get(4)?,
+                    end_offset: row.get(5)?,
+                    match_status: row.get(6)?,
+                })
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        rows
+    };
 
     Ok(NoteExtractionView {
         status,
         error,
         entities,
+        mentions,
+    })
+}
+
+fn backfill_note_mention_offsets(
+    app: &AppHandle,
+    connection: &mut Connection,
+    note_id: &str,
+) -> Result<(), String> {
+    let needs_backfill = connection
+        .query_row(
+            "
+            SELECT EXISTS(
+                SELECT 1
+                FROM entity_mentions
+                WHERE note_id = ?1
+                  AND (match_status = 'unresolved' OR match_status IS NULL)
+            )
+            ",
+            params![note_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(db_error)?;
+    if !needs_backfill {
+        return Ok(());
+    }
+
+    let content = read_note_content(app, note_id)?;
+    let mentions = {
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id, surface_text, context
+                FROM entity_mentions
+                WHERE note_id = ?1
+                  AND (match_status = 'unresolved' OR match_status IS NULL)
+                ORDER BY chunk_index, id
+                ",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![note_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        rows
+    };
+
+    let transaction = connection.transaction().map_err(db_error)?;
+    let mut used_ranges = Vec::<(usize, usize)>::new();
+    for (mention_id, surface_text, context) in mentions {
+        let location =
+            find_mention_location(&content, &surface_text, context.as_deref(), &used_ranges);
+        if let (Some(start), Some(end)) = (location.start_offset, location.end_offset) {
+            used_ranges.push((start as usize, end as usize));
+        }
+        transaction
+            .execute(
+                "
+                UPDATE entity_mentions
+                SET start_offset = ?1,
+                    end_offset = ?2,
+                    match_status = ?3
+                WHERE id = ?4
+                ",
+                params![
+                    location.start_offset,
+                    location.end_offset,
+                    location.match_status,
+                    mention_id
+                ],
+            )
+            .map_err(db_error)?;
+    }
+    transaction.commit().map_err(db_error)
+}
+
+#[tauri::command]
+fn rename_entity(app: AppHandle, entity_id: i64, canonical_name: String) -> Result<(), String> {
+    let canonical_name = truncate_chars(canonical_name.trim(), 160);
+    if canonical_name.is_empty() {
+        return Err("Entity name is required".to_string());
+    }
+    let normalized_name = normalize_entity_name(&canonical_name);
+    if normalized_name.is_empty() {
+        return Err("Entity name must include letters or numbers".to_string());
+    }
+
+    let mut connection = open_database(&app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    let (old_name, old_normalized, entity_type) = transaction
+        .query_row(
+            "
+            SELECT canonical_name, normalized_name, entity_type
+            FROM entities
+            WHERE id = ?1
+            ",
+            params![entity_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_error)?
+        .ok_or_else(|| "Entity not found".to_string())?;
+    let now = now_string();
+    let target_id = transaction
+        .query_row(
+            "
+            SELECT id
+            FROM entities
+            WHERE normalized_name = ?1 AND entity_type = ?2 AND id != ?3
+            ",
+            params![normalized_name, entity_type, entity_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+
+    if let Some(target_id) = target_id {
+        transaction
+            .execute(
+                "UPDATE entity_mentions SET entity_id = ?1 WHERE entity_id = ?2",
+                params![target_id, entity_id],
+            )
+            .map_err(db_error)?;
+        for alias in [old_name.as_str(), canonical_name.as_str()] {
+            let normalized_alias = normalize_entity_name(alias);
+            if normalized_alias.is_empty() {
+                continue;
+            }
+            transaction
+                .execute(
+                    "
+                    INSERT OR IGNORE INTO entity_aliases (
+                        entity_id, alias, normalized_alias, entity_type
+                    )
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![target_id, alias, normalized_alias, entity_type],
+                )
+                .map_err(db_error)?;
+        }
+        transaction
+            .execute(
+                "
+                UPDATE entity_aliases
+                SET entity_id = ?1
+                WHERE entity_id = ?2
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entity_aliases AS existing
+                      WHERE existing.entity_id = ?1
+                        AND existing.normalized_alias = entity_aliases.normalized_alias
+                        AND existing.entity_type = entity_aliases.entity_type
+                  )
+                ",
+                params![target_id, entity_id],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM entity_aliases WHERE entity_id = ?1",
+                params![entity_id],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM entities WHERE id = ?1", params![entity_id])
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "UPDATE entities SET updated_at = ?1 WHERE id = ?2",
+                params![now, target_id],
+            )
+            .map_err(db_error)?;
+    } else {
+        transaction
+            .execute(
+                "
+                UPDATE entities
+                SET canonical_name = ?1,
+                    normalized_name = ?2,
+                    updated_at = ?3
+                WHERE id = ?4
+                ",
+                params![canonical_name, normalized_name, now, entity_id],
+            )
+            .map_err(db_error)?;
+        for alias in [
+            old_name.as_str(),
+            old_normalized.as_str(),
+            canonical_name.as_str(),
+        ] {
+            let normalized_alias = normalize_entity_name(alias);
+            if normalized_alias.is_empty() {
+                continue;
+            }
+            transaction
+                .execute(
+                    "
+                    INSERT OR IGNORE INTO entity_aliases (
+                        entity_id, alias, normalized_alias, entity_type
+                    )
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![entity_id, alias, normalized_alias, entity_type],
+                )
+                .map_err(db_error)?;
+        }
+    }
+
+    transaction.commit().map_err(db_error)
+}
+
+#[tauri::command]
+fn get_entity_interests(app: AppHandle) -> Result<Vec<EntityInterestDefinition>, String> {
+    let connection = open_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id, name, description, enabled, sort_order
+            FROM entity_interest_definitions
+            ORDER BY sort_order ASC, name COLLATE NOCASE ASC
+            ",
+        )
+        .map_err(db_error)?;
+    let interests = statement
+        .query_map([], |row| {
+            Ok(EntityInterestDefinition {
+                id: Some(row.get(0)?),
+                name: row.get(1)?,
+                description: row.get(2)?,
+                enabled: row.get::<_, i64>(3)? != 0,
+                sort_order: row.get(4)?,
+            })
+        })
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    Ok(interests)
+}
+
+#[tauri::command]
+fn save_entity_interests(
+    app: AppHandle,
+    interests: Vec<EntityInterestDefinition>,
+) -> Result<Vec<EntityInterestDefinition>, String> {
+    let mut connection = open_database(&app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    let now = now_string();
+    let mut keep_ids = Vec::<i64>::new();
+
+    for (index, interest) in interests.into_iter().enumerate() {
+        let name = truncate_chars(interest.name.trim(), 80);
+        if name.is_empty() {
+            continue;
+        }
+        let description = truncate_chars(interest.description.trim(), 500);
+        let enabled = if interest.enabled { 1_i64 } else { 0_i64 };
+        let sort_order = index as i64;
+        let id = if let Some(id) = interest.id {
+            transaction
+                .execute(
+                    "
+                    UPDATE entity_interest_definitions
+                    SET name = ?1,
+                        description = ?2,
+                        enabled = ?3,
+                        sort_order = ?4,
+                        updated_at = ?5
+                    WHERE id = ?6
+                    ",
+                    params![name, description, enabled, sort_order, now, id],
+                )
+                .map_err(db_error)?;
+            id
+        } else {
+            transaction
+                .execute(
+                    "
+                    INSERT INTO entity_interest_definitions (
+                        name, description, enabled, sort_order, created_at, updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                    ON CONFLICT(name) DO UPDATE SET
+                        description = excluded.description,
+                        enabled = excluded.enabled,
+                        sort_order = excluded.sort_order,
+                        updated_at = excluded.updated_at
+                    ",
+                    params![name, description, enabled, sort_order, now],
+                )
+                .map_err(db_error)?;
+            transaction
+                .query_row(
+                    "SELECT id FROM entity_interest_definitions WHERE name = ?1 COLLATE NOCASE",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(db_error)?
+        };
+        keep_ids.push(id);
+    }
+
+    if keep_ids.is_empty() {
+        transaction
+            .execute("DELETE FROM entity_interest_definitions", [])
+            .map_err(db_error)?;
+    } else {
+        let placeholders = keep_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql =
+            format!("DELETE FROM entity_interest_definitions WHERE id NOT IN ({placeholders})");
+        transaction
+            .execute(&sql, rusqlite::params_from_iter(keep_ids))
+            .map_err(db_error)?;
+    }
+    transaction.commit().map_err(db_error)?;
+    get_entity_interests(app)
+}
+
+fn load_enabled_entity_interests(app: &AppHandle) -> Result<Vec<EntityInterestDefinition>, String> {
+    get_entity_interests(app.clone()).map(|interests| {
+        interests
+            .into_iter()
+            .filter(|interest| interest.enabled)
+            .collect()
     })
 }
 
@@ -3046,6 +3827,9 @@ pub fn run() {
             get_llama_status,
             get_extraction_queue_status,
             get_note_extraction,
+            rename_entity,
+            get_entity_interests,
+            save_entity_interests,
             get_link_suggestions,
             enqueue_note_extraction,
             finalize_meeting_extraction,

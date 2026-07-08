@@ -34,6 +34,7 @@ import {
   Moon,
   PanelRight,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -346,10 +347,29 @@ type NoteEntity = {
   mention_count: number;
 };
 
+type NoteEntityMention = {
+  id: number;
+  entity_id: number;
+  surface_text: string;
+  context: string | null;
+  start_offset: number | null;
+  end_offset: number | null;
+  match_status: string;
+};
+
 type NoteExtractionView = {
   status: string;
   error: string | null;
   entities: NoteEntity[];
+  mentions: NoteEntityMention[];
+};
+
+type EntityInterestDefinition = {
+  id: number | null;
+  name: string;
+  description: string;
+  enabled: boolean;
+  sort_order: number;
 };
 
 type LinkSuggestion = {
@@ -898,6 +918,10 @@ function App() {
   const [meetingDetail, setMeetingDetail] = useState("Ready");
   const [meetingContentRevision, setMeetingContentRevision] = useState(0);
   const [meetingNoteId, setMeetingNoteId] = useState<string | null>(null);
+  const [entityJumpTarget, setEntityJumpTarget] = useState<{
+    nonce: number;
+    surfaceText: string;
+  } | null>(null);
   const [meetingVisualSources, setMeetingVisualSources] = useState<
     MeetingVisualSource[]
   >([]);
@@ -2635,6 +2659,7 @@ function App() {
                 panelOpen={shouldShowContextPanel}
                 externalRevision={meetingContentRevision}
                 externalNoteId={meetingNoteId}
+                entityJumpTarget={entityJumpTarget}
                 onTogglePanel={() => setPanelOpen((open) => !open)}
                 onCreate={createNote}
                 onSave={saveNote}
@@ -2665,6 +2690,12 @@ function App() {
                     onCreateNoteFromContent={createNoteFromContent}
                     onRenameSpeaker={(oldName, newName) =>
                       void renameSpeaker(oldName, newName)
+                    }
+                    onJumpToEntityMention={(surfaceText) =>
+                      setEntityJumpTarget({
+                        nonce: Date.now(),
+                        surfaceText,
+                      })
                     }
                     onRenameLink={renameNoteLink}
                     onUnlink={unlinkNotes}
@@ -3229,6 +3260,9 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     access_token_expires_at: null,
   });
   const [agentTools, setAgentTools] = useState<AgentToolDescriptor[]>([]);
+  const [entityInterests, setEntityInterests] = useState<
+    EntityInterestDefinition[]
+  >([]);
   const [selectedAgentTool, setSelectedAgentTool] = useState("ping");
   const [agentToolInput, setAgentToolInput] = useState(
     defaultAgentToolInput("ping"),
@@ -3253,6 +3287,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   const [isSttBusy, setIsSttBusy] = useState(false);
   const [isGmailBusy, setIsGmailBusy] = useState(false);
   const [isCalendarBusy, setIsCalendarBusy] = useState(false);
+  const [isEntityInterestBusy, setIsEntityInterestBusy] = useState(false);
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
   const setSettingsError = (message: string | null) => {
@@ -3326,6 +3361,9 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       }),
       invoke<GmailConfig>("get_gmail_config").then(setGmailConfig),
       invoke<CalendarConfig>("get_calendar_config").then(setCalendarConfig),
+      invoke<EntityInterestDefinition[]>("get_entity_interests").then(
+        setEntityInterests,
+      ),
       invoke<AgentToolDescriptor[]>("agent_list_tools").then((tools) => {
         const sortedTools = [...tools].sort((left, right) =>
           left.name.localeCompare(right.name),
@@ -3663,6 +3701,58 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       setSettingsError(String(calendarError));
     } finally {
       setIsCalendarBusy(false);
+    }
+  }
+
+  function updateEntityInterest(
+    index: number,
+    patch: Partial<EntityInterestDefinition>,
+  ) {
+    setEntityInterests((current) =>
+      current.map((interest, currentIndex) =>
+        currentIndex === index ? { ...interest, ...patch } : interest,
+      ),
+    );
+  }
+
+  function addEntityInterest() {
+    setEntityInterests((current) => [
+      ...current,
+      {
+        id: null,
+        name: "New interest",
+        description: "",
+        enabled: true,
+        sort_order: current.length,
+      },
+    ]);
+  }
+
+  function removeEntityInterest(index: number) {
+    setEntityInterests((current) =>
+      current.filter((_, currentIndex) => currentIndex !== index),
+    );
+  }
+
+  async function saveEntityInterests() {
+    setIsEntityInterestBusy(true);
+    setSettingsError(null);
+    try {
+      const savedInterests = await invoke<EntityInterestDefinition[]>(
+        "save_entity_interests",
+        {
+          interests: entityInterests.map((interest, index) => ({
+            ...interest,
+            sort_order: index,
+          })),
+        },
+      );
+      setEntityInterests(savedInterests);
+      toast.success("Entity interests saved");
+    } catch (interestError) {
+      setSettingsError(String(interestError));
+    } finally {
+      setIsEntityInterestBusy(false);
     }
   }
 
@@ -4055,6 +4145,82 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
             <p>{transcription.text || "No speech detected"}</p>
           </div>
         ) : null}
+      </section>
+
+      <section className="settings-section">
+        <div className="section-heading">
+          <Sparkles size={18} />
+          <span>Entity interests</span>
+          <small>
+            {entityInterests.filter((interest) => interest.enabled).length}{" "}
+            enabled
+          </small>
+        </div>
+
+        <p className="settings-help">
+          These categories guide note entity extraction. Rename and disable them
+          freely; saved names are used in future extraction prompts.
+        </p>
+
+        <div className="entity-interest-list">
+          {entityInterests.map((interest, index) => (
+            <div className="entity-interest-row" key={interest.id ?? index}>
+              <label className="entity-interest-toggle">
+                <input
+                  type="checkbox"
+                  checked={interest.enabled}
+                  onChange={(event) =>
+                    updateEntityInterest(index, {
+                      enabled: event.currentTarget.checked,
+                    })
+                  }
+                />
+              </label>
+              <div className="entity-interest-fields">
+                <input
+                  value={interest.name}
+                  onChange={(event) =>
+                    updateEntityInterest(index, {
+                      name: event.currentTarget.value,
+                    })
+                  }
+                  placeholder="Entity category"
+                />
+                <input
+                  value={interest.description}
+                  onChange={(event) =>
+                    updateEntityInterest(index, {
+                      description: event.currentTarget.value,
+                    })
+                  }
+                  placeholder="What should the extractor look for?"
+                />
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => removeEntityInterest(index)}
+                title="Remove interest"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="settings-actions">
+          <button type="button" onClick={addEntityInterest}>
+            <Plus size={15} />
+            Add interest
+          </button>
+          <button
+            type="button"
+            onClick={() => void saveEntityInterests()}
+            disabled={isEntityInterestBusy || isLoading}
+          >
+            {isEntityInterestBusy ? "Saving" : "Save interests"}
+          </button>
+        </div>
       </section>
 
       <section className="settings-section">
@@ -5004,13 +5170,19 @@ function NoteContextMenu({
 type EntityStripProps = {
   note: NoteWithContent;
   onStatusChange: (noteId: string, status: string) => void;
+  onJumpToMention: (surfaceText: string) => void;
 };
 
-function EntityStrip({ note, onStatusChange }: EntityStripProps) {
+function EntityStrip({
+  note,
+  onStatusChange,
+  onJumpToMention,
+}: EntityStripProps) {
   const [extraction, setExtraction] = useState<NoteExtractionView>({
     status: note.extraction_status,
     error: null,
     entities: [],
+    mentions: [],
   });
   const [isQueuing, setIsQueuing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -5064,6 +5236,41 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
     }
   }
 
+  async function renameEntity(entity: NoteEntity) {
+    const nextName = window.prompt("Rename entity", entity.name)?.trim();
+    if (!nextName || nextName === entity.name) {
+      return;
+    }
+
+    try {
+      await invoke("rename_entity", {
+        entityId: entity.id,
+        canonicalName: nextName,
+      });
+      await refreshExtraction();
+      toast.success(`Entity renamed to ${nextName}`);
+    } catch (renameError) {
+      toast.error(renameError);
+    }
+  }
+
+  function firstMention(entityId: number) {
+    return (
+      extraction.mentions.find(
+        (mention) =>
+          mention.entity_id === entityId &&
+          mention.surface_text.trim().length > 0 &&
+          mention.start_offset !== null,
+      ) ??
+      extraction.mentions.find(
+        (mention) =>
+          mention.entity_id === entityId &&
+          mention.surface_text.trim().length > 0,
+      ) ??
+      null
+    );
+  }
+
   const statusLabel = extraction.status.replace("_", " ");
   if (extraction.status === "disabled") {
     return (
@@ -5115,17 +5322,45 @@ function EntityStrip({ note, onStatusChange }: EntityStripProps) {
       ) : null}
       {extraction.entities.length > 0 ? (
         <div className="entity-chips">
-          {visibleEntities.map((entity) => (
-            <span
-              className="entity-chip"
-              key={entity.id}
-              title={entity.entity_type}
-            >
-              <small>{entity.entity_type}</small>
-              {entity.name}
-              {entity.mention_count > 1 ? <b>{entity.mention_count}</b> : null}
-            </span>
-          ))}
+          {visibleEntities.map((entity) => {
+            const mention = firstMention(entity.id);
+            return (
+              <span
+                className="entity-chip"
+                key={entity.id}
+                title={
+                  mention
+                    ? `Jump to "${mention.surface_text}"`
+                    : entity.entity_type
+                }
+              >
+                <button
+                  className="entity-chip-main"
+                  type="button"
+                  disabled={!mention}
+                  onClick={() => {
+                    if (mention) {
+                      onJumpToMention(mention.surface_text);
+                    }
+                  }}
+                >
+                  <small>{entity.entity_type}</small>
+                  <span>{entity.name}</span>
+                  {entity.mention_count > 1 ? (
+                    <b>{entity.mention_count}</b>
+                  ) : null}
+                </button>
+                <button
+                  className="entity-chip-rename"
+                  type="button"
+                  onClick={() => void renameEntity(entity)}
+                  title="Rename entity"
+                >
+                  <Pencil size={12} />
+                </button>
+              </span>
+            );
+          })}
           {hiddenEntityCount > 0 ? (
             <button
               className="entity-more"
@@ -5157,6 +5392,7 @@ type NoteEditorProps = {
   panelOpen: boolean;
   externalRevision: number;
   externalNoteId: string | null;
+  entityJumpTarget: { nonce: number; surfaceText: string } | null;
   onTogglePanel: () => void;
   onCreate: () => Promise<void>;
   onSave: (
@@ -5184,6 +5420,7 @@ function NoteEditor({
   panelOpen,
   externalRevision,
   externalNoteId,
+  entityJumpTarget,
   onTogglePanel,
   onCreate,
   onSave,
@@ -5289,6 +5526,47 @@ function NoteEditor({
       isLoadingNoteRef.current = false;
     });
   }, [editor, externalNoteId, externalRevision, note]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !entityJumpTarget?.surfaceText) {
+      return;
+    }
+    const needle = entityJumpTarget.surfaceText.trim().toLowerCase();
+    if (!needle) {
+      return;
+    }
+
+    let match: { from: number; to: number } | null = null;
+    editor.state.doc.descendants((node, pos) => {
+      if (match || !node.isText || !node.text) {
+        return true;
+      }
+      const index = node.text.toLowerCase().indexOf(needle);
+      if (index >= 0) {
+        match = {
+          from: pos + index,
+          to: pos + index + entityJumpTarget.surfaceText.trim().length,
+        };
+        return false;
+      }
+      return true;
+    });
+
+    if (match) {
+      editor.commands.focus();
+      editor.commands.setTextSelection(match);
+      window.requestAnimationFrame(() => {
+        window
+          .getSelection()
+          ?.anchorNode?.parentElement?.scrollIntoView({
+            block: "center",
+            behavior: "smooth",
+          });
+      });
+    } else {
+      toast.info("Entity text was not found in the editor");
+    }
+  }, [editor, entityJumpTarget]);
 
   useEffect(() => {
     if (!note || note.deleted_at || !editor || editor.isDestroyed) {
@@ -5914,6 +6192,7 @@ type ContextPanelProps = {
   onLinkNote: (targetId: string, label?: string | null) => Promise<void>;
   onLinkSuggestion: (targetId: string) => Promise<void>;
   onExtractionStatusChange: (noteId: string, status: string) => void;
+  onJumpToEntityMention: (surfaceText: string) => void;
   onCreateNoteFromContent: (content: string) => void;
   onRenameSpeaker: (oldName: string, newName: string) => void;
   onRenameLink: (
@@ -5933,6 +6212,7 @@ function ContextPanel({
   onLinkNote,
   onLinkSuggestion,
   onExtractionStatusChange,
+  onJumpToEntityMention,
   onCreateNoteFromContent,
   onRenameSpeaker,
   onRenameLink,
@@ -6051,7 +6331,11 @@ function ContextPanel({
 
       <div className="panel-pane" hidden={tab !== "details"}>
         <SpeakersSection content={note.content} onRename={onRenameSpeaker} />
-        <EntityStrip note={note} onStatusChange={onExtractionStatusChange} />
+        <EntityStrip
+          note={note}
+          onStatusChange={onExtractionStatusChange}
+          onJumpToMention={onJumpToEntityMention}
+        />
       </div>
 
       <div className="panel-pane chat" hidden={tab !== "chat"}>
