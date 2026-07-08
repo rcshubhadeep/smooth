@@ -5186,6 +5186,8 @@ function EntityStrip({
   });
   const [isQueuing, setIsQueuing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [editingEntityId, setEditingEntityId] = useState<number | null>(null);
+  const [entityNameDraft, setEntityNameDraft] = useState("");
 
   const refreshExtraction = useCallback(async () => {
     const nextExtraction = await invoke<NoteExtractionView>(
@@ -5236,9 +5238,16 @@ function EntityStrip({
     }
   }
 
-  async function renameEntity(entity: NoteEntity) {
-    const nextName = window.prompt("Rename entity", entity.name)?.trim();
+  function beginRenameEntity(entity: NoteEntity) {
+    setEditingEntityId(entity.id);
+    setEntityNameDraft(entity.name);
+  }
+
+  async function submitRenameEntity(entity: NoteEntity) {
+    const nextName = entityNameDraft.trim();
     if (!nextName || nextName === entity.name) {
+      setEditingEntityId(null);
+      setEntityNameDraft("");
       return;
     }
 
@@ -5248,9 +5257,11 @@ function EntityStrip({
         canonicalName: nextName,
       });
       await refreshExtraction();
+      setEditingEntityId(null);
+      setEntityNameDraft("");
       toast.success(`Entity renamed to ${nextName}`);
     } catch (renameError) {
-      toast.error(renameError);
+      toast.error(String(renameError));
     }
   }
 
@@ -5324,6 +5335,7 @@ function EntityStrip({
         <div className="entity-chips">
           {visibleEntities.map((entity) => {
             const mention = firstMention(entity.id);
+            const isEditing = editingEntityId === entity.id;
             return (
               <span
                 className="entity-chip"
@@ -5334,29 +5346,61 @@ function EntityStrip({
                     : entity.entity_type
                 }
               >
-                <button
-                  className="entity-chip-main"
-                  type="button"
-                  disabled={!mention}
-                  onClick={() => {
-                    if (mention) {
-                      onJumpToMention(mention.surface_text);
-                    }
-                  }}
-                >
-                  <small>{entity.entity_type}</small>
-                  <span>{entity.name}</span>
-                  {entity.mention_count > 1 ? (
-                    <b>{entity.mention_count}</b>
-                  ) : null}
-                </button>
+                {isEditing ? (
+                  <span className="entity-chip-main editing">
+                    <small>{entity.entity_type}</small>
+                    <input
+                      className="entity-chip-input"
+                      value={entityNameDraft}
+                      autoFocus
+                      onChange={(event) =>
+                        setEntityNameDraft(event.currentTarget.value)
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void submitRenameEntity(entity);
+                        }
+                        if (event.key === "Escape") {
+                          setEditingEntityId(null);
+                          setEntityNameDraft("");
+                        }
+                      }}
+                    />
+                    {entity.mention_count > 1 ? (
+                      <b>{entity.mention_count}</b>
+                    ) : null}
+                  </span>
+                ) : (
+                  <button
+                    className="entity-chip-main"
+                    type="button"
+                    disabled={!mention}
+                    onClick={() => {
+                      if (mention) {
+                        onJumpToMention(mention.surface_text);
+                      }
+                    }}
+                  >
+                    <small>{entity.entity_type}</small>
+                    <span>{entity.name}</span>
+                    {entity.mention_count > 1 ? (
+                      <b>{entity.mention_count}</b>
+                    ) : null}
+                  </button>
+                )}
                 <button
                   className="entity-chip-rename"
                   type="button"
-                  onClick={() => void renameEntity(entity)}
-                  title="Rename entity"
+                  onClick={() =>
+                    isEditing
+                      ? void submitRenameEntity(entity)
+                      : beginRenameEntity(entity)
+                  }
+                  title={isEditing ? "Save entity name" : "Rename entity"}
                 >
-                  <Pencil size={12} />
+                  {isEditing ? <CheckCircle2 size={13} /> : <Pencil size={12} />}
                 </button>
               </span>
             );
