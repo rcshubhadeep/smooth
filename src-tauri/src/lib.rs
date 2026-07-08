@@ -33,7 +33,7 @@ use system_audio::{
     list_meeting_visual_sources, start_system_audio_capture, stop_system_audio_capture,
     SystemAudioCaptureState,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct LegacyStore {
@@ -403,7 +403,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 link_kind TEXT NOT NULL DEFAULT 'manual'
                     CHECK (link_kind IN ('manual', 'entity_sharing')),
                 PRIMARY KEY (source_id, target_id),
-                CHECK (source_id < target_id)
+                CHECK (source_id != target_id)
             );
 
             CREATE INDEX IF NOT EXISTS note_links_target_id_idx ON note_links(target_id);
@@ -566,6 +566,65 @@ fn migrate_note_links_schema(connection: &Connection) -> Result<(), String> {
             )
             .map_err(db_error)?;
     }
+
+    let create_sql = connection
+        .query_row(
+            "
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'note_links'
+            ",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error)?
+        .unwrap_or_default();
+
+    if create_sql.contains("source_id < target_id") {
+        connection
+            .execute_batch(
+                "
+                DROP TABLE IF EXISTS note_links_directed_migration;
+
+                CREATE TABLE note_links_directed_migration (
+                    source_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                    target_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    label TEXT,
+                    link_kind TEXT NOT NULL DEFAULT 'manual'
+                        CHECK (link_kind IN ('manual', 'entity_sharing')),
+                    PRIMARY KEY (source_id, target_id),
+                    CHECK (source_id != target_id)
+                );
+
+                INSERT OR IGNORE INTO note_links_directed_migration (
+                    source_id, target_id, created_at, label, link_kind
+                )
+                SELECT source_id, target_id, created_at, label, link_kind
+                FROM note_links
+                WHERE source_id != target_id;
+
+                INSERT OR IGNORE INTO note_links_directed_migration (
+                    source_id, target_id, created_at, label, link_kind
+                )
+                SELECT target_id, source_id, created_at, label, link_kind
+                FROM note_links
+                WHERE source_id != target_id;
+
+                DROP TABLE note_links;
+                ALTER TABLE note_links_directed_migration RENAME TO note_links;
+                ",
+            )
+            .map_err(db_error)?;
+    }
+
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS note_links_target_id_idx ON note_links(target_id)",
+            [],
+        )
+        .map_err(db_error)?;
 
     Ok(())
 }
@@ -774,13 +833,17 @@ fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<
     }
 
     for link in legacy_store.links {
-        let Some((source_id, target_id)) = normalize_pair(&link.source_id, &link.target_id) else {
+        let Some((source_id, target_id)) =
+            normalize_directed_pair(&link.source_id, &link.target_id)
+        else {
             continue;
         };
         if !note_ids.contains(&source_id) || !note_ids.contains(&target_id) {
             continue;
         }
 
+        let label = normalize_link_label(link.label);
+        let link_kind = normalize_link_kind(Some(link.link_kind))?;
         transaction
             .execute(
                 "
@@ -788,11 +851,26 @@ fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
                 params![
-                    source_id,
-                    target_id,
-                    link.created_at,
-                    normalize_link_label(link.label),
-                    normalize_link_kind(Some(link.link_kind))?,
+                    &source_id,
+                    &target_id,
+                    &link.created_at,
+                    label.as_deref(),
+                    link_kind.as_str(),
+                ],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "
+                INSERT OR IGNORE INTO note_links (source_id, target_id, created_at, label, link_kind)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ",
+                params![
+                    &target_id,
+                    &source_id,
+                    &link.created_at,
+                    label.as_deref(),
+                    link_kind.as_str(),
                 ],
             )
             .map_err(db_error)?;
@@ -2310,16 +2388,12 @@ fn excerpt(content: &str) -> String {
         .collect()
 }
 
-fn normalize_pair(first_id: &str, second_id: &str) -> Option<(String, String)> {
-    if first_id == second_id {
+fn normalize_directed_pair(source_id: &str, target_id: &str) -> Option<(String, String)> {
+    if source_id == target_id {
         return None;
     }
 
-    if first_id < second_id {
-        Some((first_id.to_string(), second_id.to_string()))
-    } else {
-        Some((second_id.to_string(), first_id.to_string()))
-    }
+    Some((source_id.to_string(), target_id.to_string()))
 }
 
 fn normalize_link_label(label: Option<String>) -> Option<String> {
@@ -3715,8 +3789,9 @@ fn link_notes(
     for first_index in 0..selected_ids.len() {
         for second_index in (first_index + 1)..selected_ids.len() {
             if let Some((source_id, target_id)) =
-                normalize_pair(&selected_ids[first_index], &selected_ids[second_index])
+                normalize_directed_pair(&selected_ids[first_index], &selected_ids[second_index])
             {
+                let created_at = now_string();
                 transaction
                     .execute(
                         "
@@ -3727,7 +3802,23 @@ fn link_notes(
                         params![
                             &source_id,
                             &target_id,
-                            now_string(),
+                            &created_at,
+                            label.as_deref(),
+                            link_kind.as_str()
+                        ],
+                    )
+                    .map_err(db_error)?;
+                transaction
+                    .execute(
+                        "
+                        INSERT OR IGNORE INTO note_links
+                            (source_id, target_id, created_at, label, link_kind)
+                        VALUES (?1, ?2, ?3, ?4, ?5)
+                        ",
+                        params![
+                            &target_id,
+                            &source_id,
+                            &created_at,
                             label.as_deref(),
                             link_kind.as_str()
                         ],
@@ -3747,7 +3838,7 @@ fn rename_note_link(
     target_id: String,
     label: Option<String>,
 ) -> Result<BankSnapshot, String> {
-    let Some((source_id, target_id)) = normalize_pair(&source_id, &target_id) else {
+    let Some((source_id, target_id)) = normalize_directed_pair(&source_id, &target_id) else {
         return Err("Cannot rename a link to the same note".to_string());
     };
 
@@ -3789,7 +3880,7 @@ fn unlink_notes(
     source_id: String,
     target_id: String,
 ) -> Result<BankSnapshot, String> {
-    let Some((source_id, target_id)) = normalize_pair(&source_id, &target_id) else {
+    let Some((source_id, target_id)) = normalize_directed_pair(&source_id, &target_id) else {
         return Err("Cannot unlink a note from itself".to_string());
     };
 
@@ -3804,6 +3895,222 @@ fn unlink_notes(
         )
         .map_err(db_error)?;
     snapshot(&app, &connection)
+}
+
+fn fallback_chat_link_label(prompt: &str) -> String {
+    let prompt = prompt.to_lowercase();
+    if prompt.contains("action") || prompt.contains("todo") || prompt.contains("follow up") {
+        "Action Items".to_string()
+    } else if prompt.contains("question") || prompt.contains("open") {
+        "Open Questions".to_string()
+    } else if prompt.contains("summary") || prompt.contains("summar") {
+        "Summary".to_string()
+    } else if prompt.contains("email") || prompt.contains("draft") {
+        "Draft".to_string()
+    } else if prompt.contains("decision") {
+        "Decisions".to_string()
+    } else {
+        "Generated Note".to_string()
+    }
+}
+
+fn clean_generated_link_label(value: &str, fallback: &str) -> String {
+    for line in value.lines() {
+        let label = line
+            .trim()
+            .trim_matches(['"', '\'', '`', '.', ':', '-'])
+            .trim();
+        let lower = label.to_lowercase();
+        if label.is_empty()
+            || label.contains('<')
+            || label.contains('|')
+            || label.contains('>')
+            || lower.contains("channel")
+            || lower.contains("thought")
+            || lower.contains("analysis")
+            || lower.contains("model")
+            || lower.contains("assistant")
+        {
+            continue;
+        }
+
+        let filtered = label
+            .chars()
+            .filter(|character| {
+                character.is_alphanumeric()
+                    || character.is_whitespace()
+                    || matches!(character, '/' | '&')
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let filtered = truncate_chars(&filtered, 48);
+        if !filtered.is_empty() {
+            return filtered;
+        }
+    }
+    fallback.to_string()
+}
+
+async fn suggest_chat_created_link_label(
+    app: &AppHandle,
+    prompt: &str,
+    response: &str,
+) -> Result<String, String> {
+    let fallback = fallback_chat_link_label(prompt);
+    let connection = open_database(app)?;
+    let config = load_llama_config(&connection)?;
+    drop(connection);
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let model = if let Some(model) = config.preferred_model.clone() {
+        model
+    } else {
+        fetch_llama_models(&client, &config)
+            .await?
+            .into_iter()
+            .next()
+            .map(|model| model.id)
+            .ok_or_else(|| "llama.cpp has no available model".to_string())?
+    };
+
+    let response = client
+        .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
+        .json(&json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Name the relationship from the source note to a note created from a chat answer. Return only a short 1-4 word label, no punctuation."
+                },
+                {
+                    "role": "user",
+                    "content": format!(
+                        "User request:\n{}\n\nCreated note content:\n{}",
+                        truncate_chars(prompt, 800),
+                        truncate_chars(response, 1200)
+                    )
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": 16,
+            "stream": false,
+            "reasoning_format": "none",
+            "chat_template_kwargs": {
+                "enable_thinking": false
+            }
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("llama.cpp request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Ok(fallback);
+    }
+    let body = response.text().await.unwrap_or_default();
+    let parsed = serde_json::from_str::<ChatCompletionResponse>(&body)
+        .map_err(|error| format!("Invalid llama.cpp response: {error}"))?;
+    let label = parsed
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .map(|content| clean_generated_link_label(content, &fallback))
+        .unwrap_or(fallback);
+    Ok(label)
+}
+
+async fn refine_chat_created_link_label(
+    app: AppHandle,
+    parent_id: String,
+    child_id: String,
+    source_prompt: String,
+    response_content: String,
+) {
+    let Ok(label) = suggest_chat_created_link_label(&app, &source_prompt, &response_content).await
+    else {
+        return;
+    };
+    if label == fallback_chat_link_label(&source_prompt) {
+        return;
+    }
+
+    let Ok(connection) = open_database(&app) else {
+        return;
+    };
+    let updated = connection
+        .execute(
+            "
+            UPDATE note_links
+            SET label = ?3
+            WHERE source_id = ?1
+              AND target_id = ?2
+              AND link_kind = 'manual'
+            ",
+            params![parent_id, child_id, label],
+        )
+        .unwrap_or(0);
+    if updated > 0 {
+        let _ = app.emit(
+            "note-links-updated",
+            json!({ "source_id": parent_id, "target_id": child_id }),
+        );
+    }
+}
+
+#[tauri::command]
+fn link_chat_created_note(
+    app: AppHandle,
+    parent_id: String,
+    child_id: String,
+    source_prompt: String,
+    response_content: String,
+) -> Result<BankSnapshot, String> {
+    let Some((parent_id, child_id)) = normalize_directed_pair(&parent_id, &child_id) else {
+        return Err("Cannot link a note to itself".to_string());
+    };
+
+    let label = fallback_chat_link_label(&source_prompt);
+    let created_at = now_string();
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "
+            INSERT INTO note_links (source_id, target_id, created_at, label, link_kind)
+            VALUES (?1, ?2, ?3, ?4, 'manual')
+            ON CONFLICT(source_id, target_id) DO UPDATE SET
+                label = excluded.label,
+                link_kind = excluded.link_kind
+            ",
+            params![&parent_id, &child_id, &created_at, label],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "
+            INSERT INTO note_links (source_id, target_id, created_at, label, link_kind)
+            VALUES (?1, ?2, ?3, 'Parent Note', 'manual')
+            ON CONFLICT(source_id, target_id) DO UPDATE SET
+                label = excluded.label,
+                link_kind = excluded.link_kind
+            ",
+            params![&child_id, &parent_id, &created_at],
+        )
+        .map_err(db_error)?;
+    let bank = snapshot(&app, &connection)?;
+    let refinement_app = app.clone();
+    tauri::async_runtime::spawn(refine_chat_created_link_label(
+        refinement_app,
+        parent_id,
+        child_id,
+        source_prompt,
+        response_content,
+    ));
+    Ok(bank)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3881,6 +4188,7 @@ pub fn run() {
             restore_note,
             permanent_delete_note,
             link_notes,
+            link_chat_created_note,
             rename_note_link,
             unlink_notes,
             agents::agent_execute_tool,

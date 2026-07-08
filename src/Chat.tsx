@@ -143,7 +143,7 @@ export default function NoteChat({
 }: {
   noteId: string;
   noteContent: string;
-  onCreateNote: (content: string) => void;
+  onCreateNote: (content: string, sourcePrompt: string | null) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -291,7 +291,7 @@ export default function NoteChat({
           </div>
         ) : (
           <>
-            {messages.map((message) =>
+            {messages.map((message, index) =>
               message.role === "assistant" ? (
                 <div className="chat-msg assistant" key={message.id}>
                   <div
@@ -311,7 +311,15 @@ export default function NoteChat({
                       type="button"
                       className="chat-action"
                       title="Create a note from this"
-                      onClick={() => onCreateNote(message.content)}
+                      onClick={() => {
+                        const sourcePrompt =
+                          messages
+                            .slice(0, index)
+                            .reverse()
+                            .find((candidate) => candidate.role === "user")
+                            ?.content ?? null;
+                        onCreateNote(message.content, sourcePrompt);
+                      }}
                     >
                       <FilePlus size={14} />
                     </button>

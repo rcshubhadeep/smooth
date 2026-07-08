@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { TokenResponse } from "@choochmeque/tauri-plugin-google-auth-api";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -1114,8 +1115,6 @@ function App() {
         linkByNoteId.set(link.target_id, link);
       } else if (sourceIds.includes(link.source_id)) {
         linkByNoteId.set(link.target_id, link);
-      } else if (sourceIds.includes(link.target_id)) {
-        linkByNoteId.set(link.source_id, link);
       }
     }
 
@@ -1184,6 +1183,31 @@ function App() {
   useEffect(() => {
     loadBank().catch((loadError: unknown) => setError(String(loadError)));
     void refreshCalendarEvents({ silent: true });
+  }, [loadBank]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen("note-links-updated", () => {
+      void loadBank().catch((loadError: unknown) => {
+        if (!disposed) {
+          setError(String(loadError));
+        }
+      });
+    })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((listenError) => setError(String(listenError)));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [loadBank]);
 
   useEffect(() => {
@@ -1279,7 +1303,11 @@ function App() {
 
   // Create a normal note seeded with content (e.g. a chat summary). Saving as a
   // regular note enqueues entity extraction automatically.
-  async function createNoteFromContent(content: string) {
+  async function createNoteFromContent(
+    content: string,
+    sourcePrompt: string | null = null,
+  ) {
+    const parentId = activeNote?.id ?? null;
     try {
       setError(null);
       const note = await invoke<NoteWithContent>("create_note", {
@@ -1292,11 +1320,25 @@ function App() {
         content,
         folderId: null,
       });
-      await loadBank();
+      if (parentId) {
+        const bank = await invoke<BankSnapshot>("link_chat_created_note", {
+          parentId,
+          childId: saved.id,
+          sourcePrompt: sourcePrompt ?? "",
+          responseContent: content,
+        });
+        setSnapshot(bank);
+      } else {
+        await loadBank();
+      }
       setActiveNote(saved);
       setSelectedIds([saved.id]);
       setView("notes");
-      toast.success("Note created — extracting entities");
+      toast.success(
+        parentId
+          ? "Note created and linked — extracting entities"
+          : "Note created — extracting entities",
+      );
     } catch (createError) {
       toast.error(createError);
     }
@@ -6237,7 +6279,10 @@ type ContextPanelProps = {
   onLinkSuggestion: (targetId: string) => Promise<void>;
   onExtractionStatusChange: (noteId: string, status: string) => void;
   onJumpToEntityMention: (surfaceText: string) => void;
-  onCreateNoteFromContent: (content: string) => void;
+  onCreateNoteFromContent: (
+    content: string,
+    sourcePrompt: string | null,
+  ) => void;
   onRenameSpeaker: (oldName: string, newName: string) => void;
   onRenameLink: (
     sourceId: string,
