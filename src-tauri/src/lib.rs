@@ -25,8 +25,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use stt::{
-    get_stt_config, get_stt_status, save_stt_config, transcribe_capture_file,
-    transcribe_last_capture,
+    enqueue_stt_job, get_stt_config, get_stt_status, recover_interrupted_stt_jobs, save_stt_config,
+    transcribe_capture_file, transcribe_last_capture,
 };
 use system_audio::{
     capture_meeting_snapshot, check_system_audio_permission, get_system_audio_capture_status,
@@ -484,6 +484,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
 
     chat::init_schema(&connection)?;
     agents::init_schema(&connection)?;
+    stt::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -4125,7 +4126,9 @@ pub fn run() {
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
+            recover_interrupted_stt_jobs(&connection).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
+            tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4166,6 +4169,7 @@ pub fn run() {
             get_stt_config,
             save_stt_config,
             get_stt_status,
+            enqueue_stt_job,
             transcribe_capture_file,
             transcribe_last_capture,
             check_system_audio_permission,

@@ -341,6 +341,35 @@ type SttTranscription = {
   model_path: string;
 };
 
+type SttJob = {
+  id: number;
+  note_id: string;
+  source: "mic" | "system" | string;
+  chunk_path: string;
+  sequence: number;
+  chunk_started_at_ms: number | null;
+  duration_ms: number | null;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+};
+
+type SttJobEvent = {
+  job_id: number;
+  jobId?: number;
+  note_id: string;
+  noteId?: string;
+  source: "mic" | "system" | string;
+  path: string;
+  sequence: number;
+  chunk_started_at_ms: number | null;
+  chunkStartedAtMs?: number | null;
+  duration_ms: number | null;
+  durationMs?: number | null;
+  transcription: SttTranscription | null;
+  error: string | null;
+};
+
 type NoteEntity = {
   id: number;
   name: string;
@@ -957,6 +986,10 @@ function App() {
   const meetingContentRef = useRef("");
   const meetingLoopRef = useRef<Promise<void> | null>(null);
   const meetingChunkRef = useRef<Promise<void> | null>(null);
+  const meetingAppendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const meetingSttSequenceRef = useRef(0);
+  const meetingPendingSttJobsRef = useRef(0);
+  const meetingPendingSttResolversRef = useRef<Array<() => void>>([]);
   const lastSystemCapturePathRef = useRef<string | null>(null);
   const meetingVisualSourceIdRef = useRef<string | null>(null);
   const lastMeetingSnapshotAtRef = useRef(0);
@@ -1209,6 +1242,30 @@ function App() {
       unlisten?.();
     };
   }, [loadBank]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<SttJobEvent>("stt-job-completed", (event) => {
+      if (disposed || event.payload.note_id !== meetingNoteIdRef.current) {
+        return;
+      }
+      handleMeetingSttEvent(event.payload);
+    })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((listenError) => setError(String(listenError)));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => setCalendarNow(Date.now()), 30_000);
@@ -1571,6 +1628,145 @@ function App() {
     });
   }
 
+  function notifyMeetingSttProgress() {
+    if (meetingPendingSttJobsRef.current === 0) {
+      const resolvers = meetingPendingSttResolversRef.current.splice(0);
+      resolvers.forEach((resolve) => resolve());
+    }
+  }
+
+  function waitForMeetingSttJobs() {
+    if (meetingPendingSttJobsRef.current === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      meetingPendingSttResolversRef.current.push(resolve);
+    });
+  }
+
+  async function enqueueMeetingSttJob(
+    source: "mic" | "system",
+    preview: AudioCapturePreview | SystemAudioCapturePreview,
+  ) {
+    const noteId = meetingNoteIdRef.current;
+    if (!noteId || preview.samples <= 0) {
+      return null;
+    }
+
+    meetingSttSequenceRef.current += 1;
+    meetingPendingSttJobsRef.current += 1;
+    setMeetingDetail("Queued transcription");
+    try {
+      return await invoke<SttJob>("enqueue_stt_job", {
+        input: {
+          noteId,
+          source,
+          path: preview.path,
+          sequence: meetingSttSequenceRef.current,
+          chunkStartedAtMs: Date.now() - Number(preview.duration_ms),
+          durationMs: Number(preview.duration_ms),
+        },
+      });
+    } catch (enqueueError) {
+      meetingPendingSttJobsRef.current = Math.max(
+        0,
+        meetingPendingSttJobsRef.current - 1,
+      );
+      notifyMeetingSttProgress();
+      setMeetingDetail(`Transcription queue skipped: ${String(enqueueError)}`);
+      return null;
+    }
+  }
+
+  function handleMeetingSttEvent(event: SttJobEvent) {
+    const normalizedEvent: SttJobEvent = {
+      ...event,
+      job_id: event.job_id ?? event.jobId ?? 0,
+      note_id: event.note_id ?? event.noteId ?? "",
+      chunk_started_at_ms:
+        event.chunk_started_at_ms ?? event.chunkStartedAtMs ?? null,
+      duration_ms: event.duration_ms ?? event.durationMs ?? null,
+    };
+    meetingAppendQueueRef.current = meetingAppendQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await appendMeetingSttEvent(normalizedEvent);
+        } finally {
+          meetingPendingSttJobsRef.current = Math.max(
+            0,
+            meetingPendingSttJobsRef.current - 1,
+          );
+          notifyMeetingSttProgress();
+        }
+      });
+  }
+
+  async function appendMeetingSttEvent(event: SttJobEvent) {
+    if (event.error) {
+      setMeetingDetail(`Transcription skipped: ${event.error}`);
+      return;
+    }
+    const text = event.transcription?.text.trim();
+    if (!text) {
+      setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
+      return;
+    }
+
+    const noteId = meetingNoteIdRef.current;
+    if (!noteId || event.note_id !== noteId) {
+      return;
+    }
+
+    let nextContent = meetingContentRef.current;
+    if (event.source === "mic") {
+      nextContent = appendMeetingTranscript(
+        nextContent,
+        meetingMicLabelRef.current,
+        text,
+      );
+    } else {
+      const diarization = await diarizeSystemCapture(event.path);
+      if (diarization?.turns.length && event.transcription?.segments.length) {
+        for (const segment of event.transcription.segments) {
+          const sessionSegment = {
+            ...segment,
+            start_ms: segment.start_ms + diarization.chunk_start_ms,
+            end_ms: segment.end_ms + diarization.chunk_start_ms,
+          };
+          const speakerId = diarizedSpeakerForSegment(
+            sessionSegment,
+            diarization.turns,
+          );
+          nextContent = appendMeetingTranscript(
+            nextContent,
+            resolveDiarizedSpeakerLabel(speakerId),
+            segment.text,
+          );
+        }
+      } else {
+        nextContent = appendMeetingTranscript(
+          nextContent,
+          meetingSystemLabelRef.current,
+          text,
+        );
+      }
+    }
+
+    if (nextContent === meetingContentRef.current) {
+      return;
+    }
+    meetingContentRef.current = nextContent;
+    const saved = await saveMeetingNote(
+      noteId,
+      meetingTitleRef.current,
+      nextContent,
+      meetingFolderIdRef.current,
+    );
+    meetingFolderIdRef.current = saved.folder_id;
+    setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
+  }
+
   async function startMeetingMode() {
     if (meetingState !== "idle") {
       return;
@@ -1615,6 +1811,10 @@ function App() {
       meetingTitleRef.current = title;
       meetingFolderIdRef.current = note.folder_id;
       meetingContentRef.current = content;
+      meetingAppendQueueRef.current = Promise.resolve();
+      meetingSttSequenceRef.current = 0;
+      meetingPendingSttJobsRef.current = 0;
+      meetingPendingSttResolversRef.current = [];
       lastSystemCapturePathRef.current = null;
       meetingVisualSourceIdRef.current = visualSourceId;
       lastMeetingSnapshotAtRef.current = 0;
@@ -1705,16 +1905,10 @@ function App() {
     await meetingLoopRef.current;
     await processMeetingChunk(250, false);
     await stopMeetingSources();
+    setMeetingDetail("Finishing transcription");
+    await waitForMeetingSttJobs();
+    await meetingAppendQueueRef.current.catch(() => undefined);
     await stopDiarizationSession();
-    meetingLoopRef.current = null;
-    meetingChunkRef.current = null;
-    meetingNoteIdRef.current = null;
-    meetingVisualSourceIdRef.current = null;
-    resetMeetingDiarization();
-    setMeetingNoteId(null);
-    setMeetingVisualSourceName(null);
-    setMeetingState("idle");
-    setMeetingDetail("Ready");
 
     // Meeting notes skip live extraction while recording. Now that the
     // transcript is finalized, kick off entity extraction for the note.
@@ -1732,6 +1926,16 @@ function App() {
         toast.error(extractionError);
       }
     }
+
+    meetingLoopRef.current = null;
+    meetingChunkRef.current = null;
+    meetingNoteIdRef.current = null;
+    meetingVisualSourceIdRef.current = null;
+    resetMeetingDiarization();
+    setMeetingNoteId(null);
+    setMeetingVisualSourceName(null);
+    setMeetingState("idle");
+    setMeetingDetail("Ready");
   }
 
   async function stopDiarizationSession() {
@@ -1818,7 +2022,7 @@ function App() {
       return;
     }
 
-    setMeetingDetail("Transcribing");
+    setMeetingDetail("Preparing audio chunks");
     const previews: Array<{
       source: "Mic" | "System";
       preview: AudioCapturePreview | SystemAudioCapturePreview;
@@ -1855,54 +2059,15 @@ function App() {
       });
     }
 
-    let nextContent = meetingContentRef.current;
-    let hasNoteChanges = false;
     for (const item of previews) {
-      const result = await invoke<SttTranscription>("transcribe_capture_file", {
-        path: item.preview.path,
-      }).catch((error) => {
-        setMeetingDetail(`Transcription skipped: ${String(error)}`);
-        return null;
-      });
-      const text = result?.text.trim();
-      if (text) {
-        if (item.source === "Mic") {
-          nextContent = appendMeetingTranscript(
-            nextContent,
-            meetingMicLabelRef.current,
-            text,
-          );
-        } else {
-          const diarization = await diarizeSystemCapture(item.preview.path);
-          if (diarization?.turns.length && result?.segments.length) {
-            for (const segment of result.segments) {
-              const sessionSegment = {
-                ...segment,
-                start_ms: segment.start_ms + diarization.chunk_start_ms,
-                end_ms: segment.end_ms + diarization.chunk_start_ms,
-              };
-              const speakerId = diarizedSpeakerForSegment(
-                sessionSegment,
-                diarization.turns,
-              );
-              nextContent = appendMeetingTranscript(
-                nextContent,
-                resolveDiarizedSpeakerLabel(speakerId),
-                segment.text,
-              );
-            }
-          } else {
-            nextContent = appendMeetingTranscript(
-              nextContent,
-              meetingSystemLabelRef.current,
-              text,
-            );
-          }
-        }
-        hasNoteChanges = true;
-      }
+      await enqueueMeetingSttJob(
+        item.source === "Mic" ? "mic" : "system",
+        item.preview,
+      );
     }
 
+    let nextContent = meetingContentRef.current;
+    let hasNoteChanges = false;
     const snapshotLine = await maybeCaptureMeetingSnapshot();
     if (snapshotLine) {
       nextContent = appendMeetingSnapshot(nextContent, snapshotLine);

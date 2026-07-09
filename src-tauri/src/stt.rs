@@ -2,12 +2,17 @@ use crate::{
     app_data_dir, app_meta_value,
     audio_capture::{current_audio_capture_status, AudioCaptureState},
     audio_preprocess::{load_wav_for_whisper, WhisperAudioInfo},
-    db_error, open_database,
+    db_error, now_string, open_database,
 };
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Once, time::Instant};
-use tauri::{AppHandle, State};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::Once,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, State};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 static WHISPER_LOG_HOOKS: Once = Once::new();
@@ -54,6 +59,76 @@ pub struct SttTranscription {
     pub audio: WhisperAudioInfo,
     pub elapsed_ms: u128,
     pub model_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SttJob {
+    pub id: i64,
+    pub note_id: String,
+    pub source: String,
+    pub chunk_path: String,
+    pub sequence: i64,
+    pub chunk_started_at_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueSttJobInput {
+    pub note_id: String,
+    pub source: String,
+    pub path: String,
+    pub sequence: i64,
+    pub chunk_started_at_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SttJobEvent {
+    pub job_id: i64,
+    pub note_id: String,
+    pub source: String,
+    pub path: String,
+    pub sequence: i64,
+    pub chunk_started_at_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub transcription: Option<SttTranscription>,
+    pub error: Option<String>,
+}
+
+pub fn init_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS stt_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                source TEXT NOT NULL CHECK (source IN ('mic', 'system')),
+                chunk_path TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                chunk_started_at_ms INTEGER,
+                duration_ms INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 2,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                last_error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS stt_jobs_claim_idx
+                ON stt_jobs(status, created_at, id);
+            CREATE INDEX IF NOT EXISTS stt_jobs_note_idx
+                ON stt_jobs(note_id, source, sequence);
+            ",
+        )
+        .map_err(db_error)
 }
 
 #[tauri::command]
@@ -109,6 +184,244 @@ pub fn get_stt_status(app: AppHandle) -> Result<SttStatus, String> {
     let connection = open_database(&app)?;
     let config = load_stt_config(&app, &connection)?;
     Ok(stt_status(config))
+}
+
+#[tauri::command]
+pub fn enqueue_stt_job(app: AppHandle, input: EnqueueSttJobInput) -> Result<SttJob, String> {
+    let source = match input.source.as_str() {
+        "mic" | "system" => input.source,
+        _ => return Err("Unsupported STT source".to_string()),
+    };
+    let audio_path = validate_capture_audio_path(&app, input.path)?;
+    let chunk_path = audio_path.to_string_lossy().into_owned();
+    let now = now_string();
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "
+            INSERT INTO stt_jobs (
+                note_id, source, chunk_path, sequence, chunk_started_at_ms,
+                duration_ms, status, attempts, max_attempts, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, 2, ?7, ?7)
+            ",
+            params![
+                input.note_id,
+                source,
+                chunk_path,
+                input.sequence,
+                input.chunk_started_at_ms,
+                input.duration_ms,
+                now
+            ],
+        )
+        .map_err(db_error)?;
+    let id = connection.last_insert_rowid();
+    load_stt_job(&connection, id)
+}
+
+pub fn recover_interrupted_stt_jobs(connection: &Connection) -> Result<(), String> {
+    let now = now_string();
+    connection
+        .execute(
+            "
+            UPDATE stt_jobs
+            SET status = 'pending',
+                updated_at = ?1,
+                started_at = NULL,
+                last_error = NULL
+            WHERE status = 'processing'
+            ",
+            params![now],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+pub async fn stt_worker(app: AppHandle) {
+    loop {
+        match claim_stt_job(&app) {
+            Ok(Some(job)) => process_stt_job(app.clone(), job).await,
+            Ok(None) => tokio::time::sleep(Duration::from_millis(500)).await,
+            Err(error) => {
+                eprintln!("[smooth:stt-worker] {error}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+fn load_stt_job(connection: &Connection, id: i64) -> Result<SttJob, String> {
+    connection
+        .query_row(
+            "
+            SELECT id, note_id, source, chunk_path, sequence, chunk_started_at_ms,
+                   duration_ms, status, attempts, last_error
+            FROM stt_jobs
+            WHERE id = ?1
+            ",
+            params![id],
+            |row| {
+                Ok(SttJob {
+                    id: row.get(0)?,
+                    note_id: row.get(1)?,
+                    source: row.get(2)?,
+                    chunk_path: row.get(3)?,
+                    sequence: row.get(4)?,
+                    chunk_started_at_ms: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    status: row.get(7)?,
+                    attempts: row.get(8)?,
+                    last_error: row.get(9)?,
+                })
+            },
+        )
+        .map_err(db_error)
+}
+
+fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
+    let mut connection = open_database(app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    let job_id = transaction
+        .query_row(
+            "
+            SELECT id
+            FROM stt_jobs
+            WHERE status = 'pending'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some(job_id) = job_id else {
+        transaction.commit().map_err(db_error)?;
+        return Ok(None);
+    };
+
+    let now = now_string();
+    let changed = transaction
+        .execute(
+            "
+            UPDATE stt_jobs
+            SET status = 'processing',
+                attempts = attempts + 1,
+                updated_at = ?1,
+                started_at = ?1,
+                last_error = NULL
+            WHERE id = ?2 AND status = 'pending'
+            ",
+            params![now, job_id],
+        )
+        .map_err(db_error)?;
+    if changed == 0 {
+        transaction.commit().map_err(db_error)?;
+        return Ok(None);
+    }
+    transaction.commit().map_err(db_error)?;
+    load_stt_job(&connection, job_id).map(Some)
+}
+
+async fn process_stt_job(app: AppHandle, job: SttJob) {
+    let config = {
+        let connection = match open_database(&app) {
+            Ok(connection) => connection,
+            Err(error) => {
+                fail_stt_job(&app, &job, error);
+                return;
+            }
+        };
+        match load_stt_config(&app, &connection) {
+            Ok(config) => config,
+            Err(error) => {
+                fail_stt_job(&app, &job, error);
+                return;
+            }
+        }
+    };
+    let audio_path = PathBuf::from(&job.chunk_path);
+    let result = tauri::async_runtime::spawn_blocking(move || transcribe_wav(config, audio_path))
+        .await
+        .map_err(|error| format!("STT worker failed: {error}"))
+        .and_then(|result| result);
+
+    match result {
+        Ok(transcription) => complete_stt_job(&app, &job, transcription),
+        Err(error) => fail_stt_job(&app, &job, error),
+    }
+}
+
+fn complete_stt_job(app: &AppHandle, job: &SttJob, transcription: SttTranscription) {
+    let now = now_string();
+    if let Ok(connection) = open_database(app) {
+        let _ = connection.execute(
+            "
+            UPDATE stt_jobs
+            SET status = 'done',
+                updated_at = ?1,
+                completed_at = ?1,
+                last_error = NULL
+            WHERE id = ?2
+            ",
+            params![now, job.id],
+        );
+    }
+    let _ = app.emit(
+        "stt-job-completed",
+        SttJobEvent {
+            job_id: job.id,
+            note_id: job.note_id.clone(),
+            source: job.source.clone(),
+            path: job.chunk_path.clone(),
+            sequence: job.sequence,
+            chunk_started_at_ms: job.chunk_started_at_ms,
+            duration_ms: job.duration_ms,
+            transcription: Some(transcription),
+            error: None,
+        },
+    );
+}
+
+fn fail_stt_job(app: &AppHandle, job: &SttJob, error: String) {
+    let now = now_string();
+    let status = if job.attempts >= 2 {
+        "failed"
+    } else {
+        "pending"
+    };
+    if let Ok(connection) = open_database(app) {
+        let _ = connection.execute(
+            "
+            UPDATE stt_jobs
+            SET status = ?1,
+                updated_at = ?2,
+                completed_at = CASE WHEN ?1 = 'failed' THEN ?2 ELSE completed_at END,
+                last_error = ?3
+            WHERE id = ?4
+            ",
+            params![status, now, error, job.id],
+        );
+    }
+    if status == "failed" {
+        let _ = app.emit(
+            "stt-job-completed",
+            SttJobEvent {
+                job_id: job.id,
+                note_id: job.note_id.clone(),
+                source: job.source.clone(),
+                path: job.chunk_path.clone(),
+                sequence: job.sequence,
+                chunk_started_at_ms: job.chunk_started_at_ms,
+                duration_ms: job.duration_ms,
+                transcription: None,
+                error: Some(error),
+            },
+        );
+    }
 }
 
 #[tauri::command]
@@ -439,4 +752,28 @@ fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscrip
         elapsed_ms: started_at.elapsed().as_millis(),
         model_path: config.model_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_input_accepts_frontend_camel_case_payload() {
+        let input = serde_json::from_value::<EnqueueSttJobInput>(serde_json::json!({
+            "noteId": "note-1",
+            "source": "mic",
+            "path": "/tmp/capture.wav",
+            "sequence": 7,
+            "chunkStartedAtMs": 1234,
+            "durationMs": 5000
+        }))
+        .expect("deserialize enqueue input");
+
+        assert_eq!(input.note_id, "note-1");
+        assert_eq!(input.source, "mic");
+        assert_eq!(input.sequence, 7);
+        assert_eq!(input.chunk_started_at_ms, Some(1234));
+        assert_eq!(input.duration_ms, Some(5000));
+    }
 }
