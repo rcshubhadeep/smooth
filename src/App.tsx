@@ -985,6 +985,7 @@ function App() {
   );
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [isNotesRefreshing, setIsNotesRefreshing] = useState(false);
   const [isCalendarRefreshing, setIsCalendarRefreshing] = useState(false);
   const [calendarNow, setCalendarNow] = useState(() => Date.now());
   const [meetingMicLabel, setMeetingMicLabel] = useState(
@@ -1176,6 +1177,17 @@ function App() {
     setSnapshot(bank);
     return bank;
   }, []);
+
+  async function refreshNotes() {
+    setIsNotesRefreshing(true);
+    try {
+      await loadBank();
+    } catch (refreshError) {
+      setError(String(refreshError));
+    } finally {
+      setIsNotesRefreshing(false);
+    }
+  }
 
   function revealNoteInTree(note: Pick<NoteWithContent, "id" | "folder_id" | "deleted_at">) {
     setCollapsedSections((current) => {
@@ -2730,44 +2742,59 @@ function App() {
         <aside className="sidebar">
           <div className="sidebar-header">
             <h1>Let&rsquo;s dive in</h1>
-            <div
-              className="pop-wrap"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
+            <div className="sidebar-header-actions">
               <button
-                className="icon-button primary"
+                className="icon-button"
                 type="button"
-                onClick={() => setCreateMenuOpen((open) => !open)}
-                title="Create new"
-                aria-haspopup="menu"
-                aria-expanded={createMenuOpen}
+                onClick={() => void refreshNotes()}
+                disabled={isNotesRefreshing}
+                title="Refresh notes"
+                aria-label="Refresh notes"
               >
-                <Plus size={18} />
+                <RefreshCw
+                  className={isNotesRefreshing ? "spin" : ""}
+                  size={16}
+                />
               </button>
-              {createMenuOpen ? (
-                <div className="pop-menu" role="menu">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreateMenuOpen(false);
-                      void createNote();
-                    }}
-                  >
-                    <FileText size={15} />
-                    New note
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreateMenuOpen(false);
-                      void createFolderInline();
-                    }}
-                  >
-                    <FolderPlus size={15} />
-                    New folder
-                  </button>
-                </div>
-              ) : null}
+              <div
+                className="pop-wrap"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <button
+                  className="icon-button primary"
+                  type="button"
+                  onClick={() => setCreateMenuOpen((open) => !open)}
+                  title="Create new"
+                  aria-haspopup="menu"
+                  aria-expanded={createMenuOpen}
+                >
+                  <Plus size={18} />
+                </button>
+                {createMenuOpen ? (
+                  <div className="pop-menu" role="menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateMenuOpen(false);
+                        void createNote();
+                      }}
+                    >
+                      <FileText size={15} />
+                      New note
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateMenuOpen(false);
+                        void createFolderInline();
+                      }}
+                    >
+                      <FolderPlus size={15} />
+                      New folder
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -2959,12 +2986,12 @@ function App() {
                   onClick={() => void refreshCalendarEvents()}
                   disabled={isCalendarRefreshing}
                   title="Refresh meetings"
+                  aria-label="Refresh meetings"
                 >
                   <RefreshCw
                     className={isCalendarRefreshing ? "spin" : ""}
                     size={14}
                   />
-                  Refresh
                 </button>
               </div>
 

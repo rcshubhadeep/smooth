@@ -347,6 +347,17 @@ select:focus-visible,
   border-radius: var(--r-sm);
 }
 
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-header-actions > .icon-button {
+  width: 34px;
+  height: 34px;
+}
+
 .note-info-popover {
   position: relative;
   display: inline-flex;
@@ -790,8 +801,10 @@ select:hover {
 }
 
 .meetings-header button {
+  width: 26px;
   height: 26px;
-  padding: 0 8px;
+  justify-content: center;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--panel-strong);
