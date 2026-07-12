@@ -9,6 +9,7 @@ mod gmail;
 mod mcp;
 mod meeting_notes;
 mod semantic_search;
+mod slack;
 mod stt;
 mod system_audio;
 
@@ -491,6 +492,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     meeting_notes::init_schema(&connection)?;
     mcp::init_schema(&connection)?;
     semantic_search::init_schema(&connection)?;
+    slack::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -4138,6 +4140,7 @@ pub fn run() {
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
         .manage(diarization::DiarizationState::default())
+        .manage(slack::SlackState::default())
         .manage(agents::AgentRuntime::new())
         .setup(|app| {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
@@ -4147,6 +4150,7 @@ pub fn run() {
             semantic_search::recover(&connection).map_err(std::io::Error::other)?;
             semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
             mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
+            tauri::async_runtime::spawn(slack::worker(app.handle().clone()));
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
             tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
             tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
@@ -4212,6 +4216,10 @@ pub fn run() {
             semantic_search::fail_embedding_job,
             semantic_search::semantic_search_notes,
             mcp::get_mcp_status,
+            slack::get_slack_config,
+            slack::save_slack_config,
+            slack::clear_slack_config,
+            slack::post_note_to_slack,
             mcp::set_mcp_bearer_token,
             create_folder,
             rename_folder,

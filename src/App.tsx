@@ -69,6 +69,7 @@ import TurndownService from "turndown";
 import NoteChat from "./Chat";
 import CommandPalette from "./CommandPalette";
 import McpSettings from "./McpSettings";
+import SlackSettings from "./SlackSettings";
 import { startSemanticIndexer } from "./semantic";
 import "./App.css";
 
@@ -1333,6 +1334,16 @@ function App() {
       unlisten?.();
     };
   }, [activeNote?.id, loadBank]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen<string>("slack-note-created", () => {
+      void loadBank();
+    }).then((stopListening) => {
+      unlisten = stopListening;
+    });
+    return () => unlisten?.();
+  }, [loadBank]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setCalendarNow(Date.now()), 30_000);
@@ -4214,6 +4225,8 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       </header>
 
       <McpSettings />
+
+      <SlackSettings />
 
       <section className="settings-section">
         <div className="section-heading">

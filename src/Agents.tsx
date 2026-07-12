@@ -6,6 +6,7 @@ import {
   FileText,
   Link2,
   Loader2,
+  MessageSquare,
   Pencil,
   Play,
   Plus,
@@ -14,6 +15,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import SlackShareAgent from "./SlackShareAgent";
 import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
 
@@ -47,7 +49,7 @@ export type AgentDefinition = {
   source: AgentSource;
 };
 
-export type AgentIconName = "summary" | "links" | "overview";
+export type AgentIconName = "summary" | "links" | "overview" | "slack";
 
 // Mirrors `flow::AgentRunResult` / `flow::AgentRunStep` in the Rust backend.
 export type AgentRunStep = {
@@ -72,9 +74,19 @@ const AGENT_ICONS: Record<AgentIconName, typeof FileText> = {
   summary: FileText,
   links: Link2,
   overview: Sparkles,
+  slack: MessageSquare,
 };
 
 export const BUILTIN_AGENTS: AgentDefinition[] = [
+  {
+    id: "share-note-slack",
+    name: "Share to Slack",
+    description: "Reviews this note and posts it to a Slack channel or thread.",
+    scope: "note",
+    icon: "slack",
+    source: "builtin",
+    instructions: "Prepare this note for a user-approved Slack post.",
+  },
   {
     id: "summarize-note",
     name: "Summarize this note",
@@ -167,7 +179,7 @@ export type AgentDraft = {
 };
 
 function normalizeIcon(icon: string): AgentIconName {
-  return icon === "summary" || icon === "links" ? icon : "overview";
+  return icon === "summary" || icon === "links" || icon === "slack" ? icon : "overview";
 }
 
 function recordToAgent(record: AgentDefinitionRecord): AgentDefinition {
@@ -383,6 +395,7 @@ export function AgentsView({
   const [targetNoteId, setTargetNoteId] = useState<string>(
     () => currentNoteId ?? notes[0]?.id ?? "",
   );
+  const [slackShareNote, setSlackShareNote] = useState<AgentNoteRef | null>(null);
 
   const targetNote = useMemo(
     () => notes.find((note) => note.id === targetNoteId) ?? null,
@@ -413,6 +426,10 @@ export function AgentsView({
       });
       return;
     }
+    if (agent.id === "share-note-slack" && note) {
+      setSlackShareNote(note);
+      return;
+    }
 
     setRun({ status: "running", agent, note });
     try {
@@ -435,6 +452,10 @@ export function AgentsView({
   }
 
   // A live run takes over the whole view; the editor is next in priority.
+  if (slackShareNote) {
+    return <SlackShareAgent note={slackShareNote} onClose={() => setSlackShareNote(null)} />;
+  }
+
   if (run.status !== "idle") {
     return (
       <AgentRunPanel
@@ -949,9 +970,14 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
     [],
   );
   const [run, setRun] = useState<NoteRunState>({ status: "idle" });
+  const [slackShareOpen, setSlackShareOpen] = useState(false);
   const busy = run.status === "running";
 
   async function start(agent: AgentDefinition) {
+    if (agent.id === "share-note-slack") {
+      setSlackShareOpen(true);
+      return;
+    }
     setRun({ status: "running", agent });
     try {
       const result = await runAgent(agent, note);
@@ -1027,6 +1053,10 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
           </div>
           <AgentRunResultView result={run.result} />
         </div>
+      ) : null}
+
+      {slackShareOpen ? (
+        <SlackShareAgent note={note} onClose={() => setSlackShareOpen(false)} />
       ) : null}
     </div>
   );

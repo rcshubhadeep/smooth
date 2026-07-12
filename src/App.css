@@ -5155,6 +5155,196 @@ body.resizing {
   color: var(--text-soft);
 }
 
+.slack-share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 38%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.slack-share-dialog {
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 48px));
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.slack-share-dialog > header,
+.slack-share-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.slack-share-dialog > header {
+  border-bottom: 1px solid var(--border);
+}
+
+.slack-share-dialog > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.slack-share-dialog h2,
+.slack-share-dialog p {
+  margin: 0;
+}
+
+.slack-share-dialog h2 {
+  font-size: 15px;
+}
+
+.slack-share-dialog header p {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slack-share-dialog header button,
+.slack-share-dialog footer button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.slack-share-dialog header button {
+  width: 34px;
+  padding: 0;
+}
+
+.slack-share-dialog > .settings-field,
+.slack-share-ai,
+.slack-share-mode,
+.slack-share-error {
+  margin-right: 16px;
+  margin-left: 16px;
+}
+
+.slack-share-dialog > .settings-field {
+  margin-top: 14px;
+}
+
+.slack-share-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 12px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.slack-share-mode button {
+  height: 32px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.slack-share-mode button.active {
+  background: var(--panel-strong);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.slack-share-ai {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.slack-share-ai .settings-field {
+  flex: 1;
+}
+
+.slack-share-ai textarea {
+  min-height: 68px;
+}
+
+.slack-share-ai > button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.slack-share-preview textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.slack-share-error {
+  margin-top: 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.slack-share-dialog > footer {
+  justify-content: flex-end;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.slack-share-dialog footer button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.slack-share-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.slack-share-success {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: var(--accent-strong);
+}
+
+.slack-share-success button {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  cursor: pointer;
+}
+
 /* Phase 2: user agents + editor ----------------------------------------- */
 
 .agents-header-actions {
