@@ -847,6 +847,125 @@ async fn prepare_note_memory(
     ))
 }
 
+async fn prepare_note_memory_silent(
+    app: &AppHandle,
+    note_id: &str,
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    title: &str,
+    content: &str,
+    budget: &Budget,
+) -> Result<String, String> {
+    if text_fits_as_note_context(client, base_url, model, title, content, false, budget).await {
+        return Ok(content.to_string());
+    }
+
+    let content_hash = hash_text(content);
+    let mut current = content.to_string();
+    for level in 0..MAX_SUMMARY_LEVELS {
+        let reduce = level > 0;
+        let chunks = fit_summary_chunks(client, base_url, model, &current, budget, reduce).await?;
+        let mut summaries = Vec::with_capacity(chunks.len());
+
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let source_hash = hash_text(&chunk);
+            if let Some(summary) = summary_cache_lookup(
+                app,
+                note_id,
+                &content_hash,
+                model,
+                level,
+                index,
+                &source_hash,
+            )? {
+                summaries.push(summary);
+                continue;
+            }
+
+            let summary = if reduce {
+                reduce_summary_chunk(client, base_url, model, &chunk, budget.summary_max_tokens)
+                    .await?
+            } else {
+                summarize_chunk(client, base_url, model, &chunk, budget.summary_max_tokens).await?
+            };
+            let summary = summary.trim().to_string();
+            if summary.is_empty() {
+                return Err("The model returned an empty meeting summary".to_string());
+            }
+            summary_cache_store(
+                app,
+                note_id,
+                &content_hash,
+                model,
+                level,
+                index,
+                &source_hash,
+                &summary,
+            )?;
+            summaries.push(summary);
+        }
+
+        current = summaries
+            .into_iter()
+            .enumerate()
+            .map(|(index, summary)| format!("## Summary part {}\n{}", index + 1, summary))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text_fits_as_note_context(client, base_url, model, title, &current, true, budget).await {
+            return Ok(current);
+        }
+    }
+
+    Err("Could not reduce the meeting transcript enough to fill note sections".to_string())
+}
+
+pub(crate) async fn generate_meeting_note_sections(
+    app: &AppHandle,
+    transcript_note_id: &str,
+    transcript_title: &str,
+    transcript_content: &str,
+    user_note_content: &str,
+    empty_headings: &[String],
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let (base_url, preferred_model) = chat_llama_target(app)?;
+    let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
+    let budget = budget_for(context_tokens);
+    let memory = prepare_note_memory_silent(
+        app,
+        transcript_note_id,
+        &client,
+        &base_url,
+        &model,
+        transcript_title,
+        transcript_content,
+        &budget,
+    )
+    .await?;
+    let headings = empty_headings
+        .iter()
+        .map(|heading| format!("- {heading}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "Fill only the empty markdown sections requested below using evidence from the meeting transcript. Do not invent facts. Return only JSON in this exact shape: {{\"sections\":[{{\"heading\":\"Heading text without #\",\"content\":\"Markdown body\"}}]}}. Keep each body concise and actionable.\n\nEmpty headings:\n{headings}\n\nUser's meeting note (preserve existing text):\n{user_note_content}\n\nMeeting transcript or reduced transcript:\n{memory}"
+    );
+    complete_once(
+        &client,
+        &base_url,
+        &model,
+        "",
+        &prompt,
+        budget.answer_max_tokens,
+    )
+    .await
+}
+
 async fn select_history_messages(
     client: &reqwest::Client,
     base_url: &str,

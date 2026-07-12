@@ -33,6 +33,7 @@ import {
   Mic,
   Monitor,
   Moon,
+  NotebookPen,
   PanelRight,
   Pause,
   Pencil,
@@ -66,6 +67,8 @@ import {
 import { flushSync } from "react-dom";
 import TurndownService from "turndown";
 import NoteChat from "./Chat";
+import CommandPalette from "./CommandPalette";
+import { startSemanticIndexer } from "./semantic";
 import "./App.css";
 
 type ThemeMode = "light" | "dark" | "system";
@@ -298,6 +301,18 @@ type DiarizationSessionStarted = {
 type DiarizationSpeakerPrompt = {
   speakerId: string;
   fallbackName: string;
+};
+
+type MeetingNoteCompletionStatus = {
+  status: "queued" | "not_needed" | string;
+  user_note_id: string;
+  empty_headings: number;
+};
+
+type MeetingNoteCompletedEvent = {
+  note_id: string;
+  status: string;
+  error: string | null;
 };
 
 type SttConfig = {
@@ -886,7 +901,6 @@ function App() {
   const [snapshot, setSnapshot] = useState<BankSnapshot>(emptySnapshot);
   const [activeNote, setActiveNote] = useState<NoteWithContent | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>(() => {
     return (
@@ -948,6 +962,13 @@ function App() {
   const [meetingDetail, setMeetingDetail] = useState("Ready");
   const [meetingContentRevision, setMeetingContentRevision] = useState(0);
   const [meetingNoteId, setMeetingNoteId] = useState<string | null>(null);
+  const [meetingNotesOpen, setMeetingNotesOpen] = useState(false);
+  const [meetingQuickNotes, setMeetingQuickNotes] = useState("");
+  const [meetingQuickNoteId, setMeetingQuickNoteId] = useState<string | null>(
+    null,
+  );
+  const [meetingQuickNoteSaveState, setMeetingQuickNoteSaveState] =
+    useState<SaveState>("idle");
   const [entityJumpTarget, setEntityJumpTarget] = useState<{
     nonce: number;
     surfaceText: string;
@@ -974,7 +995,6 @@ function App() {
   );
   const [diarizationPrompt, setDiarizationPrompt] =
     useState<DiarizationSpeakerPrompt | null>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
   const meetingMicLabelRef = useRef(meetingMicLabel);
   meetingMicLabelRef.current = meetingMicLabel;
   const meetingSystemLabelRef = useRef(meetingSystemLabel);
@@ -984,6 +1004,13 @@ function App() {
   const meetingTitleRef = useRef("");
   const meetingFolderIdRef = useRef<string | null>(null);
   const meetingContentRef = useRef("");
+  const meetingQuickNotesRef = useRef("");
+  const meetingQuickNoteIdRef = useRef<string | null>(null);
+  const meetingQuickNoteFolderIdRef = useRef<string | null>(null);
+  const meetingQuickNoteCreateRef = useRef<Promise<NoteWithContent> | null>(
+    null,
+  );
+  const meetingQuickNoteSaveTimerRef = useRef<number | null>(null);
   const meetingLoopRef = useRef<Promise<void> | null>(null);
   const meetingChunkRef = useRef<Promise<void> | null>(null);
   const meetingAppendQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1037,23 +1064,12 @@ function App() {
   );
 
   const filteredNotes = useMemo(() => {
-    const cleanQuery = query.trim().toLowerCase();
-    if (!cleanQuery) {
-      return sortNotes(activeNotes, sortMode);
-    }
+    return sortNotes(activeNotes, sortMode);
+  }, [activeNotes, sortMode]);
 
-    return sortNotes(
-      activeNotes.filter((note) => {
-        const folderName =
-          snapshot.folders.find((folder) => folder.id === note.folder_id)
-            ?.name ?? "";
-        return `${note.title} ${note.excerpt} ${folderName}`
-          .toLowerCase()
-          .includes(cleanQuery);
-      }),
-      sortMode,
-    );
-  }, [activeNotes, query, snapshot.folders, sortMode]);
+  useEffect(() => {
+    startSemanticIndexer();
+  }, []);
 
   const folderGroups = useMemo(() => {
     const groups = snapshot.folders.map((folder) => ({
@@ -1101,8 +1117,7 @@ function App() {
         createNoteRef.current();
       } else if (meta && event.key.toLowerCase() === "f") {
         event.preventDefault();
-        setPaletteOpen(false);
-        searchRef.current?.focus();
+        setPaletteOpen(true);
       } else if (meta && event.key === "\\") {
         event.preventDefault();
         setPanelOpen((open) => !open);
@@ -1266,6 +1281,45 @@ function App() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<MeetingNoteCompletedEvent>("meeting-note-completed", (event) => {
+      if (disposed) {
+        return;
+      }
+      void loadBank();
+      if (event.payload.error) {
+        toast.error(`Meeting note completion failed: ${event.payload.error}`);
+        return;
+      }
+      if (activeNote?.id === event.payload.note_id) {
+        void invoke<NoteWithContent>("get_note", {
+          id: event.payload.note_id,
+        }).then((note) => {
+          if (!disposed) {
+            setActiveNote(note);
+            setEditorReloadKey((key) => key + 1);
+          }
+        });
+      }
+      toast.success("Meeting note completed");
+    })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((listenError) => setError(String(listenError)));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [activeNote?.id, loadBank]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setCalendarNow(Date.now()), 30_000);
@@ -1504,6 +1558,117 @@ function App() {
     [applySavedNote],
   );
 
+  function meetingQuickNoteTitle() {
+    const base = meetingTitleRef.current.trim() || "Meeting";
+    return `${base.replace(/\s+Notes$/i, "")} Notes`;
+  }
+
+  async function saveMeetingQuickNoteNow() {
+    const noteId = meetingQuickNoteIdRef.current;
+    if (!noteId) {
+      return null;
+    }
+    setMeetingQuickNoteSaveState("saving");
+    try {
+      const saved = await saveMeetingNote(
+        noteId,
+        meetingQuickNoteTitle(),
+        meetingQuickNotesRef.current,
+        meetingQuickNoteFolderIdRef.current,
+      );
+      meetingQuickNoteFolderIdRef.current = saved.folder_id;
+      setMeetingQuickNoteSaveState("saved");
+      return saved;
+    } catch (saveError) {
+      setMeetingQuickNoteSaveState("error");
+      throw saveError;
+    }
+  }
+
+  function scheduleMeetingQuickNoteSave() {
+    if (meetingQuickNoteSaveTimerRef.current !== null) {
+      window.clearTimeout(meetingQuickNoteSaveTimerRef.current);
+    }
+    meetingQuickNoteSaveTimerRef.current = window.setTimeout(() => {
+      meetingQuickNoteSaveTimerRef.current = null;
+      void saveMeetingQuickNoteNow().catch((saveError) =>
+        toast.error(saveError),
+      );
+    }, 500);
+  }
+
+  async function ensureMeetingQuickNote() {
+    if (meetingQuickNoteIdRef.current) {
+      return meetingQuickNoteIdRef.current;
+    }
+    if (!meetingQuickNotesRef.current.trim()) {
+      return null;
+    }
+    if (meetingQuickNoteCreateRef.current) {
+      return (await meetingQuickNoteCreateRef.current).id;
+    }
+    const transcriptNoteId = meetingNoteIdRef.current;
+    if (!transcriptNoteId) {
+      return null;
+    }
+
+    setMeetingQuickNoteSaveState("saving");
+    const initialContent = meetingQuickNotesRef.current;
+    const createPromise = invoke<NoteWithContent>("create_meeting_quick_note", {
+      transcriptNoteId,
+      transcriptTitle: meetingTitleRef.current,
+      content: initialContent,
+    });
+    meetingQuickNoteCreateRef.current = createPromise;
+    try {
+      const created = await createPromise;
+      meetingQuickNoteIdRef.current = created.id;
+      meetingQuickNoteFolderIdRef.current = created.folder_id;
+      setMeetingQuickNoteId(created.id);
+      applySavedNote(created);
+      await loadBank();
+      if (meetingQuickNotesRef.current !== initialContent) {
+        await saveMeetingQuickNoteNow();
+      } else {
+        setMeetingQuickNoteSaveState("saved");
+      }
+      return created.id;
+    } catch (createError) {
+      setMeetingQuickNoteSaveState("error");
+      throw createError;
+    } finally {
+      meetingQuickNoteCreateRef.current = null;
+    }
+  }
+
+  function updateMeetingQuickNotes(value: string) {
+    setMeetingQuickNotes(value);
+    meetingQuickNotesRef.current = value;
+    if (!meetingQuickNoteIdRef.current) {
+      if (value.trim()) {
+        void ensureMeetingQuickNote().catch((createError) =>
+          toast.error(createError),
+        );
+      }
+      return;
+    }
+    setMeetingQuickNoteSaveState("saving");
+    scheduleMeetingQuickNoteSave();
+  }
+
+  async function flushMeetingQuickNote() {
+    if (meetingQuickNoteSaveTimerRef.current !== null) {
+      window.clearTimeout(meetingQuickNoteSaveTimerRef.current);
+      meetingQuickNoteSaveTimerRef.current = null;
+    }
+    const noteId = await ensureMeetingQuickNote();
+    if (!noteId) {
+      return null;
+    }
+    await saveMeetingQuickNoteNow();
+    return noteId;
+  }
+
   function resetMeetingDiarization() {
     diarizationSpeakerNamesRef.current = {};
     diarizationSpeakerOrderRef.current = [];
@@ -1557,6 +1722,17 @@ function App() {
     }
 
     return diarizationSpeakerNamesRef.current[speakerId] || fallbackName;
+  }
+
+  function existingDiarizedSpeakerNames(currentSpeakerId: string) {
+    return Array.from(
+      new Set(
+        diarizationSpeakerOrderRef.current
+          .filter((speakerId) => speakerId !== currentSpeakerId)
+          .map((speakerId) => diarizationSpeakerNamesRef.current[speakerId])
+          .filter((name): name is string => Boolean(name?.trim())),
+      ),
+    );
   }
 
   async function renameDiarizedSpeaker(speakerId: string, requestedName: string) {
@@ -1811,6 +1987,18 @@ function App() {
       meetingTitleRef.current = title;
       meetingFolderIdRef.current = note.folder_id;
       meetingContentRef.current = content;
+      meetingQuickNotesRef.current = "";
+      meetingQuickNoteIdRef.current = null;
+      meetingQuickNoteFolderIdRef.current = null;
+      meetingQuickNoteCreateRef.current = null;
+      if (meetingQuickNoteSaveTimerRef.current !== null) {
+        window.clearTimeout(meetingQuickNoteSaveTimerRef.current);
+        meetingQuickNoteSaveTimerRef.current = null;
+      }
+      setMeetingQuickNotes("");
+      setMeetingQuickNoteId(null);
+      setMeetingQuickNoteSaveState("idle");
+      setMeetingNotesOpen(false);
       meetingAppendQueueRef.current = Promise.resolve();
       meetingSttSequenceRef.current = 0;
       meetingPendingSttJobsRef.current = 0;
@@ -1905,6 +2093,12 @@ function App() {
     await meetingLoopRef.current;
     await processMeetingChunk(250, false);
     await stopMeetingSources();
+    const quickNoteToComplete = await flushMeetingQuickNote().catch(
+      (quickNoteError) => {
+        toast.error(quickNoteError);
+        return null;
+      },
+    );
     setMeetingDetail("Finishing transcription");
     await waitForMeetingSttJobs();
     await meetingAppendQueueRef.current.catch(() => undefined);
@@ -1927,12 +2121,38 @@ function App() {
       }
     }
 
+    if (meetingNoteToExtract && quickNoteToComplete) {
+      try {
+        const completion = await invoke<MeetingNoteCompletionStatus>(
+          "enqueue_meeting_note_completion",
+          {
+            transcriptNoteId: meetingNoteToExtract,
+            userNoteId: quickNoteToComplete,
+          },
+        );
+        if (completion.status === "queued") {
+          toast.info(
+            `Completing ${completion.empty_headings} meeting note section${completion.empty_headings === 1 ? "" : "s"}`,
+          );
+        }
+      } catch (completionError) {
+        toast.error(completionError);
+      }
+    }
+
     meetingLoopRef.current = null;
     meetingChunkRef.current = null;
     meetingNoteIdRef.current = null;
+    meetingQuickNotesRef.current = "";
+    meetingQuickNoteIdRef.current = null;
+    meetingQuickNoteFolderIdRef.current = null;
     meetingVisualSourceIdRef.current = null;
     resetMeetingDiarization();
     setMeetingNoteId(null);
+    setMeetingNotesOpen(false);
+    setMeetingQuickNotes("");
+    setMeetingQuickNoteId(null);
+    setMeetingQuickNoteSaveState("idle");
     setMeetingVisualSourceName(null);
     setMeetingState("idle");
     setMeetingDetail("Ready");
@@ -2552,16 +2772,6 @@ function App() {
           </div>
 
           <div className="sidebar-controls">
-            <label className="search-field">
-              <Search size={16} />
-              <input
-                ref={searchRef}
-                value={query}
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                placeholder="Search notes"
-              />
-            </label>
-
             <div className="controls-row">
               <label className="sort-control">
                 <ArrowDownUp size={15} />
@@ -2946,6 +3156,16 @@ function App() {
         />
       ) : null}
 
+      {meetingNotesOpen && meetingState !== "idle" ? (
+        <MeetingQuickNotesPanel
+          noteCreated={Boolean(meetingQuickNoteId)}
+          saveState={meetingQuickNoteSaveState}
+          value={meetingQuickNotes}
+          onChange={updateMeetingQuickNotes}
+          onClose={() => setMeetingNotesOpen(false)}
+        />
+      ) : null}
+
       <MeetingCapsule
         detail={meetingDetail}
         noteTitle={meetingNoteTitle}
@@ -2954,8 +3174,10 @@ function App() {
         calendarCueTitle={actionableCalendarEvent?.title ?? null}
         micLabel={meetingMicLabel}
         systemLabel={meetingSystemLabel}
+        notesOpen={meetingNotesOpen}
         onMicLabelChange={setMeetingMicLabel}
         onSystemLabelChange={setMeetingSystemLabel}
+        onToggleNotes={() => setMeetingNotesOpen((open) => !open)}
         onPause={() => void pauseMeetingMode()}
         onResume={() => void resumeMeetingMode()}
         onStart={() => void startMeetingMode()}
@@ -2964,6 +3186,9 @@ function App() {
 
       {diarizationPrompt ? (
         <DiarizationSpeakerPromptBox
+          existingNames={existingDiarizedSpeakerNames(
+            diarizationPrompt.speakerId,
+          )}
           prompt={diarizationPrompt}
           onDismiss={dismissDiarizationPrompt}
           onRename={(speakerId, name) =>
@@ -2986,6 +3211,49 @@ function App() {
   );
 }
 
+function MeetingQuickNotesPanel({
+  noteCreated,
+  saveState,
+  value,
+  onChange,
+  onClose,
+}: {
+  noteCreated: boolean;
+  saveState: SaveState;
+  value: string;
+  onChange: (value: string) => void;
+  onClose: () => void;
+}) {
+  const status = !noteCreated
+    ? "Draft"
+    : saveState === "saving"
+      ? "Saving"
+      : saveState === "error"
+        ? "Save failed"
+        : "Saved";
+
+  return (
+    <section className="meeting-quick-notes" aria-label="Meeting notes">
+      <header>
+        <div>
+          <NotebookPen size={15} />
+          <strong>Meeting notes</strong>
+        </div>
+        <span className={saveState === "error" ? "error" : ""}>{status}</span>
+        <button type="button" onClick={onClose} title="Close meeting notes">
+          <X size={15} />
+        </button>
+      </header>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        placeholder={"# To do\n\n# Agreed next steps"}
+        autoFocus
+      />
+    </section>
+  );
+}
+
 type MeetingCapsuleProps = {
   detail: string;
   noteTitle: string;
@@ -2994,8 +3262,10 @@ type MeetingCapsuleProps = {
   calendarCueTitle: string | null;
   micLabel: string;
   systemLabel: string;
+  notesOpen: boolean;
   onMicLabelChange: (value: string) => void;
   onSystemLabelChange: (value: string) => void;
+  onToggleNotes: () => void;
   onPause: () => void;
   onResume: () => void;
   onStart: () => void;
@@ -3010,8 +3280,10 @@ function MeetingCapsule({
   calendarCueTitle,
   micLabel,
   systemLabel,
+  notesOpen,
   onMicLabelChange,
   onSystemLabelChange,
+  onToggleNotes,
   onPause,
   onResume,
   onStart,
@@ -3060,6 +3332,17 @@ function MeetingCapsule({
         </div>
       ) : null}
       <div className="meeting-capsule-actions">
+        {state !== "idle" ? (
+          <button
+            className={notesOpen ? "active" : ""}
+            type="button"
+            onClick={onToggleNotes}
+            title="Meeting notes"
+          >
+            <NotebookPen size={15} />
+            Notes
+          </button>
+        ) : null}
         {state === "idle" ? (
           <button type="button" onClick={onStart} title="Start meeting mode">
             <Play size={15} />
@@ -3104,10 +3387,12 @@ function MeetingCapsule({
 }
 
 function DiarizationSpeakerPromptBox({
+  existingNames,
   prompt,
   onDismiss,
   onRename,
 }: {
+  existingNames: string[];
   prompt: DiarizationSpeakerPrompt;
   onDismiss: () => void;
   onRename: (speakerId: string, name: string) => void;
@@ -3132,7 +3417,7 @@ function DiarizationSpeakerPromptBox({
       className="diarization-prompt"
       aria-label="Name newly detected speaker"
     >
-      <div>
+      <div className="diarization-prompt-copy">
         <strong>New speaker detected</strong>
         <small>{prompt.fallbackName}</small>
       </div>
@@ -3151,6 +3436,23 @@ function DiarizationSpeakerPromptBox({
         aria-label={`Name ${prompt.fallbackName}`}
         autoFocus
       />
+      {existingNames.length > 0 ? (
+        <div className="diarization-existing-speakers">
+          <small>Existing</small>
+          <div>
+            {existingNames.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => onRename(prompt.speakerId, name)}
+                title={`Use existing speaker ${name}`}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <button type="button" onClick={commit}>
         Save
       </button>
@@ -3242,186 +3544,6 @@ function MeetingSourcePicker({
           </button>
         </footer>
       </section>
-    </div>
-  );
-}
-
-type CommandPaletteProps = {
-  notes: NoteListItem[];
-  onClose: () => void;
-  onOpenNote: (id: string) => void;
-  onCreateNote: () => void;
-  onOpenSettings: () => void;
-  onToggleTheme: () => void;
-};
-
-type PaletteItem =
-  | {
-      kind: "command";
-      id: string;
-      label: string;
-      icon: React.ReactNode;
-      run: () => void;
-    }
-  | { kind: "note"; id: string; label: string; sub: string };
-
-function CommandPalette({
-  notes,
-  onClose,
-  onOpenNote,
-  onCreateNote,
-  onOpenSettings,
-  onToggleTheme,
-}: CommandPaletteProps) {
-  const [query, setQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const activeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const cleanQuery = query.trim().toLowerCase();
-
-  const commands = useMemo<PaletteItem[]>(
-    () => [
-      {
-        kind: "command",
-        id: "new-note",
-        label: "New note",
-        icon: <Plus size={16} />,
-        run: onCreateNote,
-      },
-      {
-        kind: "command",
-        id: "settings",
-        label: "Open settings",
-        icon: <Settings size={16} />,
-        run: onOpenSettings,
-      },
-      {
-        kind: "command",
-        id: "theme",
-        label: "Toggle theme",
-        icon: <Sun size={16} />,
-        run: onToggleTheme,
-      },
-    ],
-    [onCreateNote, onOpenSettings, onToggleTheme],
-  );
-
-  const items = useMemo<PaletteItem[]>(() => {
-    const matchedCommands = cleanQuery
-      ? commands.filter((command) =>
-          command.label.toLowerCase().includes(cleanQuery),
-        )
-      : commands;
-    const matchedNotes = (
-      cleanQuery
-        ? notes.filter((note) =>
-            `${note.title} ${note.excerpt}`.toLowerCase().includes(cleanQuery),
-          )
-        : notes
-    )
-      .slice(0, 50)
-      .map<PaletteItem>((note) => ({
-        kind: "note",
-        id: note.id,
-        label: note.title || "Untitled",
-        sub: note.excerpt || "No content",
-      }));
-    return [...matchedCommands, ...matchedNotes];
-  }, [cleanQuery, commands, notes]);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [cleanQuery]);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex]);
-
-  function activate(item: PaletteItem) {
-    if (item.kind === "command") {
-      item.run();
-    } else {
-      onOpenNote(item.id);
-    }
-    onClose();
-  }
-
-  function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveIndex((index) =>
-        Math.min(index + 1, Math.max(items.length - 1, 0)),
-      );
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveIndex((index) => Math.max(index - 1, 0));
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const item = items[activeIndex];
-      if (item) {
-        activate(item);
-      }
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-    }
-  }
-
-  return (
-    <div className="palette-overlay" onMouseDown={onClose}>
-      <div
-        className="palette"
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="palette-input">
-          <Search size={18} />
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={onKeyDown}
-            placeholder="Search notes or run a command…"
-            aria-label="Command palette"
-          />
-          <kbd>esc</kbd>
-        </div>
-        <div className="palette-list">
-          {items.length === 0 ? (
-            <p className="palette-empty">No matches</p>
-          ) : (
-            items.map((item, index) => (
-              <button
-                key={`${item.kind}:${item.id}`}
-                ref={index === activeIndex ? activeRef : null}
-                className={
-                  index === activeIndex ? "palette-item active" : "palette-item"
-                }
-                type="button"
-                onMouseMove={() => setActiveIndex(index)}
-                onClick={() => activate(item)}
-              >
-                <span className="palette-item-icon">
-                  {item.kind === "command" ? item.icon : <FileText size={16} />}
-                </span>
-                <span className="palette-item-body">
-                  <span className="palette-item-label">{item.label}</span>
-                  {item.kind === "note" ? <small>{item.sub}</small> : null}
-                </span>
-                {item.kind === "command" ? (
-                  <span className="palette-item-tag">Command</span>
-                ) : null}
-              </button>
-            ))
-          )}
-        </div>
-      </div>
     </div>
   );
 }

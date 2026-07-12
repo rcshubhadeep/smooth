@@ -167,7 +167,6 @@ button {
 button:focus-visible,
 select:focus-visible,
 .note-info-button:focus-visible,
-.search-field:focus-within,
 .folder-form:focus-within {
   outline: none;
   box-shadow: var(--ring);
@@ -467,22 +466,6 @@ h1 {
   gap: 10px;
 }
 
-.search-field {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 38px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  background: var(--panel-strong);
-  color: var(--muted);
-  transition:
-    border-color var(--t) var(--ease),
-    box-shadow var(--t) var(--ease);
-}
-
-.search-field input,
 .folder-form input,
 .title-input {
   width: 100%;
@@ -493,7 +476,6 @@ h1 {
   background: transparent;
 }
 
-.search-field input::placeholder,
 .folder-form input::placeholder,
 .title-input::placeholder {
   color: var(--faint);
@@ -2785,6 +2767,12 @@ select:hover {
   color: var(--accent-strong);
 }
 
+.meeting-capsule button.active {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .meeting-capsule button.danger:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
   background: var(--danger-soft);
@@ -2796,6 +2784,104 @@ select:hover {
   opacity: 0.55;
 }
 
+.meeting-quick-notes {
+  position: fixed;
+  right: 18px;
+  bottom: 82px;
+  z-index: 39;
+  display: flex;
+  width: min(400px, calc(100vw - 36px));
+  height: min(340px, calc(100vh - 130px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-strong) 96%, transparent);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(18px);
+}
+
+.meeting-quick-notes header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meeting-quick-notes header > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+}
+
+.meeting-quick-notes header svg {
+  color: var(--accent);
+}
+
+.meeting-quick-notes header strong {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.meeting-quick-notes header > span {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.meeting-quick-notes header > span.error {
+  color: var(--danger);
+}
+
+.meeting-quick-notes header > button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.meeting-quick-notes header > button:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.meeting-quick-notes textarea {
+  min-height: 0;
+  flex: 1;
+  resize: none;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.55;
+  outline: 0;
+}
+
+.meeting-quick-notes textarea::placeholder {
+  color: var(--faint);
+}
+
+@media (max-width: 720px) {
+  .meeting-quick-notes {
+    right: 16px;
+    left: 16px;
+    width: auto;
+  }
+}
+
 .diarization-prompt {
   position: fixed;
   left: 50%;
@@ -2804,7 +2890,7 @@ select:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: min(520px, calc(100vw - 32px));
+  width: min(760px, calc(100vw - 32px));
   padding: 10px;
   border: 1px solid var(--border-strong);
   border-radius: 14px;
@@ -2814,7 +2900,7 @@ select:hover {
   backdrop-filter: blur(18px);
 }
 
-.diarization-prompt > div {
+.diarization-prompt-copy {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -2858,6 +2944,51 @@ select:hover {
   box-shadow: var(--ring);
 }
 
+.diarization-existing-speakers {
+  display: flex;
+  min-width: 0;
+  max-width: 260px;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.diarization-existing-speakers > small {
+  padding-left: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diarization-existing-speakers > div {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.diarization-existing-speakers > div::-webkit-scrollbar {
+  display: none;
+}
+
+.diarization-existing-speakers button {
+  flex: 0 0 auto;
+  max-width: 130px;
+  overflow: hidden;
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diarization-existing-speakers button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent-strong);
+}
+
 .diarization-prompt button {
   display: inline-flex;
   align-items: center;
@@ -2877,6 +3008,22 @@ select:hover {
   border-color: var(--border);
   background: var(--panel);
   color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .diarization-prompt {
+    flex-wrap: wrap;
+  }
+
+  .diarization-prompt-copy {
+    flex-basis: calc(100% - 174px);
+  }
+
+  .diarization-existing-speakers {
+    order: 5;
+    width: 100%;
+    max-width: none;
+  }
 }
 
 .meeting-source-backdrop {
@@ -3519,6 +3666,30 @@ select:hover {
 
 .palette-item.active {
   background: var(--accent-soft);
+}
+
+.palette-item.match-warm {
+  background: color-mix(in srgb, #f2a65a 13%, transparent);
+}
+
+.palette-item.match-middle {
+  background: color-mix(in srgb, #83b99b 10%, transparent);
+}
+
+.palette-item.match-cool {
+  background: color-mix(in srgb, #72a8dc 8%, transparent);
+}
+
+.palette-item.match-warm.active {
+  background: color-mix(in srgb, #f2a65a 24%, var(--panel-strong));
+}
+
+.palette-item.match-middle.active {
+  background: color-mix(in srgb, #83b99b 20%, var(--panel-strong));
+}
+
+.palette-item.match-cool.active {
+  background: color-mix(in srgb, #72a8dc 17%, var(--panel-strong));
 }
 
 .palette-item-icon {

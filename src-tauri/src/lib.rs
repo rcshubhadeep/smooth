@@ -6,6 +6,8 @@ mod chat;
 mod diarization;
 mod export_notes;
 mod gmail;
+mod meeting_notes;
+mod semantic_search;
 mod stt;
 mod system_audio;
 
@@ -485,6 +487,8 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     chat::init_schema(&connection)?;
     agents::init_schema(&connection)?;
     stt::init_schema(&connection)?;
+    meeting_notes::init_schema(&connection)?;
+    semantic_search::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -3586,6 +3590,16 @@ pub(crate) fn save_note_internal(
     } else {
         enqueue_extraction(&transaction, &id, &hash)?;
     }
+    if content.trim().is_empty() {
+        transaction
+            .execute("DELETE FROM embedding_jobs WHERE note_id = ?1", params![id])
+            .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM note_chunks WHERE note_id = ?1", params![id])
+            .map_err(db_error)?;
+    } else {
+        semantic_search::enqueue(&transaction, &id, &hash)?;
+    }
     transaction.commit().map_err(db_error)?;
 
     get_note(app, id)
@@ -4127,8 +4141,12 @@ pub fn run() {
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
             recover_interrupted_stt_jobs(&connection).map_err(std::io::Error::other)?;
+            meeting_notes::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
+            semantic_search::recover(&connection).map_err(std::io::Error::other)?;
+            semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
             tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
+            tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4184,6 +4202,12 @@ pub fn run() {
             save_note,
             create_meeting_note,
             save_meeting_note,
+            meeting_notes::create_meeting_quick_note,
+            meeting_notes::enqueue_meeting_note_completion,
+            semantic_search::claim_embedding_job,
+            semantic_search::complete_embedding_job,
+            semantic_search::fail_embedding_job,
+            semantic_search::semantic_search_notes,
             create_folder,
             rename_folder,
             delete_folder,
