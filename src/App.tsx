@@ -68,6 +68,7 @@ import { flushSync } from "react-dom";
 import TurndownService from "turndown";
 import NoteChat from "./Chat";
 import CommandPalette from "./CommandPalette";
+import McpSettings from "./McpSettings";
 import { startSemanticIndexer } from "./semantic";
 import "./App.css";
 
@@ -4211,6 +4212,8 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           </button>
         </div>
       </header>
+
+      <McpSettings />
 
       <section className="settings-section">
         <div className="section-heading">

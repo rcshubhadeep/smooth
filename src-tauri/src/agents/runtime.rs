@@ -12,18 +12,20 @@
 //!   MCP client adapter can register remote tools into the same registry.
 
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::context::AgentContext;
 use super::registry::{ToolDescriptor, ToolRegistry};
 use super::tools;
 
+#[derive(Clone)]
 pub struct AgentRuntime {
-    registry: ToolRegistry,
+    registry: Arc<ToolRegistry>,
 }
 
 impl AgentRuntime {
     pub fn new() -> Self {
-        let registry = ToolRegistry::new();
+        let registry = Arc::new(ToolRegistry::new());
         tools::register_builtin_tools(&registry);
         Self { registry }
     }

@@ -1880,6 +1880,97 @@ select:hover {
   opacity: 0.5;
 }
 
+.mcp-endpoint-row,
+.mcp-config {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.mcp-endpoint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+}
+
+.mcp-endpoint-row > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-endpoint-row strong,
+.mcp-config strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcp-endpoint-row code {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-endpoint-row button,
+.mcp-config button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mcp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mcp-tools code {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.mcp-config {
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.mcp-config > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mcp-config pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 11px 12px;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .agent-tool-input {
   margin-top: 14px;
 }

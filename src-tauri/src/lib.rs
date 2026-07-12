@@ -6,6 +6,7 @@ mod chat;
 mod diarization;
 mod export_notes;
 mod gmail;
+mod mcp;
 mod meeting_notes;
 mod semantic_search;
 mod stt;
@@ -488,6 +489,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     agents::init_schema(&connection)?;
     stt::init_schema(&connection)?;
     meeting_notes::init_schema(&connection)?;
+    mcp::init_schema(&connection)?;
     semantic_search::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
@@ -4144,6 +4146,7 @@ pub fn run() {
             meeting_notes::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             semantic_search::recover(&connection).map_err(std::io::Error::other)?;
             semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
+            mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
             tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
             tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
@@ -4208,6 +4211,8 @@ pub fn run() {
             semantic_search::complete_embedding_job,
             semantic_search::fail_embedding_job,
             semantic_search::semantic_search_notes,
+            mcp::get_mcp_status,
+            mcp::set_mcp_bearer_token,
             create_folder,
             rename_folder,
             delete_folder,
