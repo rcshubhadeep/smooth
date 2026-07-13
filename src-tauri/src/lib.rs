@@ -4152,7 +4152,7 @@ fn link_chat_created_note(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_google_auth::init())
@@ -4269,8 +4269,14 @@ pub fn run() {
             agents::agent_update_definition,
             agents::agent_delete_definition
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            app_handle.state::<SttRuntime>().shutdown();
+        }
+    });
 }
 
 #[cfg(test)]

@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Once},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Once,
+    },
     time::{Instant, SystemTime},
 };
 
@@ -18,7 +21,13 @@ const VAD_MIN_SPEECH_FRAMES: usize = 4;
 
 #[derive(Clone, Default)]
 pub(crate) struct SttRuntime {
-    engine: Arc<Mutex<WhisperEngine>>,
+    inner: Arc<SttRuntimeInner>,
+}
+
+#[derive(Default)]
+struct SttRuntimeInner {
+    engine: Mutex<WhisperEngine>,
+    shutting_down: AtomicBool,
 }
 
 impl SttRuntime {
@@ -27,15 +36,33 @@ impl SttRuntime {
         config: SttConfig,
         audio_path: PathBuf,
     ) -> Result<SttTranscription, String> {
-        let engine = self.engine.clone();
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return Err("Whisper is shutting down".to_string());
+        }
+
+        let inner = self.inner.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let mut engine = engine
+            let mut engine = inner
+                .engine
                 .lock()
                 .map_err(|_| "Whisper engine lock was poisoned".to_string())?;
+            if inner.shutting_down.load(Ordering::Acquire) {
+                return Err("Whisper is shutting down".to_string());
+            }
             engine.transcribe(config, audio_path)
         })
         .await
         .map_err(|error| format!("STT worker failed: {error}"))?
+    }
+
+    /// Tauri exits via `std::process::exit`, which skips Rust destructors. The
+    /// Whisper context must therefore be released explicitly before ggml's
+    /// Metal global state is torn down.
+    pub(crate) fn shutdown(&self) {
+        self.inner.shutting_down.store(true, Ordering::Release);
+        if let Ok(mut engine) = self.inner.engine.lock() {
+            engine.loaded = None;
+        }
     }
 }
 
