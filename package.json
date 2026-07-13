@@ -18,6 +18,7 @@
     "@choochmeque/tauri-plugin-google-auth-api": "^0.5.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@ternlight/base": "^0.1.0",
     "@tiptap/extension-image": "3.27.0",
     "@tiptap/extension-placeholder": "^3.27.0",

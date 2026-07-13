@@ -68,6 +68,7 @@ import { flushSync } from "react-dom";
 import TurndownService from "turndown";
 import NoteChat from "./Chat";
 import CommandPalette from "./CommandPalette";
+import ImportDocuments from "./ImportDocuments";
 import McpSettings from "./McpSettings";
 import SlackSettings from "./SlackSettings";
 import { startSemanticIndexer } from "./semantic";
@@ -84,6 +85,7 @@ type Folder = {
   id: string;
   name: string;
   created_at: string;
+  system_key: string | null;
 };
 
 type NoteListItem = {
@@ -1079,6 +1081,11 @@ function App() {
       folder,
       notes: filteredNotes.filter((note) => note.folder_id === folder.id),
     }));
+    groups.sort((first, second) => {
+      if (first.folder.system_key === "imported") return -1;
+      if (second.folder.system_key === "imported") return 1;
+      return 0;
+    });
     // While renaming a (usually just-created) folder, hoist it to the top so the
     // inline edit box is immediately visible.
     if (renamingFolderId) {
@@ -2755,6 +2762,12 @@ function App() {
           <div className="sidebar-header">
             <h1>Let&rsquo;s dive in</h1>
             <div className="sidebar-header-actions">
+              <ImportDocuments
+                onBankChanged={loadBank}
+                onOpenNote={openNote}
+                onError={toast.error}
+                onSuccess={toast.success}
+              />
               <button
                 className="icon-button"
                 type="button"
@@ -2933,7 +2946,7 @@ function App() {
                 title={folder.name}
                 droppable
                 onDropNote={(id) => void moveNoteToFolder(id, folder.id)}
-                renamable
+                renamable={!folder.system_key}
                 startRenaming={renamingFolderId === folder.id}
                 onRename={(name) => void renameFolder(folder.id, name)}
               >

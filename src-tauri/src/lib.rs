@@ -6,6 +6,7 @@ mod chat;
 mod diarization;
 mod export_notes;
 mod gmail;
+mod imports;
 mod mcp;
 mod meeting_notes;
 mod semantic_search;
@@ -63,6 +64,7 @@ pub(crate) struct Folder {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) created_at: String,
+    pub(crate) system_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -337,7 +339,7 @@ pub(crate) fn new_id(prefix: &str) -> String {
     format!("{}-{}", prefix, now_string())
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -379,7 +381,8 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
             CREATE TABLE IF NOT EXISTS folders (
                 id TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                system_key TEXT
             );
 
             CREATE TABLE IF NOT EXISTS notes (
@@ -493,6 +496,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     mcp::init_schema(&connection)?;
     semantic_search::init_schema(&connection)?;
     slack::init_schema(&connection)?;
+    imports::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -2477,7 +2481,7 @@ pub(crate) fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankS
 
     let folders = {
         let mut statement = connection
-            .prepare("SELECT id, name, created_at FROM folders ORDER BY created_at ASC")
+            .prepare("SELECT id, name, created_at, system_key FROM folders ORDER BY created_at ASC")
             .map_err(db_error)?;
         let rows = statement
             .query_map([], |row| {
@@ -2485,6 +2489,7 @@ pub(crate) fn snapshot(app: &AppHandle, connection: &Connection) -> Result<BankS
                     id: row.get(0)?,
                     name: row.get(1)?,
                     created_at: row.get(2)?,
+                    system_key: row.get(3)?,
                 })
             })
             .map_err(db_error)?
@@ -3615,6 +3620,9 @@ fn create_folder(app: AppHandle, name: String) -> Result<BankSnapshot, String> {
     if clean_name.is_empty() {
         return Err("Folder name is required".to_string());
     }
+    if clean_name.eq_ignore_ascii_case(imports::IMPORTED_FOLDER_NAME) {
+        return Err("Imported is a system folder".to_string());
+    }
 
     let connection = open_database(&app)?;
     connection
@@ -3633,6 +3641,12 @@ fn rename_folder(app: AppHandle, id: String, name: String) -> Result<BankSnapsho
         return Err("Folder name is required".to_string());
     }
     let connection = open_database(&app)?;
+    if imports::is_system_folder(&connection, &id)? {
+        return Err("System folders cannot be renamed".to_string());
+    }
+    if clean_name.eq_ignore_ascii_case(imports::IMPORTED_FOLDER_NAME) {
+        return Err("Imported is a reserved folder name".to_string());
+    }
     connection
         .execute(
             "UPDATE folders SET name = ?2 WHERE id = ?1",
@@ -3645,6 +3659,9 @@ fn rename_folder(app: AppHandle, id: String, name: String) -> Result<BankSnapsho
 #[tauri::command]
 fn delete_folder(app: AppHandle, id: String) -> Result<BankSnapshot, String> {
     let mut connection = open_database(&app)?;
+    if imports::is_system_folder(&connection, &id)? {
+        return Err("System folders cannot be deleted".to_string());
+    }
     let transaction = connection.transaction().map_err(db_error)?;
     transaction
         .execute(
@@ -4136,6 +4153,7 @@ fn link_chat_created_note(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
@@ -4149,11 +4167,13 @@ pub fn run() {
             meeting_notes::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             semantic_search::recover(&connection).map_err(std::io::Error::other)?;
             semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
+            imports::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(slack::worker(app.handle().clone()));
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
             tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
             tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
+            tauri::async_runtime::spawn(imports::worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4215,6 +4235,9 @@ pub fn run() {
             semantic_search::complete_embedding_job,
             semantic_search::fail_embedding_job,
             semantic_search::semantic_search_notes,
+            imports::enqueue_imports,
+            imports::list_import_jobs,
+            imports::retry_import_job,
             mcp::get_mcp_status,
             slack::get_slack_config,
             slack::save_slack_config,

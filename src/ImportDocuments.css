@@ -1,0 +1,188 @@
+.import-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 28px;
+  background: rgb(17 24 39 / 0.28);
+}
+
+.import-dialog {
+  display: flex;
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(650px, calc(100vh - 56px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.import-dialog > header,
+.import-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.import-dialog > header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+}
+
+.import-dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.import-dialog header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.import-dialog header button,
+.import-dialog footer button,
+.import-job-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.import-dialog header button {
+  width: 32px;
+  padding: 0;
+}
+
+.import-dialog button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.import-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.import-job-list {
+  display: grid;
+  gap: 7px;
+  min-height: 180px;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.import-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 180px;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.import-job {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.import-job-icon {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.import-job.succeeded .import-job-icon {
+  color: var(--accent-strong);
+}
+
+.import-job.failed .import-job-icon,
+.import-job.duplicate .import-job-icon {
+  color: var(--danger);
+}
+
+.import-job-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.import-job-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-job-copy small,
+.import-dialog footer > span {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.import-job-copy p {
+  margin: 2px 0 0;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.import-job-copy p.warning {
+  color: var(--muted);
+}
+
+.import-job-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.import-dialog > footer {
+  border-top: 1px solid var(--border);
+}
+
+.import-dialog footer button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+@media (max-width: 620px) {
+  .import-backdrop {
+    padding: 12px;
+  }
+
+  .import-job {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .import-job-actions {
+    grid-column: 2;
+  }
+}

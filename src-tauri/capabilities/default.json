@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "google-auth:default",
+    "dialog:allow-open",
     "opener:default"
   ]
 }
