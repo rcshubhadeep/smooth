@@ -11,6 +11,9 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 
 const SESSION_SAMPLE_RATE: u32 = 16_000;
+// Keep enough overlap to reconcile Polyvoice's per-run speaker IDs without
+// repeatedly analyzing the entire meeting. This also bounds session memory.
+const SESSION_CONTEXT_MS: i64 = 30_000;
 
 #[derive(Default)]
 pub struct DiarizationState {
@@ -19,7 +22,8 @@ pub struct DiarizationState {
 
 struct DiarizationSession {
     path: PathBuf,
-    samples: Vec<i16>,
+    context_samples: Vec<i16>,
+    total_samples: usize,
     stable_turns: Vec<DiarizationTurn>,
     next_speaker_index: usize,
 }
@@ -78,7 +82,8 @@ pub fn start_diarization_session(
         session_id.clone(),
         DiarizationSession {
             path,
-            samples: Vec::new(),
+            context_samples: Vec::new(),
+            total_samples: 0,
             stable_turns: Vec::new(),
             next_speaker_index: 0,
         },
@@ -109,12 +114,12 @@ pub async fn diarize_capture_file(
     input: DiarizationCaptureInput,
 ) -> Result<DiarizationResult, String> {
     let audio_path = validate_capture_audio_path(&app, input.path)?;
-    let (diarization_path, session_id, chunk_start_ms, chunk_end_ms) =
+    let (diarization_path, session_id, window_start_ms, chunk_start_ms, chunk_end_ms) =
         if let Some(session_id) = input.session_id {
             append_to_session(&state, &session_id, &audio_path)?
         } else {
             let duration_ms = wav_duration_ms(&audio_path)?;
-            (audio_path, None, 0, duration_ms)
+            (audio_path, None, 0, 0, duration_ms)
         };
     let helper = diarization_helper_path(&app)?;
     let models_cache = app_data_dir(&app)?.join("models").join("polyvoice");
@@ -127,10 +132,19 @@ pub async fn diarize_capture_file(
     .await
     .map_err(|error| format!("Diarization worker failed: {error}"))??;
     let engine = raw_turns.engine;
+    let raw_turns = raw_turns
+        .turns
+        .into_iter()
+        .map(|turn| DiarizationTurn {
+            speaker_id: turn.speaker_id,
+            start_ms: turn.start_ms + window_start_ms,
+            end_ms: turn.end_ms + window_start_ms,
+        })
+        .collect();
     let turns = if let Some(session_id) = session_id.as_deref() {
-        reconcile_session_turns(&state, session_id, raw_turns.turns)?
+        reconcile_session_turns(&state, session_id, window_start_ms, raw_turns)?
     } else {
-        raw_turns.turns
+        raw_turns
     };
 
     Ok(DiarizationResult {
@@ -177,6 +191,7 @@ fn run_diarization_helper(
 fn reconcile_session_turns(
     state: &State<'_, DiarizationState>,
     session_id: &str,
+    window_start_ms: i64,
     raw_turns: Vec<DiarizationTurn>,
 ) -> Result<Vec<DiarizationTurn>, String> {
     let mut sessions = state
@@ -238,7 +253,20 @@ fn reconcile_session_turns(
                 })
         })
         .collect::<Vec<_>>();
-    session.stable_turns = stable_turns.clone();
+    let mut history = session
+        .stable_turns
+        .iter()
+        .filter_map(|turn| {
+            if turn.start_ms >= window_start_ms {
+                return None;
+            }
+            let mut turn = turn.clone();
+            turn.end_ms = turn.end_ms.min(window_start_ms);
+            (turn.end_ms > turn.start_ms).then_some(turn)
+        })
+        .collect::<Vec<_>>();
+    history.extend(stable_turns.iter().cloned());
+    session.stable_turns = history;
 
     Ok(stable_turns)
 }
@@ -269,7 +297,7 @@ fn append_to_session(
     state: &State<'_, DiarizationState>,
     session_id: &str,
     audio_path: &Path,
-) -> Result<(PathBuf, Option<String>, i64, i64), String> {
+) -> Result<(PathBuf, Option<String>, i64, i64, i64), String> {
     let audio = load_wav_for_whisper(audio_path)?;
     let chunk_samples = audio
         .samples
@@ -285,14 +313,26 @@ fn append_to_session(
     let session = sessions
         .get_mut(session_id)
         .ok_or_else(|| "Diarization session was not found".to_string())?;
-    let chunk_start_ms = duration_ms_for_samples(session.samples.len());
-    session.samples.extend(chunk_samples);
-    let chunk_end_ms = chunk_start_ms + chunk_duration_ms;
-    write_session_wav(&session.path, &session.samples)?;
+    let chunk_start_ms = duration_ms_for_samples(session.total_samples);
+    session.total_samples += chunk_samples.len();
+    session.context_samples.extend(chunk_samples);
+
+    let max_context_samples = samples_for_duration_ms(SESSION_CONTEXT_MS);
+    if session.context_samples.len() > max_context_samples {
+        let excess = session.context_samples.len() - max_context_samples;
+        session.context_samples.drain(..excess);
+    }
+
+    let window_start_samples = session.total_samples - session.context_samples.len();
+    let window_start_ms = duration_ms_for_samples(window_start_samples);
+    let chunk_end_ms =
+        duration_ms_for_samples(session.total_samples).max(chunk_start_ms + chunk_duration_ms);
+    write_session_wav(&session.path, &session.context_samples)?;
 
     Ok((
         session.path.clone(),
         Some(session_id.to_string()),
+        window_start_ms,
         chunk_start_ms,
         chunk_end_ms,
     ))
@@ -328,6 +368,10 @@ fn wav_duration_ms(path: &Path) -> Result<i64, String> {
 
 fn duration_ms_for_samples(samples: usize) -> i64 {
     ((samples as u128 * 1000) / SESSION_SAMPLE_RATE as u128) as i64
+}
+
+fn samples_for_duration_ms(duration_ms: i64) -> usize {
+    ((duration_ms.max(0) as u128 * SESSION_SAMPLE_RATE as u128) / 1000) as usize
 }
 
 fn validate_capture_audio_path(app: &AppHandle, path: String) -> Result<PathBuf, String> {
@@ -460,5 +504,11 @@ mod tests {
             overlap_for_speakers(&current, "raw_b", &previous, "speaker_0"),
             250
         );
+    }
+
+    #[test]
+    fn converts_diarization_context_duration_to_samples() {
+        assert_eq!(samples_for_duration_ms(SESSION_CONTEXT_MS), 480_000);
+        assert_eq!(duration_ms_for_samples(480_000), SESSION_CONTEXT_MS);
     }
 }

@@ -1729,6 +1729,45 @@ select:hover {
   margin-top: 12px;
 }
 
+.stt-performance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.stt-performance-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.stt-performance-grid span,
+.stt-performance-grid small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stt-performance-grid strong {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .stt-performance-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .system-audio-actions {
   margin-top: 12px;
   margin-bottom: 14px;

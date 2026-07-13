@@ -334,6 +334,18 @@ type SttStatus = {
   acceleration: string[];
 };
 
+type SttQueueStatus = {
+  pending_mic: number;
+  pending_system: number;
+  processing: number;
+  failed: number;
+  oldest_pending_ms: number;
+  recent_average_real_time_factor: number | null;
+  last_real_time_factor: number | null;
+  last_inference_ms: number | null;
+  last_model_load_ms: number | null;
+};
+
 type SttSegment = {
   text: string;
   start_ms: number;
@@ -357,6 +369,11 @@ type SttTranscription = {
     peak_db: number | null;
   };
   elapsed_ms: number;
+  preprocessing_ms: number;
+  model_load_ms: number;
+  inference_ms: number;
+  real_time_factor: number;
+  model_reloaded: boolean;
   model_path: string;
 };
 
@@ -1817,7 +1834,7 @@ function App() {
       return null;
     }
 
-    setMeetingDetail("Preparing diarization");
+    setMeetingDetail("Identifying speakers");
     return await invoke<DiarizationResult>("diarize_capture_file", {
       input: {
         path,
@@ -1904,6 +1921,14 @@ function App() {
             0,
             meetingPendingSttJobsRef.current - 1,
           );
+          if (!meetingLoopActiveRef.current) {
+            const remaining = meetingPendingSttJobsRef.current;
+            setMeetingDetail(
+              remaining > 0
+                ? `Finishing meeting processing (${remaining} remaining)`
+                : "Meeting processing finished",
+            );
+          }
           notifyMeetingSttProgress();
         }
       });
@@ -2130,7 +2155,7 @@ function App() {
         return null;
       },
     );
-    setMeetingDetail("Finishing transcription");
+    setMeetingDetail("Finishing meeting processing");
     await waitForMeetingSttJobs();
     await meetingAppendQueueRef.current.catch(() => undefined);
     await stopDiarizationSession();
@@ -3656,6 +3681,8 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     null,
   );
   const [sttStatus, setSttStatus] = useState<SttStatus | null>(null);
+  const [sttQueueStatus, setSttQueueStatus] =
+    useState<SttQueueStatus | null>(null);
   const [transcription, setTranscription] = useState<SttTranscription | null>(
     null,
   );
@@ -3719,6 +3746,12 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     return nextStatus;
   }, []);
 
+  const refreshSttQueueStatus = useCallback(async () => {
+    const nextStatus = await invoke<SttQueueStatus>("get_stt_queue_status");
+    setSttQueueStatus(nextStatus);
+    return nextStatus;
+  }, []);
+
   const refreshQueueStatus = useCallback(async () => {
     const nextQueueStatus = await invoke<ExtractionQueueStatus>(
       "get_extraction_queue_status",
@@ -3740,6 +3773,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         setSttConfig(savedConfig);
         return refreshSttStatus();
       }),
+      refreshSttQueueStatus(),
       invoke<GmailConfig>("get_gmail_config").then(setGmailConfig),
       invoke<CalendarConfig>("get_calendar_config").then(setCalendarConfig),
       invoke<EntityInterestDefinition[]>("get_entity_interests").then(
@@ -3766,6 +3800,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     checkStatus,
     refreshAudioStatus,
     refreshQueueStatus,
+    refreshSttQueueStatus,
     refreshSttStatus,
     refreshSystemCaptureStatus,
   ]);
@@ -3773,9 +3808,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   useEffect(() => {
     const interval = window.setInterval(() => {
       void refreshQueueStatus();
+      void refreshSttQueueStatus();
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [refreshQueueStatus]);
+  }, [refreshQueueStatus, refreshSttQueueStatus]);
 
   useEffect(() => {
     if (!audioStatus?.is_recording) {
@@ -4501,6 +4537,45 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           <small>{sttStatus?.threads ?? sttConfig.threads} threads</small>
         </div>
 
+        <div className="stt-performance-grid">
+          <div>
+            <span>STT queue</span>
+            <strong>
+              {(sttQueueStatus?.pending_mic ?? 0) +
+                (sttQueueStatus?.pending_system ?? 0) +
+                (sttQueueStatus?.processing ?? 0)}
+            </strong>
+            <small>
+              mic {sttQueueStatus?.pending_mic ?? 0} · system{" "}
+              {sttQueueStatus?.pending_system ?? 0} · failed{" "}
+              {sttQueueStatus?.failed ?? 0}
+            </small>
+          </div>
+          <div>
+            <span>Average RTF</span>
+            <strong>
+              {sttQueueStatus?.recent_average_real_time_factor == null
+                ? "—"
+                : `${sttQueueStatus.recent_average_real_time_factor.toFixed(2)}×`}
+            </strong>
+            <small>below 1.0 keeps up live</small>
+          </div>
+          <div>
+            <span>Last chunk</span>
+            <strong>
+              {sttQueueStatus?.last_inference_ms == null
+                ? "—"
+                : `${(sttQueueStatus.last_inference_ms / 1000).toFixed(1)}s`}
+            </strong>
+            <small>
+              model load{" "}
+              {sttQueueStatus?.last_model_load_ms == null
+                ? "—"
+                : `${sttQueueStatus.last_model_load_ms}ms`}
+            </small>
+          </div>
+        </div>
+
         <div className="settings-actions stt-actions">
           <button
             type="button"
@@ -4518,6 +4593,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
               <small>
                 {formatDuration(transcription.audio.duration_ms)} audio ·{" "}
                 {(transcription.elapsed_ms / 1000).toFixed(1)}s ·{" "}
+                {transcription.real_time_factor.toFixed(2)}× RTF ·{" "}
                 {transcription.raw_segment_count} segments
               </small>
             </div>

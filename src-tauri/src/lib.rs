@@ -30,8 +30,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use stt::{
-    enqueue_stt_job, get_stt_config, get_stt_status, recover_interrupted_stt_jobs, save_stt_config,
-    transcribe_capture_file, transcribe_last_capture,
+    enqueue_stt_job, get_stt_config, get_stt_queue_status, get_stt_status,
+    recover_interrupted_stt_jobs, save_stt_config, transcribe_capture_file,
+    transcribe_last_capture, SttRuntime,
 };
 use system_audio::{
     capture_meeting_snapshot, check_system_audio_permission, get_system_audio_capture_status,
@@ -4157,6 +4158,7 @@ pub fn run() {
         .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
+        .manage(SttRuntime::default())
         .manage(diarization::DiarizationState::default())
         .manage(slack::SlackState::default())
         .manage(agents::AgentRuntime::new())
@@ -4214,6 +4216,7 @@ pub fn run() {
             get_stt_config,
             save_stt_config,
             get_stt_status,
+            get_stt_queue_status,
             enqueue_stt_job,
             transcribe_capture_file,
             transcribe_last_capture,

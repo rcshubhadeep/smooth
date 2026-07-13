@@ -1,21 +1,17 @@
+mod engine;
+
 use crate::{
     app_data_dir, app_meta_value,
     audio_capture::{current_audio_capture_status, AudioCaptureState},
-    audio_preprocess::{load_wav_for_whisper, WhisperAudioInfo},
+    audio_preprocess::WhisperAudioInfo,
     db_error, now_string, open_database,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::PathBuf,
-    sync::Once,
-    time::{Duration, Instant},
-};
-use tauri::{AppHandle, Emitter, State};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-static WHISPER_LOG_HOOKS: Once = Once::new();
+pub(crate) use engine::SttRuntime;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SttConfig {
@@ -58,6 +54,11 @@ pub struct SttTranscription {
     pub language: Option<String>,
     pub audio: WhisperAudioInfo,
     pub elapsed_ms: u128,
+    pub preprocessing_ms: u128,
+    pub model_load_ms: u128,
+    pub inference_ms: u128,
+    pub real_time_factor: f64,
+    pub model_reloaded: bool,
     pub model_path: String,
 }
 
@@ -72,7 +73,24 @@ pub struct SttJob {
     pub duration_ms: Option<i64>,
     pub status: String,
     pub attempts: u32,
+    pub created_at: String,
+    pub queue_wait_ms: Option<u64>,
+    pub inference_ms: Option<u64>,
+    pub real_time_factor: Option<f64>,
     pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SttQueueStatus {
+    pub pending_mic: u32,
+    pub pending_system: u32,
+    pub processing: u32,
+    pub failed: u32,
+    pub oldest_pending_ms: u64,
+    pub recent_average_real_time_factor: Option<f64>,
+    pub last_real_time_factor: Option<f64>,
+    pub last_inference_ms: Option<u64>,
+    pub last_model_load_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,6 +146,48 @@ pub fn init_schema(connection: &Connection) -> Result<(), String> {
                 ON stt_jobs(note_id, source, sequence);
             ",
         )
+        .map_err(db_error)?;
+    let columns = table_columns(connection, "stt_jobs")?;
+    ensure_column(connection, &columns, "queue_wait_ms", "INTEGER")?;
+    ensure_column(connection, &columns, "preprocessing_ms", "INTEGER")?;
+    ensure_column(connection, &columns, "model_load_ms", "INTEGER")?;
+    ensure_column(connection, &columns, "inference_ms", "INTEGER")?;
+    ensure_column(connection, &columns, "real_time_factor", "REAL")?;
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS stt_jobs_source_claim_idx
+                ON stt_jobs(status, source, created_at, id);",
+        )
+        .map_err(db_error)
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(db_error)?;
+    Ok(columns)
+}
+
+fn ensure_column(
+    connection: &Connection,
+    columns: &HashSet<String>,
+    name: &str,
+    sql_type: &str,
+) -> Result<(), String> {
+    if columns.contains(name) {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE stt_jobs ADD COLUMN {name} {sql_type}"),
+            [],
+        )
+        .map(|_| ())
         .map_err(db_error)
 }
 
@@ -187,6 +247,84 @@ pub fn get_stt_status(app: AppHandle) -> Result<SttStatus, String> {
 }
 
 #[tauri::command]
+pub fn get_stt_queue_status(app: AppHandle) -> Result<SttQueueStatus, String> {
+    let connection = open_database(&app)?;
+    let (pending_mic, pending_system, processing, failed, oldest_pending): (
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+    ) = connection
+        .query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'pending' AND source = 'mic' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'pending' AND source = 'system' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                MIN(CASE WHEN status = 'pending' THEN created_at END)
+             FROM stt_jobs",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(db_error)?;
+    let recent_average_real_time_factor = connection
+        .query_row(
+            "SELECT AVG(real_time_factor) FROM (
+                SELECT real_time_factor FROM stt_jobs
+                WHERE status = 'done' AND inference_ms > 0
+                ORDER BY CAST(completed_at AS INTEGER) DESC LIMIT 20
+             )",
+            [],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .map_err(db_error)?;
+    let last_metrics = connection
+        .query_row(
+            "SELECT real_time_factor, inference_ms, model_load_ms
+             FROM stt_jobs
+             WHERE status = 'done' AND inference_ms > 0
+             ORDER BY CAST(completed_at AS INTEGER) DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<f64>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_error)?
+        .unwrap_or((None, None, None));
+    let now = now_string().parse::<u64>().unwrap_or_default();
+    let oldest_pending_ms = oldest_pending
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|created| now.saturating_sub(created))
+        .unwrap_or_default();
+
+    Ok(SttQueueStatus {
+        pending_mic: pending_mic as u32,
+        pending_system: pending_system as u32,
+        processing: processing as u32,
+        failed: failed as u32,
+        oldest_pending_ms,
+        recent_average_real_time_factor,
+        last_real_time_factor: last_metrics.0,
+        last_inference_ms: last_metrics.1.map(|value| value as u64),
+        last_model_load_ms: last_metrics.2.map(|value| value as u64),
+    })
+}
+
+#[tauri::command]
 pub fn enqueue_stt_job(app: AppHandle, input: EnqueueSttJobInput) -> Result<SttJob, String> {
     let source = match input.source.as_str() {
         "mic" | "system" => input.source,
@@ -239,9 +377,19 @@ pub fn recover_interrupted_stt_jobs(connection: &Connection) -> Result<(), Strin
 }
 
 pub async fn stt_worker(app: AppHandle) {
+    let runtime = app.state::<SttRuntime>().inner().clone();
+    let mut last_source: Option<String> = None;
     loop {
-        match claim_stt_job(&app) {
-            Ok(Some(job)) => process_stt_job(app.clone(), job).await,
+        let preferred_source = match last_source.as_deref() {
+            Some("mic") => Some("system"),
+            Some("system") => Some("mic"),
+            _ => None,
+        };
+        match claim_stt_job(&app, preferred_source) {
+            Ok(Some(job)) => {
+                last_source = Some(job.source.clone());
+                process_stt_job(app.clone(), runtime.clone(), job).await;
+            }
             Ok(None) => tokio::time::sleep(Duration::from_millis(500)).await,
             Err(error) => {
                 eprintln!("[smooth:stt-worker] {error}");
@@ -256,7 +404,8 @@ fn load_stt_job(connection: &Connection, id: i64) -> Result<SttJob, String> {
         .query_row(
             "
             SELECT id, note_id, source, chunk_path, sequence, chunk_started_at_ms,
-                   duration_ms, status, attempts, last_error
+                   duration_ms, status, attempts, created_at, queue_wait_ms,
+                   inference_ms, real_time_factor, last_error
             FROM stt_jobs
             WHERE id = ?1
             ",
@@ -272,14 +421,21 @@ fn load_stt_job(connection: &Connection, id: i64) -> Result<SttJob, String> {
                     duration_ms: row.get(6)?,
                     status: row.get(7)?,
                     attempts: row.get(8)?,
-                    last_error: row.get(9)?,
+                    created_at: row.get(9)?,
+                    queue_wait_ms: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
+                    inference_ms: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
+                    real_time_factor: row.get(12)?,
+                    last_error: row.get(13)?,
                 })
             },
         )
         .map_err(db_error)
 }
 
-fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
+fn claim_stt_job(
+    app: &AppHandle,
+    preferred_source: Option<&str>,
+) -> Result<Option<SttJob>, String> {
     let mut connection = open_database(app)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -290,10 +446,13 @@ fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
             SELECT id
             FROM stt_jobs
             WHERE status = 'pending'
-            ORDER BY created_at ASC, id ASC
+            ORDER BY
+                CASE WHEN source = ?1 THEN 0 ELSE 1 END,
+                CAST(created_at AS INTEGER) ASC,
+                id ASC
             LIMIT 1
             ",
-            [],
+            params![preferred_source],
             |row| row.get::<_, i64>(0),
         )
         .optional()
@@ -304,6 +463,17 @@ fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
     };
 
     let now = now_string();
+    let created_at = transaction
+        .query_row(
+            "SELECT created_at FROM stt_jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(db_error)?;
+    let queue_wait_ms = now
+        .parse::<u64>()
+        .unwrap_or_default()
+        .saturating_sub(created_at.parse::<u64>().unwrap_or_default());
     let changed = transaction
         .execute(
             "
@@ -312,10 +482,11 @@ fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
                 attempts = attempts + 1,
                 updated_at = ?1,
                 started_at = ?1,
+                queue_wait_ms = ?3,
                 last_error = NULL
             WHERE id = ?2 AND status = 'pending'
             ",
-            params![now, job_id],
+            params![now, job_id, queue_wait_ms],
         )
         .map_err(db_error)?;
     if changed == 0 {
@@ -326,7 +497,7 @@ fn claim_stt_job(app: &AppHandle) -> Result<Option<SttJob>, String> {
     load_stt_job(&connection, job_id).map(Some)
 }
 
-async fn process_stt_job(app: AppHandle, job: SttJob) {
+async fn process_stt_job(app: AppHandle, runtime: SttRuntime, job: SttJob) {
     let config = {
         let connection = match open_database(&app) {
             Ok(connection) => connection,
@@ -344,10 +515,7 @@ async fn process_stt_job(app: AppHandle, job: SttJob) {
         }
     };
     let audio_path = PathBuf::from(&job.chunk_path);
-    let result = tauri::async_runtime::spawn_blocking(move || transcribe_wav(config, audio_path))
-        .await
-        .map_err(|error| format!("STT worker failed: {error}"))
-        .and_then(|result| result);
+    let result = runtime.transcribe(config, audio_path).await;
 
     match result {
         Ok(transcription) => complete_stt_job(&app, &job, transcription),
@@ -364,10 +532,21 @@ fn complete_stt_job(app: &AppHandle, job: &SttJob, transcription: SttTranscripti
             SET status = 'done',
                 updated_at = ?1,
                 completed_at = ?1,
+                preprocessing_ms = ?3,
+                model_load_ms = ?4,
+                inference_ms = ?5,
+                real_time_factor = ?6,
                 last_error = NULL
             WHERE id = ?2
             ",
-            params![now, job.id],
+            params![
+                now,
+                job.id,
+                transcription.preprocessing_ms as i64,
+                transcription.model_load_ms as i64,
+                transcription.inference_ms as i64,
+                transcription.real_time_factor,
+            ],
         );
     }
     let _ = app.emit(
@@ -428,6 +607,7 @@ fn fail_stt_job(app: &AppHandle, job: &SttJob, error: String) {
 pub async fn transcribe_last_capture(
     app: AppHandle,
     audio_state: State<'_, AudioCaptureState>,
+    runtime: State<'_, SttRuntime>,
 ) -> Result<SttTranscription, String> {
     let status = current_audio_capture_status(&audio_state)?;
     if status.is_recording {
@@ -443,14 +623,13 @@ pub async fn transcribe_last_capture(
         load_stt_config(&app, &connection)?
     };
 
-    tauri::async_runtime::spawn_blocking(move || transcribe_wav(config, audio_path))
-        .await
-        .map_err(|error| format!("STT worker failed: {error}"))?
+    runtime.transcribe(config, audio_path).await
 }
 
 #[tauri::command]
 pub async fn transcribe_capture_file(
     app: AppHandle,
+    runtime: State<'_, SttRuntime>,
     path: String,
 ) -> Result<SttTranscription, String> {
     let audio_path = validate_capture_audio_path(&app, path)?;
@@ -459,9 +638,7 @@ pub async fn transcribe_capture_file(
         load_stt_config(&app, &connection)?
     };
 
-    tauri::async_runtime::spawn_blocking(move || transcribe_wav(config, audio_path))
-        .await
-        .map_err(|error| format!("STT worker failed: {error}"))?
+    runtime.transcribe(config, audio_path).await
 }
 
 fn validate_capture_audio_path(app: &AppHandle, path: String) -> Result<PathBuf, String> {
@@ -600,163 +777,48 @@ fn acceleration_features() -> Vec<String> {
     features
 }
 
-/// Chunks quieter than this (dBFS RMS) are treated as silence and skipped —
-/// Whisper hallucinates filler ("you", "[Silence]", "Thank you") on quiet audio.
-const SILENCE_RMS_DB: f32 = -50.0;
-
-/// True when a transcribed segment is a Whisper hallucination / non-speech tag
-/// rather than real speech.
-fn is_noise_segment(text: &str) -> bool {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    // Drop leading ">>" speaker-change markers some models emit.
-    let stripped = trimmed.trim_start_matches('>').trim();
-    if stripped.is_empty() {
-        return true;
-    }
-    // Bracketed / parenthesized annotations: [silence], (muffled speaking), [music]…
-    if (stripped.starts_with('[') && stripped.ends_with(']'))
-        || (stripped.starts_with('(') && stripped.ends_with(')'))
-    {
-        return true;
-    }
-    // Normalize to lowercase alphanumerics and match a known-hallucination set.
-    let normalized = stripped
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    if normalized.is_empty() {
-        return true;
-    }
-    const NOISE: &[&str] = &[
-        "you",
-        "thank you",
-        "thank you for watching",
-        "thanks for watching",
-        "silence",
-        "music",
-        "applause",
-        "inaudible",
-        "blank audio",
-        "muffled speaking",
-        "no speech",
-        "uh",
-        "um",
-        "uh huh",
-        "mm",
-        "mm hmm",
-        "hmm",
-    ];
-    NOISE.contains(&normalized.as_str())
-}
-
-fn transcribe_wav(config: SttConfig, audio_path: PathBuf) -> Result<SttTranscription, String> {
-    WHISPER_LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
-
-    let status = stt_status(config.clone());
-    if !matches!(status.state, SttState::Ready) {
-        return Err(status.message);
-    }
-
-    let audio = load_wav_for_whisper(&audio_path)?;
-    if audio.samples.is_empty() {
-        return Err("Captured audio is empty".to_string());
-    }
-
-    // Silence gate: don't transcribe near-silent chunks (kills silence hallucinations).
-    if audio
-        .info
-        .rms_db
-        .map(|db| db < SILENCE_RMS_DB)
-        .unwrap_or(false)
-    {
-        return Ok(SttTranscription {
-            text: String::new(),
-            segments: Vec::new(),
-            raw_segment_count: 0,
-            language_id: -1,
-            language: config.language,
-            audio: audio.info,
-            elapsed_ms: 0,
-            model_path: config.model_path,
-        });
-    }
-
-    let started_at = Instant::now();
-    let context =
-        WhisperContext::new_with_params(&config.model_path, WhisperContextParameters::default())
-            .map_err(|error| format!("Failed to load Whisper model: {error}"))?;
-    let mut state = context
-        .create_state()
-        .map_err(|error| format!("Failed to create Whisper state: {error}"))?;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(config.threads as i32);
-    params.set_language(config.language.as_deref());
-    params.set_detect_language(config.language.is_none());
-    params.set_no_context(true);
-    params.set_temperature(0.0);
-    params.set_no_speech_thold(0.6);
-    params.set_suppress_blank(true);
-    params.set_suppress_nst(true);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    state
-        .full(params, &audio.samples)
-        .map_err(|error| format!("Failed to run Whisper transcription: {error}"))?;
-
-    let mut segments = Vec::new();
-    let raw_segment_count = state.full_n_segments();
-    let language_id = state.full_lang_id_from_state();
-    for segment_index in 0..raw_segment_count {
-        let Some(segment) = state.get_segment(segment_index) else {
-            continue;
-        };
-        let text = segment
-            .to_str_lossy()
-            .map_err(|error| format!("Failed to read Whisper segment: {error}"))?
-            .trim()
-            .to_string();
-        if text.is_empty() || is_noise_segment(&text) {
-            continue;
-        }
-        segments.push(SttSegment {
-            text,
-            start_ms: segment.start_timestamp() * 10,
-            end_ms: segment.end_timestamp() * 10,
-        });
-    }
-    let text = segments
-        .iter()
-        .map(|segment| segment.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string();
-
-    Ok(SttTranscription {
-        text,
-        segments,
-        raw_segment_count,
-        language_id,
-        language: config.language,
-        audio: audio.info,
-        elapsed_ms: started_at.elapsed().as_millis(),
-        model_path: config.model_path,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_migration_adds_stt_performance_columns() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE notes (id TEXT PRIMARY KEY);
+                 CREATE TABLE stt_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                    source TEXT NOT NULL CHECK (source IN ('mic', 'system')),
+                    chunk_path TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    chunk_started_at_ms INTEGER,
+                    duration_ms INTEGER,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 2,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    last_error TEXT
+                 );",
+            )
+            .expect("legacy schema");
+
+        init_schema(&connection).expect("migrate STT schema");
+        let columns = table_columns(&connection, "stt_jobs").expect("table columns");
+        for name in [
+            "queue_wait_ms",
+            "preprocessing_ms",
+            "model_load_ms",
+            "inference_ms",
+            "real_time_factor",
+        ] {
+            assert!(columns.contains(name), "missing {name}");
+        }
+    }
 
     #[test]
     fn enqueue_input_accepts_frontend_camel_case_payload() {
