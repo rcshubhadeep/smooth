@@ -368,12 +368,16 @@ struct CompletionResponse {
 #[derive(Deserialize)]
 struct CompletionChoice {
     message: CompletionMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CompletionMessage {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 fn build_system_prompt(title: &str, content: &str, summarized: bool) -> String {
@@ -679,6 +683,25 @@ async fn complete_once(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
+    // These calls are reduction/extraction tasks where hidden reasoning only
+    // consumes the bounded output budget. Gemma 4 in particular can otherwise
+    // finish with empty content after placing every token in reasoning_content.
+    complete_once_with_format(
+        client, base_url, model, system, user, max_tokens, None, true,
+    )
+    .await
+}
+
+async fn complete_once_with_format(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    response_format: Option<serde_json::Value>,
+    disable_thinking: bool,
+) -> Result<String, String> {
     // Some chat templates (e.g. Gemma) have no system role — only include one
     // when provided, otherwise everything goes in the user turn.
     let mut messages = Vec::new();
@@ -687,13 +710,19 @@ async fn complete_once(
     }
     messages.push(json!({ "role": "user", "content": user }));
 
-    let payload = json!({
+    let mut payload = json!({
         "model": model,
         "messages": messages,
         "stream": false,
         "temperature": 0.2,
         "max_tokens": max_tokens,
     });
+    if let Some(response_format) = response_format {
+        payload["response_format"] = response_format;
+    }
+    if disable_thinking {
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
 
     let response = client
         .post(llama_endpoint(base_url, "/v1/chat/completions"))
@@ -714,12 +743,28 @@ async fn complete_once(
         .json::<CompletionResponse>()
         .await
         .map_err(|error| format!("Invalid llama.cpp response: {error}"))?;
-    parsed
+    let choice = parsed
         .choices
         .into_iter()
         .next()
-        .and_then(|choice| choice.message.content)
-        .ok_or_else(|| "llama.cpp returned no summary content".to_string())
+        .ok_or_else(|| "llama.cpp returned no completion choice".to_string())?;
+    if let Some(content) = choice
+        .message
+        .content
+        .filter(|content| !content.trim().is_empty())
+    {
+        return Ok(content);
+    }
+    if choice.finish_reason.as_deref() == Some("length") {
+        return Err(
+            "The model used its output budget for reasoning before producing an answer".to_string(),
+        );
+    }
+    choice
+        .message
+        .reasoning_content
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| "llama.cpp returned no completion content".to_string())
 }
 
 async fn summarize_chunk(
@@ -856,9 +901,9 @@ async fn prepare_note_memory_silent(
     title: &str,
     content: &str,
     budget: &Budget,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     if text_fits_as_note_context(client, base_url, model, title, content, false, budget).await {
-        return Ok(content.to_string());
+        return Ok((content.to_string(), false));
     }
 
     let content_hash = hash_text(content);
@@ -913,7 +958,7 @@ async fn prepare_note_memory_silent(
             .collect::<Vec<_>>()
             .join("\n\n");
         if text_fits_as_note_context(client, base_url, model, title, &current, true, budget).await {
-            return Ok(current);
+            return Ok((current, true));
         }
     }
 
@@ -936,7 +981,7 @@ pub(crate) async fn generate_meeting_note_sections(
     let (base_url, preferred_model) = chat_llama_target(app)?;
     let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
     let budget = budget_for(context_tokens);
-    let memory = prepare_note_memory_silent(
+    let (memory, _) = prepare_note_memory_silent(
         app,
         transcript_note_id,
         &client,
@@ -964,6 +1009,108 @@ pub(crate) async fn generate_meeting_note_sections(
         budget.answer_max_tokens,
     )
     .await
+}
+
+/// Result of a one-off task grounded in a complete note. Oversized notes are
+/// hierarchically reduced before the final task, using the same context-aware
+/// path as note chat and meeting-note completion.
+pub(crate) struct GroundedNoteCompletion {
+    pub(crate) model: String,
+    pub(crate) base_url: String,
+    pub(crate) answer: String,
+    pub(crate) used_summary: bool,
+}
+
+pub(crate) async fn complete_grounded_note_task(
+    app: &AppHandle,
+    note_id: &str,
+    title: &str,
+    content: &str,
+    instructions: &str,
+    response_format: Option<serde_json::Value>,
+) -> Result<GroundedNoteCompletion, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let (base_url, preferred_model) = chat_llama_target(app)?;
+    let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
+    let mut budget = budget_for(context_tokens);
+    // The task itself occupies context in addition to note memory. Reduce the
+    // note against a smaller budget so long instructions cannot make the final
+    // request overflow after the memory has already been prepared.
+    let task_overhead_tokens = (instructions.chars().count() / FALLBACK_CHARS_PER_TOKEN) + 200;
+    budget.note_input_tokens = budget
+        .note_input_tokens
+        .saturating_sub(task_overhead_tokens)
+        .max(400);
+    let (memory, used_summary) = prepare_note_memory_silent(
+        app, note_id, &client, &base_url, &model, title, content, &budget,
+    )
+    .await?;
+    let source_kind = if used_summary {
+        "a faithful hierarchical reduction of the complete note"
+    } else {
+        "the complete note"
+    };
+    let prompt = format!(
+        "Perform the task below using only {source_kind}. Do not invent facts.\n\n\
+TASK:\n{instructions}\n\n\
+NOTE TITLE:\n{title}\n\n\
+NOTE CONTENT:\n{memory}\n\n--- END NOTE ---"
+    );
+    let final_messages = [json!({ "role": "user", "content": prompt })];
+    let final_input_budget = budget
+        .context_tokens
+        .saturating_sub(budget.answer_max_tokens as usize + INPUT_RESERVE_TOKENS)
+        .max(400);
+    if !messages_fit(
+        &client,
+        &base_url,
+        &model,
+        &final_messages,
+        final_input_budget,
+    )
+    .await
+    {
+        return Err("Could not reduce this note enough for the requested task".to_string());
+    }
+    let formatted = complete_once_with_format(
+        &client,
+        &base_url,
+        &model,
+        "",
+        &prompt,
+        budget.answer_max_tokens,
+        response_format.clone(),
+        true,
+    )
+    .await;
+    let answer = match formatted {
+        Ok(answer) => answer,
+        Err(error) if response_format.is_some() && error.contains("HTTP 400") => {
+            complete_once_with_format(
+                &client,
+                &base_url,
+                &model,
+                "",
+                &prompt,
+                budget.answer_max_tokens,
+                None,
+                true,
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
+
+    Ok(GroundedNoteCompletion {
+        model,
+        base_url,
+        answer,
+        used_summary,
+    })
 }
 
 async fn select_history_messages(

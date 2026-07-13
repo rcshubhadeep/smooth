@@ -6,6 +6,7 @@ import {
   FileText,
   Link2,
   Loader2,
+  Mail,
   MessageSquare,
   Pencil,
   Play,
@@ -16,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import SlackShareAgent from "./SlackShareAgent";
+import FollowUpEmailAgent from "./FollowUpEmailAgent";
 import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
 
@@ -49,7 +51,7 @@ export type AgentDefinition = {
   source: AgentSource;
 };
 
-export type AgentIconName = "summary" | "links" | "overview" | "slack";
+export type AgentIconName = "summary" | "links" | "overview" | "slack" | "email";
 
 // Mirrors `flow::AgentRunResult` / `flow::AgentRunStep` in the Rust backend.
 export type AgentRunStep = {
@@ -75,9 +77,19 @@ const AGENT_ICONS: Record<AgentIconName, typeof FileText> = {
   links: Link2,
   overview: Sparkles,
   slack: MessageSquare,
+  email: Mail,
 };
 
 export const BUILTIN_AGENTS: AgentDefinition[] = [
+  {
+    id: "meeting-follow-up-email",
+    name: "Write follow-up email",
+    description: "Turns a meeting transcript into a short, action-oriented Gmail draft.",
+    scope: "note",
+    icon: "email",
+    source: "builtin",
+    instructions: "Prepare an editable follow-up email from this meeting transcript.",
+  },
   {
     id: "share-note-slack",
     name: "Share to Slack",
@@ -179,7 +191,9 @@ export type AgentDraft = {
 };
 
 function normalizeIcon(icon: string): AgentIconName {
-  return icon === "summary" || icon === "links" || icon === "slack" ? icon : "overview";
+  return icon === "summary" || icon === "links" || icon === "slack" || icon === "email"
+    ? icon
+    : "overview";
 }
 
 function recordToAgent(record: AgentDefinitionRecord): AgentDefinition {
@@ -396,6 +410,7 @@ export function AgentsView({
     () => currentNoteId ?? notes[0]?.id ?? "",
   );
   const [slackShareNote, setSlackShareNote] = useState<AgentNoteRef | null>(null);
+  const [followUpNote, setFollowUpNote] = useState<AgentNoteRef | null>(null);
 
   const targetNote = useMemo(
     () => notes.find((note) => note.id === targetNoteId) ?? null,
@@ -430,6 +445,10 @@ export function AgentsView({
       setSlackShareNote(note);
       return;
     }
+    if (agent.id === "meeting-follow-up-email" && note) {
+      setFollowUpNote(note);
+      return;
+    }
 
     setRun({ status: "running", agent, note });
     try {
@@ -454,6 +473,10 @@ export function AgentsView({
   // A live run takes over the whole view; the editor is next in priority.
   if (slackShareNote) {
     return <SlackShareAgent note={slackShareNote} onClose={() => setSlackShareNote(null)} />;
+  }
+
+  if (followUpNote) {
+    return <FollowUpEmailAgent note={followUpNote} onClose={() => setFollowUpNote(null)} />;
   }
 
   if (run.status !== "idle") {
@@ -971,11 +994,16 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
   );
   const [run, setRun] = useState<NoteRunState>({ status: "idle" });
   const [slackShareOpen, setSlackShareOpen] = useState(false);
+  const [followUpOpen, setFollowUpOpen] = useState(false);
   const busy = run.status === "running";
 
   async function start(agent: AgentDefinition) {
     if (agent.id === "share-note-slack") {
       setSlackShareOpen(true);
+      return;
+    }
+    if (agent.id === "meeting-follow-up-email") {
+      setFollowUpOpen(true);
       return;
     }
     setRun({ status: "running", agent });
@@ -1057,6 +1085,9 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
 
       {slackShareOpen ? (
         <SlackShareAgent note={note} onClose={() => setSlackShareOpen(false)} />
+      ) : null}
+      {followUpOpen ? (
+        <FollowUpEmailAgent note={note} onClose={() => setFollowUpOpen(false)} />
       ) : null}
     </div>
   );

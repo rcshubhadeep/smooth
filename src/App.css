@@ -5345,6 +5345,165 @@ body.resizing {
   cursor: pointer;
 }
 
+/* Follow-up email agent ------------------------------------------------- */
+
+.follow-up-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 38%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.follow-up-dialog {
+  width: min(680px, calc(100vw - 48px));
+  max-height: min(820px, calc(100vh - 48px));
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.follow-up-dialog > header,
+.follow-up-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.follow-up-dialog > header {
+  border-bottom: 1px solid var(--border);
+}
+
+.follow-up-dialog > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.follow-up-dialog h2,
+.follow-up-dialog p {
+  margin: 0;
+}
+
+.follow-up-dialog h2 {
+  font-size: 15px;
+}
+
+.follow-up-dialog header p {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.follow-up-dialog header button,
+.follow-up-dialog footer button,
+.follow-up-loading button,
+.follow-up-success button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.follow-up-dialog header button {
+  width: 34px;
+  padding: 0;
+}
+
+.follow-up-dialog > .settings-field,
+.follow-up-meta,
+.follow-up-error {
+  margin-right: 16px;
+  margin-left: 16px;
+}
+
+.follow-up-dialog > .settings-field {
+  margin-top: 14px;
+}
+
+.follow-up-body textarea {
+  min-height: 280px;
+  resize: vertical;
+}
+
+.follow-up-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.follow-up-error {
+  margin-top: 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.follow-up-dialog > footer {
+  justify-content: flex-end;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.follow-up-dialog footer button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.follow-up-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.follow-up-loading,
+.follow-up-success {
+  display: flex;
+  min-height: 260px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 24px;
+  text-align: center;
+}
+
+.follow-up-loading span,
+.follow-up-success span {
+  max-width: 440px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.follow-up-loading.error {
+  color: var(--danger);
+}
+
+.follow-up-success {
+  color: var(--accent-strong);
+}
+
 /* Phase 2: user agents + editor ----------------------------------------- */
 
 .agents-header-actions {

@@ -4235,6 +4235,7 @@ pub fn run() {
             agents::agent_execute_tool,
             agents::agent_list_tools,
             agents::agent_run,
+            agents::follow_up::prepare_follow_up_email,
             agents::agent_list_runs,
             agents::agent_get_run_events,
             agents::agent_list_definitions,
