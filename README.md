@@ -1,23 +1,71 @@
-# Tauri + React + Typescript
+# Smooth
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Smooth is a desktop knowledge-bank app (built with Tauri + React) for capturing, writing, and connecting notes. It combines:
 
-## Recommended IDE Setup
+![Smooth screenshot](docs/screenshot.png)
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- **Notes & folders** — a local, file-backed note store (Markdown on disk, metadata in SQLite) with linking between related notes.
+- **Document import** — bring in existing Office, PDF, and text/Markdown files; they're converted to Markdown and dropped into an `Imported` folder.
+- **Meeting capture** — record microphone and/or system audio during a meeting, transcribe it locally with `whisper.cpp`, and optionally diarize speakers.
+- **Semantic search & entity linking** — background extraction jobs surface related notes and suggested links based on shared entities.
+- **Chat** — talk to your notes through a local `llama.cpp` server.
+- **Gmail & Calendar integration** — draft follow-up emails and read upcoming events from within the app.
+- **MCP server** — expose read-only note access (`read_note`, `search_notes`, `get_link_suggestions`) to MCP clients like Claude Desktop over a local, bearer-token-authenticated HTTP endpoint.
 
-## Example claude MCP configuration
+## Prerequisites
 
-- Download the `mcp-remote-wrapper.sh` script and place it in a directory.
-- Run `which npx` to find the path to npx on your system.
-- Change the npx executable path to match your system. For example, if `which npx` returns `/usr/local/bin/npx`, update the `mcp-remote-wrapper.sh` script to use `/usr/local/bin/npx` instead of `npx`.
-- Make the script executable: `chmod +x <DOWNLOAD_DIR>/mcp-remote-wrapper.sh`
-- Update the Claude MCP configuration to use the `mcp-remote-wrapper.sh` script. Like so:
+- Node.js (see `.nvmrc`/your version manager of choice) and npm
+- Rust (stable toolchain) and the [Tauri CLI](https://v2.tauri.app/) prerequisites for your platform
+- A `whisper.cpp` GGML model if you want speech-to-text (path is configured in-app)
+- Optional: a local `llama.cpp` server if you want the Chat feature
+
+## Development
+
+```bash
+npm install
+npm run tauri:dev        # default build (Metal acceleration on macOS)
+npm run tauri:dev:metal  # explicit Metal build
+```
+
+Other acceleration backends are available as Cargo features on the `src-tauri` crate: `coreml`, `cuda`, `hipblas`, `openblas`, `openmp`, `vulkan`.
+
+## Building
+
+```bash
+npm run tauri:build       # Metal (default on macOS)
+npm run tauri:build:cpu   # CPU-only, no acceleration feature
+```
+
+## Document import
+
+Import existing documents into your notes via the upload icon next to the notes refresh button:
+
+- Supported inputs: Office documents, structured data, plain text, Markdown, and other source files (converted via `anytomd`), plus text-based PDFs (via `unpdf`).
+- Imports run through a durable, single-worker queue with retry and crash recovery, so a restart mid-import won't lose or corrupt a job.
+- Each job is deduplicated by SHA-256; re-importing the same file reports **Already imported** and offers **Import copy**.
+- Embedded images are copied into app data with Markdown links rewritten to match; imported notes automatically flow into the existing entity extraction and semantic search indexing.
+- Imported notes land in an immutable `Imported` system folder (cannot be renamed).
+- Image-only scanned PDFs fail explicitly with an OCR-required message instead of silently producing an empty note.
+
+## MCP server
+
+Smooth runs a local, read-only MCP server on `http://127.0.0.1:17843/mcp`, secured with a bearer token. The token is auto-generated on first run and can be viewed, edited, or regenerated from the app's MCP settings panel.
+
+## Example Claude Desktop MCP configuration
+
+Claude Desktop only talks to MCP servers over stdio, but Smooth's MCP server speaks HTTP. [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridges the two, and `mcp-remote-wrapper.sh` (in this repo's root) makes sure that bridge can actually find Node — Claude Desktop launches configured commands without your shell's `PATH`, so a bare `npx` call frequently fails to resolve.
+
+1. Copy `mcp-remote-wrapper.sh` from this repo to a permanent location, e.g. `~/mcp-remote-wrapper.sh`.
+2. Run `which npx` in a terminal and copy the directory it's in (drop the trailing `/npx`).
+3. Open the copied script and set `NODE_DIR` to that directory.
+4. Make it executable: `chmod +x ~/mcp-remote-wrapper.sh`.
+5. Get your bearer token from the app's MCP settings panel (see [MCP server](#mcp-server) above).
+6. Add an entry to Claude Desktop's MCP configuration, pointing at your copy of the script:
 
 ```json
 "mcpServers": {
     "smooth-bridge": {
-      "command": "<DOWNLOAD_DIR>/mcp-remote-wrapper.sh",
+      "command": "/Users/you/mcp-remote-wrapper.sh",
       "args": [
         "-y",
         "mcp-remote",
@@ -33,5 +81,6 @@ This template should help get you started developing with Tauri, React and Types
     }
   }
 ```
+
 - Do **NOT** commit your token to version control.
-- **REMEMBER** to update the token if you have changed it.
+- If you regenerate the token in Smooth's MCP settings panel, update `AUTH_HEADER` here too — the old token stops working immediately.
