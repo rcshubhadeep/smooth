@@ -6068,6 +6068,8 @@ body.resizing {
 
 .reminders-empty {
   min-height: 340px;
+  margin: 0 auto;
+  justify-content: center;
 }
 
 .reminder-list-section {
@@ -6076,10 +6078,30 @@ body.resizing {
 }
 
 .reminder-list-section h2 {
-  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.reminder-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .reminder-list {
@@ -6088,50 +6110,144 @@ body.resizing {
 }
 
 .reminder-list article {
+  position: relative;
   display: flex;
-  align-items: center;
-  min-height: 94px;
+  align-items: stretch;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background: var(--panel);
+  background: var(--panel-strong);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Colored status rail down the left edge — read the card at a glance. */
+.reminder-list article::before {
+  content: "";
+  flex: 0 0 3px;
+  background: var(--border-strong);
+}
+
+.reminder-list article:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.reminder-list article.upcoming::before {
+  background: var(--accent);
 }
 
 .reminder-list article.overdue {
-  border-color: color-mix(in srgb, #d08b43 58%, var(--border));
-  background: color-mix(in srgb, #f0b264 8%, var(--panel));
+  border-color: color-mix(in srgb, #d08b43 50%, var(--border));
+  background: color-mix(in srgb, #f0b264 7%, var(--panel-strong));
+}
+
+.reminder-list article.overdue::before {
+  background: #d08b43;
+}
+
+.reminder-list article.completed::before {
+  background: #3f9b6b;
+}
+
+.reminder-list article.dismissed::before {
+  background: var(--muted);
+}
+
+.reminder-list article.completed .reminder-main,
+.reminder-list article.dismissed .reminder-main {
+  opacity: 0.7;
+}
+
+.reminder-list article.dismissed .reminder-note-title {
+  text-decoration: line-through;
+  text-decoration-color: var(--muted);
 }
 
 .reminder-main {
   display: grid;
   min-width: 0;
   flex: 1;
-  gap: 5px;
-  padding: 14px 16px;
+  gap: 6px;
+  padding: 13px 16px;
+  border: 0;
+  background: none;
   text-align: left;
+  cursor: pointer;
+}
+
+.reminder-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
 }
 
 .reminder-note-title {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text);
   font-size: 14px;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.reminder-badge.overdue {
+  background: color-mix(in srgb, #d08b43 20%, transparent);
+  color: #b06a28;
+}
+
+.reminder-badge.done {
+  background: color-mix(in srgb, #3f9b6b 18%, transparent);
+  color: #2f8b5b;
+}
+
+.reminder-badge.dismissed {
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+  color: var(--muted);
 }
 
 .reminder-time {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--muted);
   font-size: 11px;
 }
 
+.reminder-time-relative {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.reminder-time-abs {
+  padding-left: 6px;
+  border-left: 1px solid var(--border-strong);
+}
+
 .reminder-main q,
 .reminder-main p {
+  display: -webkit-box;
   margin: 0;
   overflow: hidden;
   color: var(--text-soft);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .reminder-main p {

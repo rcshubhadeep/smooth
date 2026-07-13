@@ -63,6 +63,57 @@ function formatTime(timestamp: number) {
   }).format(new Date(timestamp));
 }
 
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 365 * 24 * 60 * 60_000],
+  ["month", 30 * 24 * 60 * 60_000],
+  ["week", 7 * 24 * 60 * 60_000],
+  ["day", 24 * 60 * 60_000],
+  ["hour", 60 * 60_000],
+  ["minute", 60_000],
+];
+
+const relativeFormatter = new Intl.RelativeTimeFormat(undefined, {
+  numeric: "auto",
+});
+
+function formatRelative(timestamp: number, now: number) {
+  const diff = timestamp - now;
+  if (Math.abs(diff) < 60_000) {
+    return diff >= 0 ? "in under a minute" : "just now";
+  }
+  for (const [unit, ms] of RELATIVE_UNITS) {
+    if (Math.abs(diff) >= ms) {
+      return relativeFormatter.format(Math.round(diff / ms), unit);
+    }
+  }
+  return relativeFormatter.format(Math.round(diff / 60_000), "minute");
+}
+
+type ReminderState = "overdue" | "upcoming" | "completed" | "dismissed";
+
+function reminderState(reminder: ReminderRecord, now: number): ReminderState {
+  if (reminder.status === "completed") return "completed";
+  if (reminder.status === "dismissed") return "dismissed";
+  return reminder.scheduledAt <= now ? "overdue" : "upcoming";
+}
+
+function ReminderBadge({ state }: { state: ReminderState }) {
+  if (state === "overdue") {
+    return <span className="reminder-badge overdue">Overdue</span>;
+  }
+  if (state === "completed") {
+    return (
+      <span className="reminder-badge done">
+        <Check size={11} /> Done
+      </span>
+    );
+  }
+  if (state === "dismissed") {
+    return <span className="reminder-badge dismissed">Dismissed</span>;
+  }
+  return null;
+}
+
 function reminderBody(reminder: ReminderRecord) {
   return reminder.comment?.trim() || reminder.selectedText.trim();
 }
@@ -288,6 +339,7 @@ export function RemindersView({
 }) {
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
@@ -302,11 +354,26 @@ export function RemindersView({
     void load();
     const changed = () => void load();
     window.addEventListener(REMINDER_CHANGED_EVENT, changed);
-    return () => window.removeEventListener(REMINDER_CHANGED_EVENT, changed);
+    // Keep relative times fresh and let cards flip to "overdue" on their own.
+    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      window.removeEventListener(REMINDER_CHANGED_EVENT, changed);
+      window.clearInterval(tick);
+    };
   }, [load]);
 
   const pending = useMemo(() => reminders.filter(({ status }) => status === "pending"), [reminders]);
   const history = useMemo(() => reminders.filter(({ status }) => status !== "pending"), [reminders]);
+  const overdueCount = useMemo(
+    () => pending.filter(({ scheduledAt }) => scheduledAt <= now).length,
+    [pending, now],
+  );
+
+  const subtitle = pending.length
+    ? `${pending.length} upcoming${overdueCount ? ` · ${overdueCount} overdue` : ""}`
+    : reminders.length
+      ? "All caught up"
+      : "Nothing scheduled";
 
   async function remove(id: string) {
     await invoke("delete_reminder", { id });
@@ -318,7 +385,7 @@ export function RemindersView({
       <header className="view-header">
         <div>
           <span className="section-icon"><Bell size={19} /></span>
-          <div><h1>Reminders</h1><p>{pending.length} upcoming or overdue</p></div>
+          <div><h1>Reminders</h1><p>{subtitle}</p></div>
         </div>
         <button className="icon-button" type="button" onClick={onClose} title="Close reminders"><X size={18} /></button>
       </header>
@@ -326,12 +393,12 @@ export function RemindersView({
       {!reminders.length && !error ? (
         <div className="empty-state reminders-empty">
           <div className="empty-icon"><Bell size={26} /></div>
-          <h2>No reminders</h2>
-          <p>Select text in a note and use the bell button in the editor toolbar.</p>
+          <h2>No reminders yet</h2>
+          <p>Select text in a note and use the bell button in the editor toolbar to set one.</p>
         </div>
       ) : null}
-      {pending.length ? <ReminderList title="Upcoming" reminders={pending} now={Date.now()} onOpen={onOpen} onDelete={remove} /> : null}
-      {history.length ? <ReminderList title="History" reminders={history} now={Date.now()} onOpen={onOpen} onDelete={remove} /> : null}
+      {pending.length ? <ReminderList title="Upcoming" reminders={pending} now={now} onOpen={onOpen} onDelete={remove} /> : null}
+      {history.length ? <ReminderList title="History" reminders={history} now={now} onOpen={onOpen} onDelete={remove} /> : null}
     </section>
   );
 }
@@ -351,27 +418,38 @@ function ReminderList({
 }) {
   return (
     <div className="reminder-list-section">
-      <h2>{title}</h2>
+      <h2>{title}<span className="reminder-count">{reminders.length}</span></h2>
       <div className="reminder-list">
-        {reminders.map((reminder) => (
-          <article className={reminder.status === "pending" && reminder.scheduledAt <= now ? "overdue" : ""} key={reminder.id}>
-            <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
-              <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
-              <span className="reminder-time"><Clock3 size={14} />{formatTime(reminder.scheduledAt)}</span>
-              <q>{reminder.selectedText}</q>
-              {reminder.comment ? <p>{reminder.comment}</p> : null}
-            </button>
-            <div className="reminder-row-actions">
-              {reminder.status === "pending" ? (
-                <>
-                  <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes"><RotateCcw size={15} /></button>
-                  <button type="button" onClick={() => void completeReminder(reminder.id)} title="Complete"><Check size={15} /></button>
-                </>
-              ) : null}
-              <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
-            </div>
-          </article>
-        ))}
+        {reminders.map((reminder) => {
+          const state = reminderState(reminder, now);
+          const selected = reminder.selectedText.trim();
+          return (
+            <article className={`reminder-card ${state}`} key={reminder.id}>
+              <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
+                <span className="reminder-card-head">
+                  <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
+                  <ReminderBadge state={state} />
+                </span>
+                <span className="reminder-time">
+                  <Clock3 size={13} />
+                  <span className="reminder-time-relative">{formatRelative(reminder.scheduledAt, now)}</span>
+                  <span className="reminder-time-abs">{formatTime(reminder.scheduledAt)}</span>
+                </span>
+                {selected ? <q>{selected}</q> : null}
+                {reminder.comment ? <p>{reminder.comment}</p> : null}
+              </button>
+              <div className="reminder-row-actions">
+                {reminder.status === "pending" ? (
+                  <>
+                    <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes"><RotateCcw size={15} /></button>
+                    <button type="button" onClick={() => void completeReminder(reminder.id)} title="Complete"><Check size={15} /></button>
+                  </>
+                ) : null}
+                <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </div>
   );
