@@ -5808,3 +5808,394 @@ body.resizing {
   white-space: pre-wrap;
   color: var(--text-soft);
 }
+
+/* ============================================================
+   Reminders
+   ============================================================ */
+.reminder-dialog-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #141618 40%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.reminder-dialog {
+  width: min(520px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.reminder-dialog header,
+.reminder-dialog header > div,
+.reminder-dialog footer,
+.reminder-dialog label,
+.reminder-dialog label > span,
+.reminder-presets,
+.view-header,
+.view-header > div,
+.due-reminder,
+.due-reminder-actions,
+.reminder-focus-card > div,
+.reminder-focus-card footer,
+.reminder-row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.reminder-dialog header,
+.view-header {
+  justify-content: space-between;
+}
+
+.reminder-dialog header h2,
+.view-header h1,
+.reminder-list-section h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.reminder-dialog header h2 {
+  font-size: 18px;
+}
+
+.section-icon {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: var(--accent-strong);
+}
+
+.reminder-dialog blockquote {
+  max-height: 110px;
+  margin: 18px 0;
+  padding: 11px 13px;
+  overflow: auto;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reminder-dialog label {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.reminder-dialog label > span {
+  gap: 6px;
+}
+
+.reminder-dialog label small {
+  color: var(--muted);
+  font-weight: 450;
+}
+
+.reminder-dialog input,
+.reminder-dialog textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.reminder-dialog input {
+  height: 42px;
+  padding: 0 12px;
+}
+
+.reminder-dialog textarea {
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.reminder-dialog input:focus,
+.reminder-dialog textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.reminder-presets {
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.reminder-presets button,
+.reminder-dialog footer button,
+.reminder-focus-card footer button {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.reminder-dialog footer {
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.reminder-dialog footer .primary-action,
+.reminder-focus-card footer button:last-child {
+  gap: 7px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.form-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.due-reminder {
+  position: fixed;
+  z-index: 100;
+  right: 22px;
+  bottom: 22px;
+  width: min(520px, calc(100vw - 44px));
+  min-height: 72px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--r);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.due-reminder-icon {
+  display: grid;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.due-reminder-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.due-reminder-copy strong,
+.due-reminder-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.due-reminder-copy span,
+.due-reminder-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.due-reminder-actions,
+.reminder-row-actions {
+  gap: 4px;
+}
+
+.due-reminder-actions button,
+.reminder-row-actions button,
+.reminder-focus-card > div button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+}
+
+.due-reminder-actions button:hover,
+.reminder-row-actions button:hover,
+.reminder-focus-card > div button:hover {
+  background: color-mix(in srgb, var(--panel) 86%, var(--accent));
+  color: var(--text);
+}
+
+.reminders-view {
+  height: 100%;
+  overflow: auto;
+  padding: 26px 32px 48px;
+}
+
+.view-header {
+  margin-bottom: 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.view-header > div {
+  gap: 8px;
+}
+
+.view-header h1 {
+  font-size: 23px;
+}
+
+.view-header p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reminders-empty {
+  min-height: 340px;
+}
+
+.reminder-list-section {
+  max-width: 820px;
+  margin: 0 auto 28px;
+}
+
+.reminder-list-section h2 {
+  margin-bottom: 10px;
+  color: var(--text-soft);
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.reminder-list {
+  display: grid;
+  gap: 8px;
+}
+
+.reminder-list article {
+  display: flex;
+  align-items: center;
+  min-height: 94px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.reminder-list article.overdue {
+  border-color: color-mix(in srgb, #d08b43 58%, var(--border));
+  background: color-mix(in srgb, #f0b264 8%, var(--panel));
+}
+
+.reminder-main {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 5px;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.reminder-note-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.reminder-time {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reminder-main q,
+.reminder-main p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-main p {
+  color: var(--muted);
+}
+
+.reminder-row-actions {
+  padding: 0 12px;
+}
+
+.editor-layout {
+  position: relative;
+}
+
+.reminder-focus-card {
+  position: absolute;
+  z-index: 20;
+  right: 22px;
+  top: 148px;
+  width: min(360px, calc(100% - 44px));
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+}
+
+.reminder-focus-card > div {
+  gap: 7px;
+  color: var(--accent-strong);
+}
+
+.reminder-focus-card > div button {
+  margin-left: auto;
+}
+
+.reminder-focus-card p,
+.reminder-focus-card q {
+  display: block;
+  margin: 9px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.reminder-focus-card q {
+  max-height: 58px;
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.reminder-focus-card footer {
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .reminders-view {
+    padding: 20px 18px 40px;
+  }
+
+  .due-reminder-actions {
+    flex-wrap: wrap;
+    max-width: 72px;
+  }
+}

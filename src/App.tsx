@@ -9,6 +9,7 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowDownUp,
+  Bell,
   Bold,
   BookOpen,
   CalendarDays,
@@ -71,11 +72,20 @@ import CommandPalette from "./CommandPalette";
 import ImportDocuments from "./ImportDocuments";
 import McpSettings from "./McpSettings";
 import SlackSettings from "./SlackSettings";
+import {
+  announceReminderChange,
+  ReminderCenter,
+  ReminderCreateDialog,
+  RemindersView,
+  type ReminderJumpTarget,
+  type ReminderRecord,
+  type ReminderSelection,
+} from "./Reminders";
 import { startSemanticIndexer } from "./semantic";
 import "./App.css";
 
 type ThemeMode = "light" | "dark" | "system";
-type ViewMode = "notes" | "settings" | "agents";
+type ViewMode = "notes" | "settings" | "agents" | "reminders";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SortMode = "updated-desc" | "updated-asc" | "created-desc" | "created-asc";
 type DictationState = "idle" | "recording" | "transcribing";
@@ -994,6 +1004,8 @@ function App() {
     nonce: number;
     surfaceText: string;
   } | null>(null);
+  const [reminderJumpTarget, setReminderJumpTarget] =
+    useState<ReminderJumpTarget | null>(null);
   const [meetingVisualSources, setMeetingVisualSources] = useState<
     MeetingVisualSource[]
   >([]);
@@ -1442,6 +1454,11 @@ function App() {
     } catch (openError) {
       setError(String(openError));
     }
+  }
+
+  async function openReminder(reminder: ReminderRecord) {
+    setReminderJumpTarget({ ...reminder, nonce: Date.now() });
+    await openNote(reminder.noteId);
   }
 
   async function createNote() {
@@ -3090,6 +3107,20 @@ function App() {
           <div className="sidebar-footer">
             <button
               className={
+                view === "reminders" ? "icon-button active" : "icon-button"
+              }
+              type="button"
+              onClick={() =>
+                setView((current) =>
+                  current === "reminders" ? "notes" : "reminders",
+                )
+              }
+              title={view === "reminders" ? "Back to notes" : "Reminders"}
+            >
+              <Bell size={18} />
+            </button>
+            <button
+              className={
                 view === "agents" ? "icon-button active" : "icon-button"
               }
               type="button"
@@ -3133,6 +3164,11 @@ function App() {
               currentNoteId={activeNote?.id ?? null}
               onClose={() => setView("notes")}
             />
+          ) : view === "reminders" ? (
+            <RemindersView
+              onClose={() => setView("notes")}
+              onOpen={(reminder) => void openReminder(reminder)}
+            />
           ) : (
             <div
               className={
@@ -3154,6 +3190,8 @@ function App() {
                 externalRevision={meetingContentRevision}
                 externalNoteId={meetingNoteId}
                 entityJumpTarget={entityJumpTarget}
+                reminderJumpTarget={reminderJumpTarget}
+                onDismissReminderTarget={() => setReminderJumpTarget(null)}
                 onTogglePanel={() => setPanelOpen((open) => !open)}
                 onCreate={createNote}
                 onSave={saveNote}
@@ -3242,6 +3280,8 @@ function App() {
           onClose={() => setMeetingNotesOpen(false)}
         />
       ) : null}
+
+      <ReminderCenter onOpen={(reminder) => void openReminder(reminder)} />
 
       <MeetingCapsule
         detail={meetingDetail}
@@ -5898,6 +5938,8 @@ type NoteEditorProps = {
   externalRevision: number;
   externalNoteId: string | null;
   entityJumpTarget: { nonce: number; surfaceText: string } | null;
+  reminderJumpTarget: ReminderJumpTarget | null;
+  onDismissReminderTarget: () => void;
   onTogglePanel: () => void;
   onCreate: () => Promise<void>;
   onSave: (
@@ -5926,6 +5968,8 @@ function NoteEditor({
   externalRevision,
   externalNoteId,
   entityJumpTarget,
+  reminderJumpTarget,
+  onDismissReminderTarget,
   onTogglePanel,
   onCreate,
   onSave,
@@ -5945,6 +5989,8 @@ function NoteEditor({
   const [streamingTranscript, setStreamingTranscript] = useState("");
   const [emailDraft, setEmailDraft] = useState<GmailDraftInput | null>(null);
   const [isCreatingEmailDraft, setIsCreatingEmailDraft] = useState(false);
+  const [reminderSelection, setReminderSelection] =
+    useState<ReminderSelection | null>(null);
   const hasUnsavedChangesRef = useRef(false);
   const isLoadingNoteRef = useRef(false);
   const dictationActiveRef = useRef(false);
@@ -5991,6 +6037,9 @@ function NoteEditor({
       }
 
       hasUnsavedChangesRef.current = true;
+      setEditorRevision((revision) => revision + 1);
+    },
+    onSelectionUpdate: () => {
       setEditorRevision((revision) => revision + 1);
     },
   });
@@ -6072,6 +6121,97 @@ function NoteEditor({
       toast.info("Entity text was not found in the editor");
     }
   }, [editor, entityJumpTarget]);
+
+  useEffect(() => {
+    if (
+      !editor ||
+      editor.isDestroyed ||
+      !note ||
+      !reminderJumpTarget ||
+      reminderJumpTarget.noteId !== note.id
+    ) {
+      return;
+    }
+
+    const normalize = (value: string) =>
+      value.replace(/\s+/g, " ").trim().toLowerCase();
+    const needle = normalize(reminderJumpTarget.selectedText);
+    if (!needle) return;
+
+    const doc = editor.state.doc;
+    const maxPosition = doc.content.size;
+    const storedFrom = Math.max(
+      1,
+      Math.min(reminderJumpTarget.startOffset, maxPosition),
+    );
+    const storedTo = Math.max(
+      storedFrom,
+      Math.min(reminderJumpTarget.endOffset, maxPosition),
+    );
+    let match: { from: number; to: number } | null = null;
+
+    if (
+      normalize(doc.textBetween(storedFrom, storedTo, "\n", "\n")) === needle
+    ) {
+      match = { from: storedFrom, to: storedTo };
+    }
+
+    if (!match) {
+      const expectedLength = reminderJumpTarget.selectedText.length;
+      const contextBefore = normalize(reminderJumpTarget.contextBefore).slice(-80);
+      let bestScore = Number.POSITIVE_INFINITY;
+      for (let from = 1; from < maxPosition; from += 1) {
+        const first = normalize(
+          doc.textBetween(from, Math.min(from + 1, maxPosition), "\n", "\n"),
+        );
+        if (first && !needle.startsWith(first)) continue;
+
+        for (let adjustment = -12; adjustment <= 32; adjustment += 1) {
+          const to = Math.min(
+            maxPosition,
+            from + Math.max(1, expectedLength + adjustment),
+          );
+          if (normalize(doc.textBetween(from, to, "\n", "\n")) !== needle) {
+            continue;
+          }
+          const before = normalize(
+            doc.textBetween(Math.max(0, from - 200), from, "\n", "\n"),
+          );
+          const contextAfter = normalize(reminderJumpTarget.contextAfter).slice(
+            0,
+            80,
+          );
+          const after = normalize(
+            doc.textBetween(to, Math.min(maxPosition, to + 200), "\n", "\n"),
+          );
+          const contextBonus =
+            (contextBefore && before.endsWith(contextBefore) ? 50_000 : 0) +
+            (contextAfter && after.startsWith(contextAfter) ? 50_000 : 0);
+          const score =
+            Math.abs(from - reminderJumpTarget.startOffset) - contextBonus;
+          if (score < bestScore) {
+            bestScore = score;
+            match = { from, to };
+          }
+        }
+      }
+    }
+
+    if (match) {
+      editor.commands.focus();
+      editor.commands.setTextSelection(match);
+      window.requestAnimationFrame(() => {
+        window
+          .getSelection()
+          ?.anchorNode?.parentElement?.scrollIntoView({
+            block: "center",
+            behavior: "smooth",
+          });
+      });
+    } else {
+      toast.info("The original reminder passage could not be located");
+    }
+  }, [editor, note, reminderJumpTarget]);
 
   useEffect(() => {
     if (!note || note.deleted_at || !editor || editor.isDestroyed) {
@@ -6252,6 +6392,53 @@ function NoteEditor({
     });
   }
 
+  function openReminderDialog() {
+    if (!editor || editor.isDestroyed || !note || note.deleted_at) return;
+    const { from, to, empty } = editor.state.selection;
+    if (empty) {
+      toast.info("Select some note text first");
+      return;
+    }
+    const selectedText = editor.state.doc.textBetween(from, to, "\n", "\n");
+    if (!selectedText.trim()) {
+      toast.info("Select some note text first");
+      return;
+    }
+    setReminderSelection({
+      selectedText,
+      startOffset: from,
+      endOffset: to,
+      contextBefore: editor.state.doc.textBetween(
+        Math.max(0, from - 180),
+        from,
+        "\n",
+        "\n",
+      ),
+      contextAfter: editor.state.doc.textBetween(
+        to,
+        Math.min(editor.state.doc.content.size, to + 180),
+        "\n",
+        "\n",
+      ),
+    });
+  }
+
+  async function resolveFocusedReminder(status: "completed" | "dismissed") {
+    if (!reminderJumpTarget) return;
+    await invoke(
+      status === "completed" ? "complete_reminder" : "dismiss_reminder",
+      { id: reminderJumpTarget.id },
+    );
+    announceReminderChange();
+    onDismissReminderTarget();
+    editor?.commands.setTextSelection(editor.state.selection.to);
+  }
+
+  function hideFocusedReminder() {
+    onDismissReminderTarget();
+    editor?.commands.setTextSelection(editor.state.selection.to);
+  }
+
   async function submitEmailDraft() {
     if (!emailDraft) {
       return;
@@ -6429,6 +6616,17 @@ function NoteEditor({
         }
       >
         <button
+          disabled={
+            Boolean(note.deleted_at) || !editor || editor.state.selection.empty
+          }
+          type="button"
+          onClick={openReminderDialog}
+          title="Create reminder from selected text"
+        >
+          <Bell size={16} />
+        </button>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <button
           className={dictationState === "recording" ? "active" : ""}
           disabled={
             Boolean(note.deleted_at) || dictationState === "transcribing"
@@ -6513,6 +6711,53 @@ function NoteEditor({
       </div>
 
       <EditorContent editor={editor} />
+      {reminderJumpTarget && reminderJumpTarget.noteId === note.id ? (
+        <aside className="reminder-focus-card">
+          <div>
+            <Bell size={16} />
+            <strong>Reminder</strong>
+            <button
+              type="button"
+              onClick={hideFocusedReminder}
+              title="Hide reminder"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          {reminderJumpTarget.comment ? (
+            <p>{reminderJumpTarget.comment}</p>
+          ) : null}
+          <q>{reminderJumpTarget.selectedText}</q>
+          {reminderJumpTarget.status === "pending" ? (
+            <footer>
+              <button
+                type="button"
+                onClick={() => void resolveFocusedReminder("dismissed")}
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                onClick={() => void resolveFocusedReminder("completed")}
+              >
+                <CheckCircle2 size={15} />
+                Complete
+              </button>
+            </footer>
+          ) : null}
+        </aside>
+      ) : null}
+      {reminderSelection ? (
+        <ReminderCreateDialog
+          noteId={note.id}
+          selection={reminderSelection}
+          onClose={() => setReminderSelection(null)}
+          onCreated={() => {
+            setReminderSelection(null);
+            toast.success("Reminder created");
+          }}
+        />
+      ) : null}
       {emailDraft ? (
         <EmailDraftDialog
           draft={emailDraft}

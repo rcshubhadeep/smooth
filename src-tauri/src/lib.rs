@@ -9,6 +9,7 @@ mod gmail;
 mod imports;
 mod mcp;
 mod meeting_notes;
+mod reminders;
 mod semantic_search;
 mod slack;
 mod stt;
@@ -498,6 +499,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     semantic_search::init_schema(&connection)?;
     slack::init_schema(&connection)?;
     imports::init_schema(&connection)?;
+    reminders::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -4155,6 +4157,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_google_auth::init())
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
@@ -4176,6 +4179,7 @@ pub fn run() {
             tauri::async_runtime::spawn(stt::stt_worker(app.handle().clone()));
             tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
             tauri::async_runtime::spawn(imports::worker(app.handle().clone()));
+            tauri::async_runtime::spawn(reminders::worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4241,6 +4245,13 @@ pub fn run() {
             imports::enqueue_imports,
             imports::list_import_jobs,
             imports::retry_import_job,
+            reminders::create_reminder,
+            reminders::list_reminders,
+            reminders::list_due_reminders,
+            reminders::complete_reminder,
+            reminders::dismiss_reminder,
+            reminders::snooze_reminder,
+            reminders::delete_reminder,
             mcp::get_mcp_status,
             slack::get_slack_config,
             slack::save_slack_config,
