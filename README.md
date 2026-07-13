@@ -55,12 +55,10 @@ Smooth runs a local, read-only MCP server on `http://127.0.0.1:17843/mcp`, secur
 
 Claude Desktop only talks to MCP servers over stdio, but Smooth's MCP server speaks HTTP. [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridges the two, and `mcp-remote-wrapper.sh` (in this repo's root) makes sure that bridge can actually find Node — Claude Desktop launches configured commands without your shell's `PATH`, so a bare `npx` call frequently fails to resolve.
 
-1. Copy `mcp-remote-wrapper.sh` from this repo to a permanent location, e.g. `~/mcp-remote-wrapper.sh`.
-2. Run `which npx` in a terminal and copy the directory it's in (drop the trailing `/npx`).
-3. Open the copied script and set `NODE_DIR` to that directory.
-4. Make it executable: `chmod +x ~/mcp-remote-wrapper.sh`.
-5. Get your bearer token from the app's MCP settings panel (see [MCP server](#mcp-server) above).
-6. Add an entry to Claude Desktop's MCP configuration, pointing at your copy of the script:
+1. Copy `mcp-remote-wrapper.sh` from this repo to a permanent location, e.g. `~/mcp-remote-wrapper.sh`, and make it executable: `chmod +x ~/mcp-remote-wrapper.sh`.
+2. Run `which npx` in a terminal and copy the directory it's in (drop the trailing `/npx`). This is your `NODE_DIR`.
+3. Get your bearer token from the app's MCP settings panel (see [MCP server](#mcp-server) above).
+4. Add an entry to Claude Desktop's MCP configuration, pointing at your copy of the script. You don't edit the script itself — it reads `NODE_DIR` and the auth header from the `env` block below:
 
 ```json
 "mcpServers": {
@@ -76,6 +74,7 @@ Claude Desktop only talks to MCP servers over stdio, but Smooth's MCP server spe
         "http-only"
       ],
       "env": {
+        "NODE_DIR": "/Users/you/.nvm/versions/node/v24.7.0/bin",
         "AUTH_HEADER": "Bearer <YOUR TOKEN>"
       }
     }
