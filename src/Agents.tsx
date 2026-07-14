@@ -390,6 +390,11 @@ type EditorState =
   | { mode: "edit"; agent: AgentDefinition }
   | null;
 
+// Custom (user-defined) agents are temporarily hidden while the creation flow
+// is being rethought. Flip to `true` to restore the "New agent" button, the
+// editor, and the "Your agents" section — all the code below stays intact.
+const CUSTOM_AGENTS_ENABLED = false;
+
 export function AgentsView({
   notes,
   currentNoteId,
@@ -427,7 +432,7 @@ export function AgentsView({
   }
 
   useEffect(() => {
-    void refresh();
+    if (CUSTOM_AGENTS_ENABLED) void refresh();
   }, []);
 
   async function start(agent: AgentDefinition) {
@@ -595,7 +600,7 @@ export function AgentsView({
           <p>Run an assistant over a note or across your whole knowledge bank.</p>
         </div>
         <div className="agents-header-actions">
-          {tab === "agents" ? (
+          {tab === "agents" && CUSTOM_AGENTS_ENABLED ? (
             <button
               type="button"
               className="agent-run-btn"
@@ -671,18 +676,24 @@ export function AgentsView({
             </div>
           ) : null}
 
-          <h3 className="agent-section-label">Built-in</h3>
+          {CUSTOM_AGENTS_ENABLED ? (
+            <h3 className="agent-section-label">Built-in</h3>
+          ) : null}
           <div className="agent-grid">{BUILTIN_AGENTS.map(renderCard)}</div>
 
-          <h3 className="agent-section-label">Your agents</h3>
-          {userAgents.length > 0 ? (
-            <div className="agent-grid">{userAgents.map(renderCard)}</div>
-          ) : (
-            <p className="agent-empty">
-              No custom agents yet. Use <strong>New agent</strong> to create one
-              from your own instructions.
-            </p>
-          )}
+          {CUSTOM_AGENTS_ENABLED ? (
+            <>
+              <h3 className="agent-section-label">Your agents</h3>
+              {userAgents.length > 0 ? (
+                <div className="agent-grid">{userAgents.map(renderCard)}</div>
+              ) : (
+                <p className="agent-empty">
+                  No custom agents yet. Use <strong>New agent</strong> to create
+                  one from your own instructions.
+                </p>
+              )}
+            </>
+          ) : null}
         </>
       ) : null}
     </div>
