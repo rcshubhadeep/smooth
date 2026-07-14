@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{db_error, new_id, now_string, open_database, reminders, slack};
+use crate::{db_error, gmail, new_id, now_string, open_database, reminders, slack};
 
 use super::{flow, AgentRuntime};
 
@@ -37,6 +37,7 @@ pub(crate) struct ReminderWorkflowStepRecord {
     pub(crate) status: String,
     pub(crate) output_text: Option<String>,
     pub(crate) destination: Option<String>,
+    pub(crate) subject: Option<String>,
     pub(crate) agent_run_id: Option<String>,
     pub(crate) error: Option<String>,
 }
@@ -46,6 +47,7 @@ pub(crate) struct ReminderWorkflowStepRecord {
 pub(crate) struct ApproveWorkflowStepInput {
     step_id: String,
     destination: String,
+    subject: Option<String>,
     text: String,
 }
 
@@ -106,7 +108,7 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                 instructions TEXT NOT NULL,
                 max_steps INTEGER NOT NULL DEFAULT 3,
                 step_kind TEXT NOT NULL
-                    CHECK (step_kind IN ('transform', 'external_slack')),
+                    CHECK (step_kind IN ('transform', 'external_slack', 'external_gmail')),
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN (
                         'pending', 'running', 'awaiting_approval',
@@ -114,6 +116,7 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                     )),
                 output_text TEXT,
                 destination TEXT,
+                subject TEXT,
                 agent_run_id TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL,
@@ -125,6 +128,69 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                 ON reminder_workflows(status, updated_at);
             CREATE INDEX IF NOT EXISTS reminder_workflow_steps_workflow_idx
                 ON reminder_workflow_steps(workflow_id, position);
+            ",
+        )
+        .map_err(db_error)?;
+    migrate_external_gmail_step_kind(connection)
+}
+
+fn migrate_external_gmail_step_kind(connection: &Connection) -> Result<(), String> {
+    let table_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'reminder_workflow_steps'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(db_error)?;
+    if table_sql.contains("external_gmail") && table_sql.contains("subject TEXT") {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            "
+            BEGIN IMMEDIATE;
+            DROP INDEX IF EXISTS reminder_workflow_steps_workflow_idx;
+            ALTER TABLE reminder_workflow_steps RENAME TO reminder_workflow_steps_legacy;
+            CREATE TABLE reminder_workflow_steps (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL
+                    REFERENCES reminder_workflows(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                instructions TEXT NOT NULL,
+                max_steps INTEGER NOT NULL DEFAULT 3,
+                step_kind TEXT NOT NULL
+                    CHECK (step_kind IN ('transform', 'external_slack', 'external_gmail')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN (
+                        'pending', 'running', 'awaiting_approval',
+                        'succeeded', 'failed', 'cancelled'
+                    )),
+                output_text TEXT,
+                destination TEXT,
+                subject TEXT,
+                agent_run_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workflow_id, position)
+            );
+            INSERT INTO reminder_workflow_steps (
+                id, workflow_id, position, agent_id, agent_name, instructions,
+                max_steps, step_kind, status, output_text, destination, subject,
+                agent_run_id, error, created_at, updated_at
+            )
+            SELECT id, workflow_id, position, agent_id, agent_name, instructions,
+                   max_steps, step_kind, status, output_text, destination, NULL,
+                   agent_run_id, error, created_at, updated_at
+            FROM reminder_workflow_steps_legacy;
+            DROP TABLE reminder_workflow_steps_legacy;
+            CREATE INDEX reminder_workflow_steps_workflow_idx
+                ON reminder_workflow_steps(workflow_id, position);
+            COMMIT;
             ",
         )
         .map_err(db_error)
@@ -231,6 +297,12 @@ fn resolve_agent(connection: &Connection, agent_id: &str) -> Result<AgentSpec, S
             instructions: "Prepare a concise Slack message. Preserve facts, decisions, owners, and next steps. Return only the editable message draft and do not send anything.".to_string(),
             max_steps: 3,
             step_kind: "external_slack",
+        }),
+        "create-gmail-draft" => Some(AgentSpec {
+            name: "Prepare Gmail draft".to_string(),
+            instructions: "Prepare a concise email draft from the input. Preserve facts, decisions, owners, and next steps. Return exactly two sections: 'Subject: <subject>' followed by 'Body:' and the editable email body. Do not create or send anything.".to_string(),
+            max_steps: 3,
+            step_kind: "external_gmail",
         }),
         _ => None,
     };
@@ -357,7 +429,7 @@ fn load_steps(
     let mut statement = connection
         .prepare(
             "SELECT id, position, agent_id, agent_name, step_kind, status,
-                    output_text, destination, agent_run_id, error
+                    output_text, destination, subject, agent_run_id, error
              FROM reminder_workflow_steps
              WHERE workflow_id = ?1 ORDER BY position ASC",
         )
@@ -373,8 +445,9 @@ fn load_steps(
                 status: row.get(5)?,
                 output_text: row.get(6)?,
                 destination: row.get(7)?,
-                agent_run_id: row.get(8)?,
-                error: row.get(9)?,
+                subject: row.get(8)?,
+                agent_run_id: row.get(9)?,
+                error: row.get(10)?,
             })
         })
         .map_err(db_error)?
@@ -437,14 +510,32 @@ pub(crate) async fn approve_reminder_workflow_step(
             .map_err(db_error)?
             .ok_or_else(|| "This workflow step is not awaiting approval".to_string())?
     };
-    if step_kind != "external_slack" {
-        return Err("This external action is not supported yet".to_string());
+    let destination = input.destination.trim();
+    let subject = input.subject.as_deref().map(str::trim).unwrap_or_default();
+    let text = input.text.trim();
+    match step_kind.as_str() {
+        "external_slack" => {
+            if destination.is_empty() || text.is_empty() {
+                return Err("Slack destination and message are required".to_string());
+            }
+            slack::post_message(app.clone(), destination.to_string(), text.to_string()).await?;
+        }
+        "external_gmail" => {
+            if subject.is_empty() || text.is_empty() {
+                return Err("Email subject and body are required".to_string());
+            }
+            gmail::create_gmail_draft(
+                app.clone(),
+                gmail::GmailDraftInput {
+                    to: (!destination.is_empty()).then(|| destination.to_string()),
+                    subject: subject.to_string(),
+                    body: text.to_string(),
+                },
+            )
+            .await?;
+        }
+        _ => return Err("This external action is not supported yet".to_string()),
     }
-    if input.destination.trim().is_empty() || input.text.trim().is_empty() {
-        return Err("Slack destination and message are required".to_string());
-    }
-
-    slack::post_message(app.clone(), input.destination.clone(), input.text.clone()).await?;
 
     let connection = open_database(&app)?;
     let now = now_string();
@@ -452,11 +543,12 @@ pub(crate) async fn approve_reminder_workflow_step(
         .execute(
             "UPDATE reminder_workflow_steps
              SET status = 'succeeded', output_text = ?2, destination = ?3,
-                 error = NULL, updated_at = ?4 WHERE id = ?1",
+                 subject = ?4, error = NULL, updated_at = ?5 WHERE id = ?1",
             params![
                 input.step_id,
-                input.text.trim(),
-                input.destination.trim(),
+                text,
+                destination,
+                (!subject.is_empty()).then_some(subject),
                 now
             ],
         )
@@ -588,6 +680,37 @@ fn compose_prompt(
     .join("\n")
 }
 
+fn parse_gmail_draft_output(raw: &str, note_title: &str) -> (String, String) {
+    let trimmed = raw.trim();
+    let mut subject = None;
+    let mut body_start = None;
+    let mut offset = 0;
+    for line in trimmed.split_inclusive('\n') {
+        let line_without_break = line.trim_end_matches(['\r', '\n']);
+        if subject.is_none() {
+            if let Some(value) = line_without_break.strip_prefix("Subject:") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    subject = Some(value.to_string());
+                }
+            }
+        } else if line_without_break.trim().eq_ignore_ascii_case("Body:") {
+            body_start = Some(offset + line.len());
+            break;
+        }
+        offset += line.len();
+    }
+    let fallback_subject = format!("Follow up: {}", note_title.trim());
+    let subject = subject.unwrap_or(fallback_subject);
+    let body = body_start
+        .and_then(|start| trimmed.get(start..))
+        .map(str::trim)
+        .filter(|body| !body.is_empty())
+        .unwrap_or(trimmed)
+        .to_string();
+    (subject, body)
+}
+
 async fn execute_workflow(app: &AppHandle, workflow: ClaimedWorkflow) -> Result<(), String> {
     loop {
         let (step, reminder, previous) = {
@@ -660,15 +783,23 @@ async fn execute_workflow(app: &AppHandle, workflow: ClaimedWorkflow) -> Result<
                 } else {
                     "succeeded"
                 };
+                let (subject, output_text) = if step.step_kind == "external_gmail" {
+                    let (subject, body) =
+                        parse_gmail_draft_output(&result.answer, &reminder.note_title);
+                    (Some(subject), body)
+                } else {
+                    (None, result.answer.trim().to_string())
+                };
                 connection
                     .execute(
                         "UPDATE reminder_workflow_steps
-                         SET status = ?2, output_text = ?3, agent_run_id = ?4,
-                             error = NULL, updated_at = ?5 WHERE id = ?1",
+                         SET status = ?2, output_text = ?3, subject = ?4,
+                             agent_run_id = ?5, error = NULL, updated_at = ?6 WHERE id = ?1",
                         params![
                             step.id,
                             step_status,
-                            result.answer.trim(),
+                            output_text,
+                            subject,
                             result.run_id,
                             now_string()
                         ],
@@ -835,5 +966,110 @@ mod tests {
         let workflows = load_workflows(&connection).expect("load workflows");
         assert_eq!(workflows[0].steps[0].agent_id, "summarize-note");
         assert_eq!(workflows[0].steps[1].step_kind, "external_slack");
+    }
+
+    #[test]
+    fn stores_gmail_as_an_external_final_step() {
+        let connection = database();
+        insert_workflow(
+            &connection,
+            "reminder-1",
+            &[
+                WorkflowStepInput {
+                    agent_id: "summarize-note".to_string(),
+                },
+                WorkflowStepInput {
+                    agent_id: "create-gmail-draft".to_string(),
+                },
+            ],
+        )
+        .expect("insert Gmail workflow");
+        let workflows = load_workflows(&connection).expect("load workflows");
+        assert_eq!(workflows[0].steps[1].agent_id, "create-gmail-draft");
+        assert_eq!(workflows[0].steps[1].step_kind, "external_gmail");
+        assert_eq!(workflows[0].steps[1].subject, None);
+    }
+
+    #[test]
+    fn parses_structured_and_fallback_gmail_drafts() {
+        let (subject, body) = parse_gmail_draft_output(
+            "Subject: Project next steps\nBody:\nHi Anuj,\n\nHere is the summary.",
+            "Planning",
+        );
+        assert_eq!(subject, "Project next steps");
+        assert_eq!(body, "Hi Anuj,\n\nHere is the summary.");
+
+        let (subject, body) =
+            parse_gmail_draft_output("Hi Anuj,\n\nHere is the summary.", "Planning");
+        assert_eq!(subject, "Follow up: Planning");
+        assert_eq!(body, "Hi Anuj,\n\nHere is the summary.");
+    }
+
+    #[test]
+    fn migrates_existing_step_table_for_gmail() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE reminders (id TEXT PRIMARY KEY);
+                CREATE TABLE reminder_workflows (
+                    id TEXT PRIMARY KEY,
+                    reminder_id TEXT NOT NULL UNIQUE REFERENCES reminders(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE reminder_workflow_steps (
+                    id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL REFERENCES reminder_workflows(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    instructions TEXT NOT NULL,
+                    max_steps INTEGER NOT NULL DEFAULT 3,
+                    step_kind TEXT NOT NULL CHECK (step_kind IN ('transform', 'external_slack')),
+                    status TEXT NOT NULL,
+                    output_text TEXT,
+                    destination TEXT,
+                    agent_run_id TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(workflow_id, position)
+                );
+                INSERT INTO reminders VALUES ('reminder-1');
+                INSERT INTO reminder_workflows VALUES
+                    ('workflow-1', 'reminder-1', 'succeeded', NULL, '1', '1');
+                INSERT INTO reminder_workflow_steps VALUES
+                    ('step-1', 'workflow-1', 0, 'summarize-note', 'Summarize', '', 3,
+                     'transform', 'succeeded', 'Result', NULL, NULL, NULL, '1', '1');
+                ",
+            )
+            .expect("legacy schema");
+
+        init_schema(&connection).expect("migrate workflow schema");
+        let preserved: String = connection
+            .query_row(
+                "SELECT output_text FROM reminder_workflow_steps WHERE id = 'step-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserved step");
+        let table_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'reminder_workflow_steps'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("table SQL");
+        assert_eq!(preserved, "Result");
+        assert!(table_sql.contains("external_gmail"));
+        assert!(table_sql.contains("subject TEXT"));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA foreign_key_check", [], |_| Ok(1_i64))
+                .optional()
+                .expect("foreign key check"),
+            None
+        );
     }
 }

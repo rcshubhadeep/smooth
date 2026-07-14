@@ -6,6 +6,7 @@ import {
   FileText,
   Link2,
   Loader2,
+  Mail,
   MessageSquare,
   Play,
   RotateCcw,
@@ -25,7 +26,7 @@ export type ReminderWorkflowStep = {
   position: number;
   agentId: string;
   agentName: string;
-  stepKind: "transform" | "external_slack";
+  stepKind: "transform" | "external_slack" | "external_gmail";
   status:
     | "pending"
     | "running"
@@ -35,6 +36,7 @@ export type ReminderWorkflowStep = {
     | "cancelled";
   outputText: string | null;
   destination: string | null;
+  subject: string | null;
   agentRunId: string | null;
   error: string | null;
 };
@@ -84,6 +86,13 @@ const REMINDER_AGENT_OPTIONS: ReminderAgentOption[] = [
     description: "Create an editable draft and wait for approval before posting.",
     external: true,
     icon: MessageSquare,
+  },
+  {
+    id: "create-gmail-draft",
+    name: "Prepare Gmail draft",
+    description: "Create an editable email draft and wait for approval before saving it to Gmail.",
+    external: true,
+    icon: Mail,
   },
 ];
 
@@ -165,7 +174,7 @@ export function ReminderWorkflowBuilder({
 
       {steps.length && !hasExternal ? (
         <p className="reminder-workflow-generated-only">
-          This workflow only generates a result. Add Prepare Slack message to review and post it.
+          This workflow only generates a result. Add a Slack or Gmail step for an approved external action.
         </p>
       ) : null}
     </section>
@@ -254,6 +263,14 @@ export function ReminderWorkflowPanel({
 
       {approvalStep?.stepKind === "external_slack" ? (
         <SlackWorkflowApproval
+          key={approvalStep.id}
+          step={approvalStep}
+          onApproved={onChanged}
+        />
+      ) : null}
+
+      {approvalStep?.stepKind === "external_gmail" ? (
+        <GmailWorkflowApproval
           key={approvalStep.id}
           step={approvalStep}
           onApproved={onChanged}
@@ -357,6 +374,7 @@ function SlackWorkflowApproval({
         input: {
           stepId: step.id,
           destination: destination.trim(),
+          subject: null,
           text: text.trim(),
         },
       });
@@ -400,6 +418,89 @@ function SlackWorkflowApproval({
         >
           {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
           {sending ? "Posting" : "Approve and post"}
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function GmailWorkflowApproval({
+  step,
+  onApproved,
+}: {
+  step: ReminderWorkflowStep;
+  onApproved: () => void | Promise<void>;
+}) {
+  const [to, setTo] = useState(step.destination || "");
+  const [subject, setSubject] = useState(step.subject || "");
+  const [body, setBody] = useState(step.outputText || "");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSubject(step.subject || "");
+    setBody(step.outputText || "");
+  }, [step.outputText, step.subject]);
+
+  async function approve() {
+    setCreating(true);
+    setError(null);
+    try {
+      await invoke("approve_reminder_workflow_step", {
+        input: {
+          stepId: step.id,
+          destination: to.trim(),
+          subject: subject.trim(),
+          text: body.trim(),
+        },
+      });
+      await onApproved();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="workflow-approval">
+      <div className="workflow-approval-title">
+        <Mail size={16} />
+        <div>
+          <strong>Gmail draft ready</strong>
+          <span>Review and approve before the draft is created in Gmail.</span>
+        </div>
+      </div>
+      <label>
+        <span>To <small>optional</small></span>
+        <input
+          value={to}
+          onChange={(event) => setTo(event.currentTarget.value)}
+          placeholder="name@example.com"
+        />
+      </label>
+      <label>
+        <span>Subject</span>
+        <input
+          value={subject}
+          onChange={(event) => setSubject(event.currentTarget.value)}
+          placeholder="Email subject"
+        />
+      </label>
+      <label>
+        <span>Body</span>
+        <textarea rows={8} value={body} onChange={(event) => setBody(event.currentTarget.value)} />
+      </label>
+      {error ? <p className="form-error">{error}</p> : null}
+      <footer>
+        <button
+          type="button"
+          className="workflow-approve-button"
+          disabled={creating || !subject.trim() || !body.trim()}
+          onClick={() => void approve()}
+        >
+          {creating ? <Loader2 size={14} className="spin" /> : <Mail size={14} />}
+          {creating ? "Creating draft" : "Approve and create draft"}
         </button>
       </footer>
     </div>

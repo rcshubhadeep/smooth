@@ -25,9 +25,9 @@ pub(crate) struct GmailTokenPayload {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct GmailDraftInput {
-    to: Option<String>,
-    subject: String,
-    body: String,
+    pub(crate) to: Option<String>,
+    pub(crate) subject: String,
+    pub(crate) body: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
