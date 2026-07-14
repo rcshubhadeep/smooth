@@ -172,6 +172,7 @@ impl AgentRunRecorder {
     pub(crate) fn start(
         app: AppHandle,
         agent_id: Option<&str>,
+        run_kind: &str,
         prompt: &str,
         max_steps: u8,
     ) -> Result<Self, String> {
@@ -185,9 +186,9 @@ impl AgentRunRecorder {
                     id, agent_id, run_kind, status, prompt, max_steps,
                     started_at, updated_at
                 )
-                VALUES (?1, ?2, 'foreground', 'running', ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6)
                 ",
-                params![run_id, agent_id, prompt, max_steps, started_at],
+                params![run_id, agent_id, run_kind, prompt, max_steps, started_at],
             )
             .map_err(db_error)?;
 

@@ -123,6 +123,17 @@ pub(crate) async fn run_agent_once(
     prompt: String,
     max_steps: Option<u8>,
 ) -> Result<AgentRunResult, String> {
+    run_agent_once_with_kind(app, runtime, agent_id, prompt, max_steps, "foreground").await
+}
+
+pub(crate) async fn run_agent_once_with_kind(
+    app: AppHandle,
+    runtime: &AgentRuntime,
+    agent_id: Option<&str>,
+    prompt: String,
+    max_steps: Option<u8>,
+    run_kind: &str,
+) -> Result<AgentRunResult, String> {
     let prompt = prompt.trim().to_string();
     if prompt.is_empty() {
         return Err("Agent prompt is empty".to_string());
@@ -131,7 +142,8 @@ pub(crate) async fn run_agent_once(
     let max_steps = max_steps
         .unwrap_or(DEFAULT_MAX_AGENT_STEPS)
         .clamp(1, MAX_AGENT_STEPS);
-    let mut recorder = AgentRunRecorder::start(app.clone(), agent_id, &prompt, max_steps)?;
+    let mut recorder =
+        AgentRunRecorder::start(app.clone(), agent_id, run_kind, &prompt, max_steps)?;
     recorder.record(AgentEvent {
         event_type: "user_prompt",
         role: Some("user"),

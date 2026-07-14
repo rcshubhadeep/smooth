@@ -1,0 +1,543 @@
+.reminder-dialog {
+  max-height: min(760px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+
+.reminder-workflow-builder {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-workflow-heading,
+.reminder-workflow-heading > div,
+.reminder-workflow-add,
+.reminder-workflow-draft li,
+.reminder-workflow-panel header,
+.reminder-workflow-panel header > div,
+.reminder-workflow-progress li,
+.reminder-workflow-error,
+.workflow-approval-title,
+.workflow-approval footer,
+.workflow-approve-button {
+  display: flex;
+  align-items: center;
+}
+
+.reminder-workflow-heading {
+  justify-content: space-between;
+}
+
+.reminder-workflow-heading > div {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.reminder-workflow-heading span {
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reminder-workflow-heading small {
+  color: var(--muted);
+  font-weight: 450;
+}
+
+.reminder-workflow-heading p,
+.reminder-workflow-boundary,
+.reminder-workflow-generated-only {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.reminder-workflow-generated-only {
+  margin: 9px 0 0;
+}
+
+.reminder-workflow-generated-only.finished {
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-workflow-count {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong) !important;
+  font-size: 11px !important;
+}
+
+.reminder-workflow-draft,
+.reminder-workflow-progress {
+  padding: 0;
+  list-style: none;
+}
+
+.reminder-workflow-draft {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.reminder-workflow-draft li {
+  position: relative;
+  min-height: 46px;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.workflow-step-icon {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  color: var(--accent-strong);
+}
+
+.workflow-step-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.workflow-step-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workflow-step-copy small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.workflow-connector {
+  position: absolute;
+  z-index: 1;
+  left: 15px;
+  bottom: -11px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  transform: rotate(90deg);
+}
+
+.reminder-workflow-draft button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+.reminder-workflow-draft button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.reminder-workflow-add {
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.reminder-workflow-add select {
+  min-width: 0;
+  height: 36px;
+  flex: 1;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: 0;
+  background: var(--panel);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 12px;
+}
+
+.reminder-workflow-add select:focus {
+  border-color: var(--accent);
+}
+
+.reminder-workflow-boundary {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+}
+
+.assign-reminder-workflow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px 12px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.assign-reminder-workflow:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.reminder-workflow-assignment {
+  padding: 0 16px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-workflow-assignment .reminder-workflow-builder {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.reminder-workflow-assignment > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.reminder-workflow-assignment > footer button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.reminder-workflow-assignment > footer button:last-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.reminder-workflow-assignment > footer button:disabled {
+  opacity: 0.5;
+}
+
+.reminder-card-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder-workflow-panel {
+  padding: 11px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.reminder-workflow-panel header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reminder-workflow-panel header > div {
+  gap: 6px;
+  color: var(--accent-strong);
+}
+
+.reminder-workflow-panel header strong {
+  color: var(--text-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.workflow-status {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.workflow-status.scheduled,
+.workflow-status.running {
+  color: var(--text-soft);
+}
+
+.workflow-status.awaiting_approval {
+  color: #b06a28;
+}
+
+.workflow-status.succeeded {
+  color: #2f8b5b;
+}
+
+.workflow-status.failed {
+  color: var(--danger);
+}
+
+.workflow-status.cancelled {
+  color: var(--muted);
+}
+
+.reminder-workflow-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0 0;
+}
+
+.reminder-workflow-progress li {
+  gap: 5px;
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.reminder-workflow-progress li.succeeded {
+  border-color: color-mix(in srgb, #3f9b6b 35%, var(--border));
+  color: #2f8b5b;
+}
+
+.reminder-workflow-progress li.awaiting_approval {
+  border-color: color-mix(in srgb, #d08b43 45%, var(--border));
+  color: #b06a28;
+}
+
+.reminder-workflow-progress li.failed {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
+.reminder-workflow-progress small {
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.workflow-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.reminder-workflow-error {
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.reminder-workflow-error span {
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder-workflow-error button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+}
+
+.workflow-approval {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.workflow-approval-title {
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #b06a28;
+}
+
+.workflow-approval-title > div {
+  display: grid;
+  gap: 2px;
+}
+
+.workflow-approval-title strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workflow-approval-title span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.workflow-approval label {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.workflow-approval input,
+.workflow-approval textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: 0;
+  background: var(--panel-strong);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.workflow-approval input {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.workflow-approval textarea {
+  min-height: 110px;
+  padding: 9px 10px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.workflow-approval input:focus,
+.workflow-approval textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.workflow-approval footer {
+  justify-content: flex-end;
+  margin-top: 9px;
+}
+
+.workflow-approve-button {
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.workflow-approve-button:disabled {
+  opacity: 0.5;
+}
+
+.reminder-workflow-output {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-workflow-output > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.reminder-workflow-output p {
+  margin: 5px 0 0;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.reminder-card:has(.reminder-workflow-panel) .reminder-row-actions {
+  align-self: flex-start;
+  padding-top: 12px;
+}
+
+button.due-reminder-copy {
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.due-reminder-copy:focus-visible {
+  border-radius: var(--r-sm);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.due-reminder-workflow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--accent-strong) !important;
+  font-size: 11px !important;
+  font-weight: 650;
+}
+
+.due-reminder-workflow > span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.due-reminder-workflow > small {
+  flex: 0 0 auto;
+  color: currentColor !important;
+  font-size: 10px;
+  opacity: 0.72;
+}
+
+.due-reminder-workflow.awaiting_approval {
+  color: #b06a28 !important;
+}
+
+.due-reminder-workflow.succeeded {
+  color: #2f8b5b !important;
+}
+
+.due-reminder-workflow.failed {
+  color: var(--danger) !important;
+}
+
+@media (max-width: 720px) {
+  .reminder-workflow-progress {
+    display: grid;
+  }
+
+  .reminder-workflow-progress li {
+    justify-content: flex-start;
+  }
+}

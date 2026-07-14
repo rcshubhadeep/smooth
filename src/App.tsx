@@ -3281,7 +3281,7 @@ function App() {
         />
       ) : null}
 
-      <ReminderCenter onOpen={(reminder) => void openReminder(reminder)} />
+      <ReminderCenter onOpenReminders={() => setView("reminders")} />
 
       <MeetingCapsule
         detail={meetingDetail}

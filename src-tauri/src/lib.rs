@@ -500,6 +500,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     slack::init_schema(&connection)?;
     imports::init_schema(&connection)?;
     reminders::init_schema(&connection)?;
+    agents::reminder_workflows::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
@@ -4173,6 +4174,7 @@ pub fn run() {
             semantic_search::recover(&connection).map_err(std::io::Error::other)?;
             semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
             imports::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
+            agents::reminder_workflows::recover(&connection).map_err(std::io::Error::other)?;
             mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(slack::worker(app.handle().clone()));
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
@@ -4180,6 +4182,7 @@ pub fn run() {
             tauri::async_runtime::spawn(meeting_notes::worker(app.handle().clone()));
             tauri::async_runtime::spawn(imports::worker(app.handle().clone()));
             tauri::async_runtime::spawn(reminders::worker(app.handle().clone()));
+            tauri::async_runtime::spawn(agents::reminder_workflows::worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4252,6 +4255,10 @@ pub fn run() {
             reminders::dismiss_reminder,
             reminders::snooze_reminder,
             reminders::delete_reminder,
+            agents::reminder_workflows::list_reminder_workflows,
+            agents::reminder_workflows::set_reminder_workflow,
+            agents::reminder_workflows::retry_reminder_workflow,
+            agents::reminder_workflows::approve_reminder_workflow_step,
             mcp::get_mcp_status,
             slack::get_slack_config,
             slack::save_slack_config,

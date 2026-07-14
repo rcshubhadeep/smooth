@@ -17,6 +17,7 @@ pub mod flow;
 pub mod follow_up;
 pub mod persistence;
 pub mod registry;
+pub mod reminder_workflows;
 pub mod runtime;
 pub mod tool;
 pub mod tools;

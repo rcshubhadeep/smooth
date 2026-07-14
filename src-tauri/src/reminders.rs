@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::{db_error, new_id, now_string, open_database};
+use crate::{agents::reminder_workflows, db_error, new_id, now_string, open_database};
 
 const DELIVERY_POLL_SECONDS: u64 = 10;
 
@@ -36,6 +36,8 @@ pub(crate) struct CreateReminderInput {
     end_offset: i64,
     context_before: String,
     context_after: String,
+    #[serde(default)]
+    workflow_steps: Vec<reminder_workflows::WorkflowStepInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +139,10 @@ fn load_one(connection: &Connection, id: &str) -> Result<ReminderRecord, String>
         .map_err(db_error)
 }
 
+pub(crate) fn load_by_id(connection: &Connection, id: &str) -> Result<ReminderRecord, String> {
+    load_one(connection, id)
+}
+
 #[tauri::command]
 pub(crate) fn create_reminder(
     app: AppHandle,
@@ -149,8 +155,9 @@ pub(crate) fn create_reminder(
         .comment
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let connection = open_database(&app)?;
-    connection
+    let mut connection = open_database(&app)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+    transaction
         .execute(
             "
             INSERT INTO reminders (
@@ -173,6 +180,8 @@ pub(crate) fn create_reminder(
             ],
         )
         .map_err(db_error)?;
+    reminder_workflows::insert_workflow(&transaction, &id, &input.workflow_steps)?;
+    transaction.commit().map_err(db_error)?;
     load_one(&connection, &id)
 }
 
@@ -251,6 +260,25 @@ fn set_status(app: &AppHandle, id: &str, status: &str) -> Result<(), String> {
     if changed == 0 {
         return Err("Reminder not found".to_string());
     }
+    connection
+        .execute(
+            "UPDATE reminder_workflows
+             SET status = 'cancelled', updated_at = ?2
+             WHERE reminder_id = ?1
+               AND status IN ('scheduled', 'running', 'awaiting_approval')",
+            params![id, now_string()],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "UPDATE reminder_workflow_steps
+             SET status = 'cancelled', updated_at = ?2
+             WHERE workflow_id IN (
+                 SELECT id FROM reminder_workflows WHERE reminder_id = ?1
+             ) AND status IN ('pending', 'running', 'awaiting_approval')",
+            params![id, now_string()],
+        )
+        .map_err(db_error)?;
     Ok(())
 }
 

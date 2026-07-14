@@ -154,8 +154,16 @@ pub(crate) async fn post_note_to_slack(
     app: AppHandle,
     request: SlackPostInput,
 ) -> Result<SlackPostResult, String> {
-    let destination = parse_destination(&request.destination)?;
-    let text = request.text.trim();
+    post_message(app, request.destination, request.text).await
+}
+
+pub(crate) async fn post_message(
+    app: AppHandle,
+    destination: String,
+    text: String,
+) -> Result<SlackPostResult, String> {
+    let destination = parse_destination(&destination)?;
+    let text = text.trim();
     if text.is_empty() {
         return Err("Slack message is empty".to_string());
     }

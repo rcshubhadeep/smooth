@@ -16,6 +16,14 @@ import {
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ReminderWorkflowBuilder,
+  ReminderWorkflowAssignment,
+  ReminderWorkflowPanel,
+  ReminderWorkflowToastStatus,
+  type ReminderWorkflowRecord,
+  type ReminderWorkflowStepDraft,
+} from "./ReminderWorkflows";
 
 export type ReminderRecord = {
   id: string;
@@ -155,6 +163,7 @@ export function ReminderCreateDialog({
     toLocalInputValue(Date.now() + 60 * 60_000),
   );
   const [comment, setComment] = useState("");
+  const [workflowSteps, setWorkflowSteps] = useState<ReminderWorkflowStepDraft[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -172,6 +181,7 @@ export function ReminderCreateDialog({
           noteId,
           scheduledAt: timestamp,
           comment: comment.trim() || null,
+          workflowSteps,
           ...selection,
         },
       });
@@ -231,6 +241,7 @@ export function ReminderCreateDialog({
             placeholder="Why should I come back to this?"
           />
         </label>
+        <ReminderWorkflowBuilder steps={workflowSteps} onChange={setWorkflowSteps} />
         {error ? <p className="form-error">{error}</p> : null}
         <footer>
           <button className="secondary-action" type="button" onClick={onClose}>Cancel</button>
@@ -245,20 +256,26 @@ export function ReminderCreateDialog({
 }
 
 export function ReminderCenter({
-  onOpen,
+  onOpenReminders,
 }: {
-  onOpen: (reminder: ReminderRecord) => void;
+  onOpenReminders: () => void;
 }) {
   const [due, setDue] = useState<ReminderRecord[]>([]);
-  const onOpenRef = useRef(onOpen);
+  const [workflows, setWorkflows] = useState<ReminderWorkflowRecord[]>([]);
+  const onOpenRemindersRef = useRef(onOpenReminders);
   const dueRef = useRef(due);
   const awaitingNativeOpenRef = useRef<string | null>(null);
-  onOpenRef.current = onOpen;
+  onOpenRemindersRef.current = onOpenReminders;
   dueRef.current = due;
 
   const refresh = useCallback(async () => {
     try {
-      setDue(await invoke<ReminderRecord[]>("list_due_reminders"));
+      const [nextDue, nextWorkflows] = await Promise.all([
+        invoke<ReminderRecord[]>("list_due_reminders"),
+        invoke<ReminderWorkflowRecord[]>("list_reminder_workflows"),
+      ]);
+      setDue(nextDue);
+      setWorkflows(nextWorkflows);
     } catch {
       // The center retries on the next worker event or reminder mutation.
     }
@@ -270,6 +287,7 @@ export function ReminderCenter({
     window.addEventListener(REMINDER_CHANGED_EVENT, changed);
     const unlistenPromise = listen<ReminderRecord>("reminder-due", async ({ payload }) => {
       setDue((current) => current.some(({ id }) => id === payload.id) ? current : [...current, payload]);
+      void refresh();
       try {
         if (await ensureNotificationPermission()) {
           if (!document.hasFocus()) {
@@ -292,28 +310,32 @@ export function ReminderCenter({
       if (!payload || !reminderId) return;
       const reminder = dueRef.current.find(({ id }) => id === reminderId);
       awaitingNativeOpenRef.current = null;
-      if (reminder) onOpenRef.current(reminder);
+      if (reminder) onOpenRemindersRef.current();
     });
+    const workflowUnlistenPromise = listen("reminder-workflow-changed", changed);
     return () => {
       window.removeEventListener(REMINDER_CHANGED_EVENT, changed);
       void unlistenPromise.then((unlisten) => unlisten());
       void focusPromise.then((unlisten) => unlisten());
+      void workflowUnlistenPromise.then((unlisten) => unlisten());
     };
   }, [refresh]);
 
   if (!due.length) return null;
   const reminder = due[0];
+  const workflow = workflows.find(({ reminderId }) => reminderId === reminder.id);
 
   return (
     <aside className="due-reminder" aria-live="assertive">
       <div className="due-reminder-icon"><Bell size={18} /></div>
-      <div className="due-reminder-copy">
+      <button className="due-reminder-copy" type="button" onClick={onOpenReminders}>
         <strong>{reminder.noteTitle || "Untitled note"}</strong>
         <span>{reminderBody(reminder)}</span>
+        {workflow ? <ReminderWorkflowToastStatus workflow={workflow} /> : null}
         {due.length > 1 ? <small>{due.length - 1} more overdue</small> : null}
-      </div>
+      </button>
       <div className="due-reminder-actions">
-        <button type="button" onClick={() => onOpen(reminder)} title="Open reminder">
+        <button type="button" onClick={onOpenReminders} title="Open reminders">
           <ExternalLink size={16} />
         </button>
         <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes">
@@ -338,12 +360,18 @@ export function RemindersView({
   onOpen: (reminder: ReminderRecord) => void;
 }) {
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
+  const [workflows, setWorkflows] = useState<ReminderWorkflowRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
-      setReminders(await invoke<ReminderRecord[]>("list_reminders"));
+      const [nextReminders, nextWorkflows] = await Promise.all([
+        invoke<ReminderRecord[]>("list_reminders"),
+        invoke<ReminderWorkflowRecord[]>("list_reminder_workflows"),
+      ]);
+      setReminders(nextReminders);
+      setWorkflows(nextWorkflows);
       setError(null);
     } catch (reason) {
       setError(String(reason));
@@ -354,10 +382,12 @@ export function RemindersView({
     void load();
     const changed = () => void load();
     window.addEventListener(REMINDER_CHANGED_EVENT, changed);
+    const unlistenPromise = listen("reminder-workflow-changed", changed);
     // Keep relative times fresh and let cards flip to "overdue" on their own.
     const tick = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => {
       window.removeEventListener(REMINDER_CHANGED_EVENT, changed);
+      void unlistenPromise.then((unlisten) => unlisten());
       window.clearInterval(tick);
     };
   }, [load]);
@@ -367,6 +397,10 @@ export function RemindersView({
   const overdueCount = useMemo(
     () => pending.filter(({ scheduledAt }) => scheduledAt <= now).length,
     [pending, now],
+  );
+  const workflowsByReminder = useMemo(
+    () => new Map(workflows.map((workflow) => [workflow.reminderId, workflow])),
+    [workflows],
   );
 
   const subtitle = pending.length
@@ -397,8 +431,8 @@ export function RemindersView({
           <p>Select text in a note and use the bell button in the editor toolbar to set one.</p>
         </div>
       ) : null}
-      {pending.length ? <ReminderList title="Upcoming" reminders={pending} now={now} onOpen={onOpen} onDelete={remove} /> : null}
-      {history.length ? <ReminderList title="History" reminders={history} now={now} onOpen={onOpen} onDelete={remove} /> : null}
+      {pending.length ? <ReminderList title="Upcoming" reminders={pending} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
+      {history.length ? <ReminderList title="History" reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
     </section>
   );
 }
@@ -406,15 +440,19 @@ export function RemindersView({
 function ReminderList({
   title,
   reminders,
+  workflows,
   now,
   onOpen,
   onDelete,
+  onWorkflowChanged,
 }: {
   title: string;
   reminders: ReminderRecord[];
+  workflows: Map<string, ReminderWorkflowRecord>;
   now: number;
   onOpen: (reminder: ReminderRecord) => void;
   onDelete: (id: string) => Promise<void>;
+  onWorkflowChanged: () => void | Promise<void>;
 }) {
   return (
     <div className="reminder-list-section">
@@ -423,21 +461,35 @@ function ReminderList({
         {reminders.map((reminder) => {
           const state = reminderState(reminder, now);
           const selected = reminder.selectedText.trim();
+          const workflow = workflows.get(reminder.id);
           return (
             <article className={`reminder-card ${state}`} key={reminder.id}>
-              <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
-                <span className="reminder-card-head">
-                  <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
-                  <ReminderBadge state={state} />
-                </span>
-                <span className="reminder-time">
-                  <Clock3 size={13} />
-                  <span className="reminder-time-relative">{formatRelative(reminder.scheduledAt, now)}</span>
-                  <span className="reminder-time-abs">{formatTime(reminder.scheduledAt)}</span>
-                </span>
-                {selected ? <q>{selected}</q> : null}
-                {reminder.comment ? <p>{reminder.comment}</p> : null}
-              </button>
+              <div className="reminder-card-body">
+                <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
+                  <span className="reminder-card-head">
+                    <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
+                    <ReminderBadge state={state} />
+                  </span>
+                  <span className="reminder-time">
+                    <Clock3 size={13} />
+                    <span className="reminder-time-relative">{formatRelative(reminder.scheduledAt, now)}</span>
+                    <span className="reminder-time-abs">{formatTime(reminder.scheduledAt)}</span>
+                  </span>
+                  {selected ? <q>{selected}</q> : null}
+                  {reminder.comment ? <p>{reminder.comment}</p> : null}
+                </button>
+                {workflow ? (
+                  <ReminderWorkflowPanel
+                    workflow={workflow}
+                    onChanged={onWorkflowChanged}
+                  />
+                ) : reminder.status === "pending" ? (
+                  <ReminderWorkflowAssignment
+                    reminderId={reminder.id}
+                    onChanged={onWorkflowChanged}
+                  />
+                ) : null}
+              </div>
               <div className="reminder-row-actions">
                 {reminder.status === "pending" ? (
                   <>
