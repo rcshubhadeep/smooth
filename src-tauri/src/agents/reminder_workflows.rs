@@ -485,6 +485,42 @@ pub(crate) fn retry_reminder_workflow(app: AppHandle, workflow_id: String) -> Re
 }
 
 #[tauri::command]
+pub(crate) fn cancel_reminder_workflow(app: AppHandle, workflow_id: String) -> Result<(), String> {
+    let mut connection = open_database(&app)?;
+    cancel_workflow(&mut connection, &workflow_id)?;
+    emit_changed(&app, &workflow_id, None);
+    Ok(())
+}
+
+fn cancel_workflow(connection: &mut Connection, workflow_id: &str) -> Result<(), String> {
+    let transaction = connection.transaction().map_err(db_error)?;
+    let now = now_string();
+    let changed = transaction
+        .execute(
+            "UPDATE reminder_workflows
+             SET status = 'cancelled', error = NULL, updated_at = ?2
+             WHERE id = ?1
+               AND status IN ('scheduled', 'running', 'awaiting_approval')",
+            params![workflow_id, now],
+        )
+        .map_err(db_error)?;
+    if changed == 0 {
+        return Err("This workflow is no longer active".to_string());
+    }
+    transaction
+        .execute(
+            "UPDATE reminder_workflow_steps
+             SET status = 'cancelled', error = NULL, updated_at = ?2
+             WHERE workflow_id = ?1
+               AND status IN ('pending', 'running', 'awaiting_approval')",
+            params![workflow_id, now],
+        )
+        .map_err(db_error)?;
+    transaction.commit().map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn approve_reminder_workflow_step(
     app: AppHandle,
     input: ApproveWorkflowStepInput,
@@ -575,7 +611,6 @@ fn claim_due(connection: &mut Connection) -> Result<Option<ClaimedWorkflow>, Str
              FROM reminder_workflows w
              JOIN reminders r ON r.id = w.reminder_id
              WHERE w.status = 'scheduled'
-               AND r.status = 'pending'
                AND r.scheduled_at <= ?1
              ORDER BY r.scheduled_at ASC LIMIT 1",
             params![chrono::Utc::now().timestamp_millis()],
@@ -1071,5 +1106,67 @@ mod tests {
                 .expect("foreign key check"),
             None
         );
+    }
+
+    #[test]
+    fn completed_reminder_does_not_prevent_workflow_claim() {
+        let mut connection = database();
+        insert_workflow(
+            &connection,
+            "reminder-1",
+            &[WorkflowStepInput {
+                agent_id: "summarize-note".to_string(),
+            }],
+        )
+        .expect("insert workflow");
+        connection
+            .execute(
+                "UPDATE reminders SET status = 'completed' WHERE id = 'reminder-1'",
+                [],
+            )
+            .expect("complete reminder");
+
+        let claimed = claim_due(&mut connection)
+            .expect("claim workflow")
+            .expect("workflow remains claimable");
+        assert_eq!(claimed.reminder_id, "reminder-1");
+    }
+
+    #[test]
+    fn explicit_cancel_stops_workflow_and_unfinished_steps() {
+        let mut connection = database();
+        let workflow_id = insert_workflow(
+            &connection,
+            "reminder-1",
+            &[
+                WorkflowStepInput {
+                    agent_id: "summarize-note".to_string(),
+                },
+                WorkflowStepInput {
+                    agent_id: "create-gmail-draft".to_string(),
+                },
+            ],
+        )
+        .expect("insert workflow")
+        .expect("workflow id");
+
+        cancel_workflow(&mut connection, &workflow_id).expect("cancel workflow");
+        let workflow_status: String = connection
+            .query_row(
+                "SELECT status FROM reminder_workflows WHERE id = ?1",
+                params![workflow_id],
+                |row| row.get(0),
+            )
+            .expect("workflow status");
+        let unfinished: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM reminder_workflow_steps
+                 WHERE workflow_id = ?1 AND status != 'cancelled'",
+                params![workflow_id],
+                |row| row.get(0),
+            )
+            .expect("step statuses");
+        assert_eq!(workflow_status, "cancelled");
+        assert_eq!(unfinished, 0);
     }
 }

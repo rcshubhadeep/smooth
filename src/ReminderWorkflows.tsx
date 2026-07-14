@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Check,
   ChevronRight,
+  CircleStop,
   FileText,
   Link2,
   Loader2,
@@ -218,6 +219,8 @@ export function ReminderWorkflowPanel({
   workflow: ReminderWorkflowRecord;
   onChanged: () => void | Promise<void>;
 }) {
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const approvalStep = workflow.steps.find(
     ({ status }) => status === "awaiting_approval",
   );
@@ -231,6 +234,21 @@ export function ReminderWorkflowPanel({
     await onChanged();
   }
 
+  async function cancel() {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await invoke("cancel_reminder_workflow", { workflowId: workflow.id });
+      await onChanged();
+    } catch (reason) {
+      setCancelError(String(reason));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  const canCancel = ["scheduled", "running", "awaiting_approval"].includes(workflow.status);
+
   return (
     <section className={`reminder-workflow-panel ${workflow.status}`}>
       <header>
@@ -238,7 +256,20 @@ export function ReminderWorkflowPanel({
           <Sparkles size={14} />
           <strong>Agent workflow</strong>
         </div>
-        <WorkflowStatus status={workflow.status} />
+        <div className="reminder-workflow-header-actions">
+          <WorkflowStatus status={workflow.status} />
+          {canCancel ? (
+            <button
+              type="button"
+              className="cancel-reminder-workflow"
+              disabled={cancelling}
+              onClick={() => void cancel()}
+            >
+              {cancelling ? <Loader2 size={13} className="spin" /> : <CircleStop size={13} />}
+              {cancelling ? "Cancelling" : "Cancel run"}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <ol className="reminder-workflow-progress">
@@ -260,6 +291,8 @@ export function ReminderWorkflowPanel({
           </button>
         </div>
       ) : null}
+
+      {cancelError ? <p className="form-error reminder-workflow-cancel-error">{cancelError}</p> : null}
 
       {approvalStep?.stepKind === "external_slack" ? (
         <SlackWorkflowApproval

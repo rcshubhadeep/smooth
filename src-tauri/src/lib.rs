@@ -4258,6 +4258,7 @@ pub fn run() {
             agents::reminder_workflows::list_reminder_workflows,
             agents::reminder_workflows::set_reminder_workflow,
             agents::reminder_workflows::retry_reminder_workflow,
+            agents::reminder_workflows::cancel_reminder_workflow,
             agents::reminder_workflows::approve_reminder_workflow_step,
             mcp::get_mcp_status,
             slack::get_slack_config,

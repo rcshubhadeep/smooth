@@ -260,25 +260,6 @@ fn set_status(app: &AppHandle, id: &str, status: &str) -> Result<(), String> {
     if changed == 0 {
         return Err("Reminder not found".to_string());
     }
-    connection
-        .execute(
-            "UPDATE reminder_workflows
-             SET status = 'cancelled', updated_at = ?2
-             WHERE reminder_id = ?1
-               AND status IN ('scheduled', 'running', 'awaiting_approval')",
-            params![id, now_string()],
-        )
-        .map_err(db_error)?;
-    connection
-        .execute(
-            "UPDATE reminder_workflow_steps
-             SET status = 'cancelled', updated_at = ?2
-             WHERE workflow_id IN (
-                 SELECT id FROM reminder_workflows WHERE reminder_id = ?1
-             ) AND status IN ('pending', 'running', 'awaiting_approval')",
-            params![id, now_string()],
-        )
-        .map_err(db_error)?;
     Ok(())
 }
 
