@@ -37,7 +37,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/smooth-system-audio", "binaries/smooth-diarize"],
+    "externalBin": [
+      "binaries/smooth-system-audio",
+      "binaries/smooth-diarize",
+      "binaries/llama-server"
+    ],
+    "resources": ["binaries/llama-libs"],
     "macOS": {
       "minimumSystemVersion": "10.15"
     },

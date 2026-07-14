@@ -1484,6 +1484,37 @@ select:hover {
   line-height: 1.45;
 }
 
+.llama-settings .section-heading .icon-button {
+  margin-left: auto;
+}
+
+.llama-mode-toggle {
+  width: 240px;
+  margin-bottom: 18px;
+}
+
+.llama-number-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.llama-cache-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llama-settings .settings-actions {
+  margin-top: 16px;
+}
+
+.llama-settings .settings-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .entity-interest-list {
   display: flex;
   flex-direction: column;

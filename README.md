@@ -8,7 +8,7 @@ Smooth is a desktop knowledge-bank app (built with Tauri + React) for capturing,
 - **Document import** — bring in existing Office, PDF, and text/Markdown files; they're converted to Markdown and dropped into an `Imported` folder.
 - **Meeting capture** — record microphone and/or system audio during a meeting, transcribe it locally with `whisper.cpp`, and optionally diarize speakers.
 - **Semantic search & entity linking** — background extraction jobs surface related notes and suggested links based on shared entities.
-- **Chat** — talk to your notes through a local `llama.cpp` server.
+- **Chat** — talk to your notes through Smooth's managed local `llama.cpp` server, with an external-server fallback.
 - **Gmail & Calendar integration** — draft follow-up emails and read upcoming events from within the app.
 - **MCP server** — expose read-only note access (`read_note`, `search_notes`, `get_link_suggestions`) to MCP clients like Claude Desktop over a local, bearer-token-authenticated HTTP endpoint.
 
@@ -17,7 +17,7 @@ Smooth is a desktop knowledge-bank app (built with Tauri + React) for capturing,
 - Node.js (see `.nvmrc`/your version manager of choice) and npm
 - Rust (stable toolchain) and the [Tauri CLI](https://v2.tauri.app/) prerequisites for your platform
 - A `whisper.cpp` GGML model if you want speech-to-text (path is configured in-app)
-- Optional: a local `llama.cpp` server if you want the Chat feature
+- `llama-server` in `PATH` (or `LLAMA_SERVER_PATH` set to its executable) when building the managed local-model feature
 
 ## Development
 
@@ -35,6 +35,16 @@ Other acceleration backends are available as Cargo features on the `src-tauri` c
 npm run tauri:build       # Metal (default on macOS)
 npm run tauri:build:cpu   # CPU-only, no acceleration feature
 ```
+
+The build stages `llama-server` as a Tauri sidecar. On macOS it also copies,
+rewrites, and signs the sidecar's non-system dynamic libraries so the app does
+not depend on Homebrew at runtime. Set `LLAMA_SERVER_PATH` when the executable
+is not in the build environment's `PATH`.
+
+Smooth starts the managed server on first LLM use. Models download into the
+app-data `models/llama` directory via `LLAMA_CACHE`; they are not written to the
+user's global Hugging Face cache. Managed server settings and an external
+localhost-server fallback are available in Settings.
 
 ## Document import
 

@@ -7,6 +7,7 @@ mod diarization;
 mod export_notes;
 mod gmail;
 mod imports;
+mod llama_runtime;
 mod mcp;
 mod meeting_notes;
 mod reminders;
@@ -111,10 +112,29 @@ pub(crate) struct BankSnapshot {
     pub(crate) links: Vec<NoteLink>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum LlamaMode {
+    Managed,
+    External,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct LlamaConfig {
+    mode: LlamaMode,
     base_url: String,
     preferred_model: Option<String>,
+    managed_model: String,
+    context_size: u32,
+    gpu_layers: i32,
+    flash_attention: bool,
+    parallel: u16,
+    cache_ram_mb: u32,
+    context_checkpoints: u16,
+    cache_type_k: String,
+    cache_type_v: String,
+    spec_type: String,
+    spec_draft_n_max: u16,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -143,6 +163,7 @@ struct LlamaStatus {
     latency_ms: Option<u64>,
     checked_at: String,
     models: Vec<LlamaModel>,
+    managed: Option<llama_runtime::ManagedLlamaSnapshot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,9 +793,20 @@ pub(crate) fn note_context(app: &AppHandle, note_id: &str) -> Result<(String, St
 
 /// llama.cpp base URL and the user's preferred model (if any).
 pub(crate) fn chat_llama_target(app: &AppHandle) -> Result<(String, Option<String>), String> {
-    let connection = open_database(app)?;
-    let config = load_llama_config(&connection)?;
+    let config = resolved_llama_config(app)?;
     Ok((config.base_url, config.preferred_model))
+}
+
+fn resolved_llama_config(app: &AppHandle) -> Result<LlamaConfig, String> {
+    let connection = open_database(app)?;
+    let mut config = load_llama_config(&connection)?;
+    drop(connection);
+    if config.mode == LlamaMode::Managed {
+        config.base_url = app
+            .state::<llama_runtime::LlamaRuntimeState>()
+            .ensure_running(app, &managed_llama_launch_config(&config))?;
+    }
+    Ok(config)
 }
 
 fn migrate_legacy_store(app: &AppHandle, connection: &mut Connection) -> Result<(), String> {
@@ -1715,11 +1747,60 @@ fn app_meta_value(connection: &Connection, key: &str) -> Result<Option<String>, 
 
 fn load_llama_config(connection: &Connection) -> Result<LlamaConfig, String> {
     Ok(LlamaConfig {
+        mode: match app_meta_value(connection, "llama_mode")?.as_deref() {
+            Some("external") => LlamaMode::External,
+            _ => LlamaMode::Managed,
+        },
         base_url: app_meta_value(connection, "llama_base_url")?
             .unwrap_or_else(|| "http://127.0.0.1:8080".to_string()),
         preferred_model: app_meta_value(connection, "llama_preferred_model")?
             .filter(|value| !value.is_empty()),
+        managed_model: app_meta_value(connection, "llama_managed_model")?
+            .unwrap_or_else(|| "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL".to_string()),
+        context_size: app_meta_value(connection, "llama_context_size")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8192),
+        gpu_layers: app_meta_value(connection, "llama_gpu_layers")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(999),
+        flash_attention: app_meta_value(connection, "llama_flash_attention")?
+            .map(|value| value != "false")
+            .unwrap_or(true),
+        parallel: app_meta_value(connection, "llama_parallel")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        cache_ram_mb: app_meta_value(connection, "llama_cache_ram_mb")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2048),
+        context_checkpoints: app_meta_value(connection, "llama_context_checkpoints")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2),
+        cache_type_k: app_meta_value(connection, "llama_cache_type_k")?
+            .unwrap_or_else(|| "q8_0".to_string()),
+        cache_type_v: app_meta_value(connection, "llama_cache_type_v")?
+            .unwrap_or_else(|| "q8_0".to_string()),
+        spec_type: app_meta_value(connection, "llama_spec_type")?
+            .unwrap_or_else(|| "draft-mtp".to_string()),
+        spec_draft_n_max: app_meta_value(connection, "llama_spec_draft_n_max")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2),
     })
+}
+
+fn managed_llama_launch_config(config: &LlamaConfig) -> llama_runtime::ManagedLlamaLaunchConfig {
+    llama_runtime::ManagedLlamaLaunchConfig {
+        model: config.managed_model.clone(),
+        context_size: config.context_size,
+        gpu_layers: config.gpu_layers,
+        flash_attention: config.flash_attention,
+        parallel: config.parallel,
+        cache_ram_mb: config.cache_ram_mb,
+        context_checkpoints: config.context_checkpoints,
+        cache_type_k: config.cache_type_k.clone(),
+        cache_type_v: config.cache_type_v.clone(),
+        spec_type: config.spec_type.clone(),
+        spec_draft_n_max: config.spec_draft_n_max,
+    }
 }
 
 fn validate_llama_base_url(value: &str) -> Result<String, String> {
@@ -1769,6 +1850,7 @@ fn llama_status(
     message: impl Into<String>,
     latency_ms: Option<u64>,
     models: Vec<LlamaModel>,
+    managed: Option<llama_runtime::ManagedLlamaSnapshot>,
 ) -> LlamaStatus {
     LlamaStatus {
         state,
@@ -1777,6 +1859,7 @@ fn llama_status(
         latency_ms,
         checked_at: now_string(),
         models,
+        managed,
     }
 }
 
@@ -1915,6 +1998,22 @@ fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String
         max_attempts,
         lease_token,
     }))
+}
+
+fn has_available_extraction_job(app: &AppHandle) -> Result<bool, String> {
+    let connection = open_database(app)?;
+    connection
+        .query_row(
+            "
+            SELECT EXISTS(
+                SELECT 1 FROM extraction_jobs
+                WHERE status = 'pending' AND available_at <= ?1
+            )
+            ",
+            params![now_string()],
+            |row| row.get(0),
+        )
+        .map_err(db_error)
 }
 
 fn extraction_job_is_current(app: &AppHandle, job: &ExtractionJob) -> Result<bool, String> {
@@ -2330,8 +2429,11 @@ async fn extraction_worker(app: AppHandle) {
     };
 
     loop {
-        let config = match open_database(&app).and_then(|connection| load_llama_config(&connection))
-        {
+        if !has_available_extraction_job(&app).unwrap_or(false) {
+            tokio::time::sleep(Duration::from_secs(EXTRACTION_POLL_SECONDS)).await;
+            continue;
+        }
+        let config = match resolved_llama_config(&app) {
             Ok(config) => config,
             Err(_) => {
                 tokio::time::sleep(Duration::from_secs(EXTRACTION_POLL_SECONDS)).await;
@@ -2559,46 +2661,122 @@ fn get_llama_config(app: AppHandle) -> Result<LlamaConfig, String> {
 #[tauri::command]
 fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig, String> {
     let base_url = validate_llama_base_url(&config.base_url)?;
-    let preferred_model = config
-        .preferred_model
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let preferred_model = if config.mode == LlamaMode::Managed {
+        None
+    } else {
+        config
+            .preferred_model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let managed_model = config.managed_model.trim().to_string();
+    if managed_model.is_empty() {
+        return Err("Enter a Hugging Face model reference for managed llama.cpp".to_string());
+    }
+    if !(512..=262_144).contains(&config.context_size) {
+        return Err("Context size must be between 512 and 262144".to_string());
+    }
+    if config.parallel == 0 || config.parallel > 32 {
+        return Err("Parallel slots must be between 1 and 32".to_string());
+    }
     let mut connection = open_database(&app)?;
     let transaction = connection.transaction().map_err(db_error)?;
-
-    transaction
-        .execute(
-            "
-            INSERT INTO app_meta (key, value)
-            VALUES ('llama_base_url', ?1)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            params![base_url],
-        )
-        .map_err(db_error)?;
-    transaction
-        .execute(
-            "
-            INSERT INTO app_meta (key, value)
-            VALUES ('llama_preferred_model', ?1)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            params![preferred_model.as_deref().unwrap_or("")],
-        )
-        .map_err(db_error)?;
+    let values = [
+        (
+            "llama_mode",
+            match config.mode {
+                LlamaMode::Managed => "managed".to_string(),
+                LlamaMode::External => "external".to_string(),
+            },
+        ),
+        ("llama_base_url", base_url.clone()),
+        (
+            "llama_preferred_model",
+            preferred_model.clone().unwrap_or_default(),
+        ),
+        ("llama_managed_model", managed_model.clone()),
+        ("llama_context_size", config.context_size.to_string()),
+        ("llama_gpu_layers", config.gpu_layers.to_string()),
+        ("llama_flash_attention", config.flash_attention.to_string()),
+        ("llama_parallel", config.parallel.to_string()),
+        ("llama_cache_ram_mb", config.cache_ram_mb.to_string()),
+        (
+            "llama_context_checkpoints",
+            config.context_checkpoints.to_string(),
+        ),
+        ("llama_cache_type_k", config.cache_type_k.clone()),
+        ("llama_cache_type_v", config.cache_type_v.clone()),
+        ("llama_spec_type", config.spec_type.clone()),
+        (
+            "llama_spec_draft_n_max",
+            config.spec_draft_n_max.to_string(),
+        ),
+    ];
+    for (key, value) in values {
+        transaction
+            .execute(
+                "
+                INSERT INTO app_meta (key, value)
+                VALUES (?1, ?2)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                ",
+                params![key, value],
+            )
+            .map_err(db_error)?;
+    }
     transaction.commit().map_err(db_error)?;
 
+    app.state::<llama_runtime::LlamaRuntimeState>().stop()?;
+
     Ok(LlamaConfig {
+        mode: config.mode,
         base_url,
         preferred_model,
+        managed_model,
+        context_size: config.context_size,
+        gpu_layers: config.gpu_layers,
+        flash_attention: config.flash_attention,
+        parallel: config.parallel,
+        cache_ram_mb: config.cache_ram_mb,
+        context_checkpoints: config.context_checkpoints,
+        cache_type_k: config.cache_type_k,
+        cache_type_v: config.cache_type_v,
+        spec_type: config.spec_type,
+        spec_draft_n_max: config.spec_draft_n_max,
     })
 }
 
 #[tauri::command]
 async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
-    let config = {
+    let mut config = {
         let connection = open_database(&app)?;
         load_llama_config(&connection)?
+    };
+    let managed = if config.mode == LlamaMode::Managed {
+        let snapshot = app
+            .state::<llama_runtime::LlamaRuntimeState>()
+            .snapshot(&app);
+        if !snapshot.running {
+            let message = snapshot
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Managed llama.cpp is stopped".to_string());
+            return Ok(llama_status(
+                &config,
+                LlamaConnectionState::Offline,
+                message,
+                None,
+                Vec::new(),
+                Some(snapshot),
+            ));
+        }
+        config.base_url = snapshot
+            .endpoint
+            .clone()
+            .ok_or_else(|| "Managed llama.cpp has no endpoint".to_string())?;
+        Some(snapshot)
+    } else {
+        None
     };
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(2))
@@ -2613,12 +2791,21 @@ async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
     {
         Ok(response) => response,
         Err(error) if error.is_connect() || error.is_timeout() => {
+            let (state, message) = if managed.is_some() {
+                (
+                    LlamaConnectionState::Loading,
+                    "llama.cpp is downloading or loading the model",
+                )
+            } else {
+                (LlamaConnectionState::Offline, "llama.cpp is not reachable")
+            };
             return Ok(llama_status(
                 &config,
-                LlamaConnectionState::Offline,
-                "llama.cpp is not reachable",
+                state,
+                message,
                 None,
                 Vec::new(),
+                managed.clone(),
             ));
         }
         Err(error) => {
@@ -2628,6 +2815,7 @@ async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
                 error.to_string(),
                 None,
                 Vec::new(),
+                managed.clone(),
             ));
         }
     };
@@ -2640,6 +2828,7 @@ async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
             "llama.cpp is loading the model",
             Some(latency_ms),
             Vec::new(),
+            managed.clone(),
         ));
     }
 
@@ -2653,6 +2842,7 @@ async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
             ),
             Some(latency_ms),
             Vec::new(),
+            managed.clone(),
         ));
     }
 
@@ -2695,6 +2885,40 @@ async fn get_llama_status(app: AppHandle) -> Result<LlamaStatus, String> {
         message,
         Some(latency_ms),
         models,
+        managed,
+    ))
+}
+
+#[tauri::command]
+async fn start_llama_server(app: AppHandle) -> Result<LlamaStatus, String> {
+    let config = {
+        let connection = open_database(&app)?;
+        load_llama_config(&connection)?
+    };
+    if config.mode != LlamaMode::Managed {
+        return Err("Switch to Managed mode before starting llama.cpp".to_string());
+    }
+    app.state::<llama_runtime::LlamaRuntimeState>()
+        .ensure_running(&app, &managed_llama_launch_config(&config))?;
+    get_llama_status(app).await
+}
+
+#[tauri::command]
+fn stop_llama_server(app: AppHandle) -> Result<LlamaStatus, String> {
+    let connection = open_database(&app)?;
+    let config = load_llama_config(&connection)?;
+    drop(connection);
+    app.state::<llama_runtime::LlamaRuntimeState>().stop()?;
+    Ok(llama_status(
+        &config,
+        LlamaConnectionState::Offline,
+        "Managed llama.cpp is stopped",
+        None,
+        Vec::new(),
+        Some(
+            app.state::<llama_runtime::LlamaRuntimeState>()
+                .snapshot(&app),
+        ),
     ))
 }
 
@@ -4000,9 +4224,7 @@ async fn suggest_chat_created_link_label(
     response: &str,
 ) -> Result<String, String> {
     let fallback = fallback_chat_link_label(prompt);
-    let connection = open_database(app)?;
-    let config = load_llama_config(&connection)?;
-    drop(connection);
+    let config = resolved_llama_config(app)?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(3))
@@ -4163,6 +4385,7 @@ pub fn run() {
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
         .manage(SttRuntime::default())
+        .manage(llama_runtime::LlamaRuntimeState::default())
         .manage(diarization::DiarizationState::default())
         .manage(slack::SlackState::default())
         .manage(agents::AgentRuntime::new())
@@ -4189,6 +4412,8 @@ pub fn run() {
             get_llama_config,
             save_llama_config,
             get_llama_status,
+            start_llama_server,
+            stop_llama_server,
             get_extraction_queue_status,
             get_note_extraction,
             rename_entity,
@@ -4294,6 +4519,9 @@ pub fn run() {
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             app_handle.state::<SttRuntime>().shutdown();
+            app_handle
+                .state::<llama_runtime::LlamaRuntimeState>()
+                .shutdown();
         }
     });
 }

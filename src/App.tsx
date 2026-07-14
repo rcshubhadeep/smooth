@@ -42,7 +42,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  Server,
   Settings,
   Sparkles,
   Square,
@@ -70,6 +69,7 @@ import TurndownService from "turndown";
 import NoteChat from "./Chat";
 import CommandPalette from "./CommandPalette";
 import ImportDocuments from "./ImportDocuments";
+import LlamaSettings from "./LlamaSettings";
 import McpSettings from "./McpSettings";
 import SlackSettings from "./SlackSettings";
 import {
@@ -190,28 +190,6 @@ type CalendarEvent = {
   html_link: string | null;
   video_link: string | null;
   attendee_count: number;
-};
-
-type LlamaConfig = {
-  base_url: string;
-  preferred_model: string | null;
-};
-
-type LlamaModel = {
-  id: string;
-  owned_by: string | null;
-  context_size: number | null;
-  parameter_count: number | null;
-  size_bytes: number | null;
-};
-
-type LlamaStatus = {
-  state: "offline" | "loading" | "ready" | "error";
-  base_url: string;
-  message: string;
-  latency_ms: number | null;
-  checked_at: string;
-  models: LlamaModel[];
 };
 
 type ExtractionQueueStatus = {
@@ -512,20 +490,6 @@ function noteWordCount(content: string) {
 function dateValue(value: string) {
   const parsed = Number(value);
   return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function formatLargeValue(value: number | null, suffix = "") {
-  if (value === null) {
-    return null;
-  }
-
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(1)}B${suffix}`;
-  }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M${suffix}`;
-  }
-  return `${value.toLocaleString()}${suffix}`;
 }
 
 function formatDuration(ms: number | null | undefined) {
@@ -3671,11 +3635,6 @@ type SettingsViewProps = {
 };
 
 function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
-  const [config, setConfig] = useState<LlamaConfig>({
-    base_url: "http://127.0.0.1:8080",
-    preferred_model: null,
-  });
-  const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(
     null,
   );
@@ -3727,7 +3686,6 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     null,
   );
   const [isLoading, setIsLoading] = useState(true);
-  const [isChecking, setIsChecking] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isAudioBusy, setIsAudioBusy] = useState(false);
   const [isSystemAudioBusy, setIsSystemAudioBusy] = useState(false);
@@ -3738,31 +3696,16 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   const [isEntityInterestBusy, setIsEntityInterestBusy] = useState(false);
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
-  const setSettingsError = (message: string | null) => {
+  const setSettingsError = useCallback((message: string | null) => {
     if (message) {
       toast.error(message);
     }
-  };
+  }, []);
 
   const selectedAgentToolDescriptor = useMemo(
     () => agentTools.find((tool) => tool.name === selectedAgentTool) ?? null,
     [agentTools, selectedAgentTool],
   );
-
-  const checkStatus = useCallback(async () => {
-    setIsChecking(true);
-    setSettingsError(null);
-    try {
-      const nextStatus = await invoke<LlamaStatus>("get_llama_status");
-      setStatus(nextStatus);
-      return nextStatus;
-    } catch (statusError) {
-      setSettingsError(String(statusError));
-      return null;
-    } finally {
-      setIsChecking(false);
-    }
-  }, []);
 
   const refreshAudioStatus = useCallback(async () => {
     const nextAudioStatus = await invoke<AudioCaptureStatus>(
@@ -3802,10 +3745,6 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
 
   useEffect(() => {
     Promise.all([
-      invoke<LlamaConfig>("get_llama_config").then((savedConfig) => {
-        setConfig(savedConfig);
-        return checkStatus();
-      }),
       refreshQueueStatus(),
       refreshAudioStatus(),
       refreshSystemCaptureStatus(),
@@ -3837,7 +3776,6 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       .catch((loadError) => setSettingsError(String(loadError)))
       .finally(() => setIsLoading(false));
   }, [
-    checkStatus,
     refreshAudioStatus,
     refreshQueueStatus,
     refreshSttQueueStatus,
@@ -3874,23 +3812,6 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     }, 500);
     return () => window.clearInterval(interval);
   }, [refreshSystemCaptureStatus, systemCaptureStatus?.is_recording]);
-
-  async function saveAndTest() {
-    setIsChecking(true);
-    setSettingsError(null);
-    try {
-      const savedConfig = await invoke<LlamaConfig>("save_llama_config", {
-        config,
-      });
-      setConfig(savedConfig);
-      const nextStatus = await invoke<LlamaStatus>("get_llama_status");
-      setStatus(nextStatus);
-    } catch (saveError) {
-      setSettingsError(String(saveError));
-    } finally {
-      setIsChecking(false);
-    }
-  }
 
   async function queueAllNotes() {
     setIsQueueBusy(true);
@@ -4264,12 +4185,6 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
     }
   }
 
-  const StatusIcon =
-    status?.state === "ready"
-      ? CheckCircle2
-      : status?.state === "loading"
-        ? RefreshCw
-        : CircleAlert;
   const SttStatusIcon =
     sttStatus?.state === "ready" ? CheckCircle2 : CircleAlert;
   const audioPreviewUrl = audioStatus?.last_preview
@@ -4299,16 +4214,15 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
             className="icon-button"
             type="button"
             onClick={() => {
-              void checkStatus();
               void refreshQueueStatus();
               void refreshAudioStatus();
               void refreshSystemCaptureStatus();
               void refreshSttStatus();
             }}
-            disabled={isChecking || isLoading}
+            disabled={isLoading}
             title="Refresh connection status"
           >
-            <RefreshCw className={isChecking ? "spin" : ""} size={17} />
+            <RefreshCw size={17} />
           </button>
         </div>
       </header>
@@ -4871,100 +4785,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         </div>
       </section>
 
-      <section className="settings-section">
-        <div className="section-heading">
-          <Server size={18} />
-          <span>llama.cpp server</span>
-        </div>
-
-        <label className="settings-field">
-          <span>Server URL</span>
-          <div className="settings-input-row">
-            <input
-              value={config.base_url}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setConfig((current) => ({
-                  ...current,
-                  base_url: value,
-                }));
-              }}
-              placeholder="http://127.0.0.1:8080"
-            />
-            <button
-              type="button"
-              onClick={() => void saveAndTest()}
-              disabled={isChecking || isLoading}
-            >
-              {isChecking ? "Checking" : "Save & Test"}
-            </button>
-          </div>
-        </label>
-
-        <div className={`connection-status ${status?.state ?? "offline"}`}>
-          <StatusIcon
-            className={status?.state === "loading" ? "spin" : ""}
-            size={19}
-          />
-          <div>
-            <strong>
-              {status?.state ?? (isLoading ? "checking" : "offline")}
-            </strong>
-            <span>{status?.message ?? "Checking llama.cpp connection"}</span>
-          </div>
-          {status?.latency_ms !== null && status?.latency_ms !== undefined ? (
-            <small>{status.latency_ms} ms</small>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <div className="section-heading">
-          <span>Model</span>
-          <small>{status?.models.length ?? 0} discovered</small>
-        </div>
-
-        <label className="settings-field">
-          <span>Preferred model</span>
-          <select
-            value={config.preferred_model ?? ""}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              setConfig((current) => ({
-                ...current,
-                preferred_model: value || null,
-              }));
-            }}
-            disabled={!status?.models.length}
-          >
-            <option value="">Server default</option>
-            {status?.models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.id}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {status?.models.map((model) => (
-          <div className="model-row" key={model.id}>
-            <div>
-              <strong>{model.id}</strong>
-              <span>{model.owned_by ?? "llama.cpp"}</span>
-            </div>
-            <div className="model-meta">
-              {formatLargeValue(model.parameter_count, " params") ? (
-                <span>
-                  {formatLargeValue(model.parameter_count, " params")}
-                </span>
-              ) : null}
-              {model.context_size ? (
-                <span>{model.context_size.toLocaleString()} context</span>
-              ) : null}
-            </div>
-          </div>
-        ))}
-      </section>
+      <LlamaSettings onError={setSettingsError} />
 
       <section className="settings-section">
         <div className="section-heading">
