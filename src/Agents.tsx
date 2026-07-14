@@ -12,8 +12,10 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Sparkles,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import SlackShareAgent from "./SlackShareAgent";
@@ -237,6 +239,21 @@ export async function deleteUserAgent(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Tool registry — every agent runs over this same shared set of tools. Mirrors
+// `registry::ToolDescriptor`.
+// ---------------------------------------------------------------------------
+
+export type AgentToolInfo = {
+  name: string;
+  description: string;
+  input_schema: unknown;
+};
+
+export async function listAgentTools(): Promise<AgentToolInfo[]> {
+  return invoke<AgentToolInfo[]>("agent_list_tools");
+}
+
+// ---------------------------------------------------------------------------
 // Run history (Phase 3) — reads the persisted runs/events the backend already
 // records for every `agent_run`. Detail view reuses `AgentRunResultView` by
 // reconstructing its step trace from the stored `tool_execution` events.
@@ -406,20 +423,21 @@ export function AgentsView({
 }) {
   const [tab, setTab] = useState<"agents" | "history">("agents");
   const [run, setRun] = useState<RunState>({ status: "idle" });
+  const [inspect, setInspect] = useState<AgentDefinition | null>(null);
   const [userAgents, setUserAgents] = useState<AgentDefinition[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
   // Inline confirm — native window.confirm() is blocked in the Tauri webview.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [targetNoteId, setTargetNoteId] = useState<string>(
-    () => currentNoteId ?? notes[0]?.id ?? "",
-  );
   const [slackShareNote, setSlackShareNote] = useState<AgentNoteRef | null>(null);
   const [followUpNote, setFollowUpNote] = useState<AgentNoteRef | null>(null);
 
+  // Note-scoped agents run against the currently-open note (falling back to the
+  // first note). The Agents page no longer shows a note picker — those agents
+  // are launched from a note's own Agents panel.
   const targetNote = useMemo(
-    () => notes.find((note) => note.id === targetNoteId) ?? null,
-    [notes, targetNoteId],
+    () => notes.find((note) => note.id === currentNoteId) ?? notes[0] ?? null,
+    [notes, currentNoteId],
   );
 
   async function refresh() {
@@ -494,6 +512,17 @@ export function AgentsView({
     );
   }
 
+  if (inspect) {
+    return (
+      <AgentInspect
+        agent={inspect}
+        note={inspect.scope === "note" ? targetNote : null}
+        onRun={() => void start(inspect)}
+        onBack={() => setInspect(null)}
+      />
+    );
+  }
+
   if (editor) {
     return (
       <AgentEditor
@@ -507,11 +536,8 @@ export function AgentsView({
     );
   }
 
-  const hasNotes = notes.length > 0;
-
   const renderCard = (agent: AgentDefinition) => {
     const Icon = AGENT_ICONS[agent.icon];
-    const disabled = agent.scope === "note" && !targetNote;
     return (
       <article key={agent.id} className="agent-card">
         <div className="agent-card-top">
@@ -575,15 +601,12 @@ export function AgentsView({
               </span>
               <button
                 type="button"
-                className="agent-run-btn"
-                disabled={disabled}
-                title={
-                  disabled ? "Choose a note above first" : `Run ${agent.name}`
-                }
-                onClick={() => void start(agent)}
+                className="agent-run-btn ghost"
+                title={`Inspect ${agent.name}`}
+                onClick={() => setInspect(agent)}
               >
-                <Play size={14} />
-                Run
+                <Search size={14} />
+                Inspect
               </button>
             </>
           )}
@@ -646,26 +669,6 @@ export function AgentsView({
       </div>
 
       {tab === "history" ? <RunHistory /> : null}
-
-      <div className="agent-target" hidden={tab !== "agents"}>
-        <label htmlFor="agent-target-note">Note for note-scoped agents</label>
-        <select
-          id="agent-target-note"
-          value={targetNoteId}
-          disabled={!hasNotes}
-          onChange={(event) => setTargetNoteId(event.target.value)}
-        >
-          {hasNotes ? (
-            notes.map((note) => (
-              <option key={note.id} value={note.id}>
-                {note.title || "(untitled)"}
-              </option>
-            ))
-          ) : (
-            <option value="">No notes yet</option>
-          )}
-        </select>
-      </div>
 
       {tab === "agents" ? (
         <>
@@ -843,12 +846,99 @@ function AgentEditor({
 // Run history tab
 // ---------------------------------------------------------------------------
 
+function RunRow({ run, onOpen }: { run: AgentRunRecord; onOpen: () => void }) {
+  return (
+    <li>
+      <button type="button" className="run-row" onClick={onOpen}>
+        <span className={`run-status-dot ${run.status}`} />
+        <span className="run-row-prompt">{run.prompt}</span>
+        <span className="run-row-meta">{formatTimestamp(run.started_at)}</span>
+      </button>
+    </li>
+  );
+}
+
+function RunDetail({
+  run,
+  onBack,
+  backLabel = "All runs",
+}: {
+  run: AgentRunRecord;
+  onBack: () => void;
+  backLabel?: string;
+}) {
+  const [events, setEvents] = useState<AgentEventRecord[] | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setEvents(null);
+    setDetailError(null);
+    getRunEvents(run.id)
+      .then((rows) => {
+        if (active) setEvents(rows);
+      })
+      .catch((loadError) => {
+        if (!active) return;
+        setDetailError(String(loadError));
+        setEvents([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [run.id]);
+
+  const result: AgentRunResult = {
+    run_id: run.id,
+    model: run.model ?? "",
+    answer: run.answer ?? "",
+    steps: events ? eventsToSteps(events) : [],
+    raw_model_output: "",
+  };
+
+  return (
+    <div className="run-detail">
+      <button type="button" className="agent-back" onClick={onBack}>
+        <ArrowLeft size={16} />
+        {backLabel}
+      </button>
+
+      <div className="run-detail-head">
+        <span className={`run-status ${run.status}`}>{run.status}</span>
+        <span className="run-detail-time">{formatTimestamp(run.started_at)}</span>
+        {run.model ? <span className="run-detail-model">{run.model}</span> : null}
+      </div>
+
+      <div className="run-prompt">{run.prompt}</div>
+
+      {run.error ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{run.error}</span>
+        </div>
+      ) : null}
+
+      {events === null ? (
+        <div className="agent-run-state busy sm">
+          <Loader2 size={15} className="spin" />
+          <span>Loading trace…</span>
+        </div>
+      ) : detailError ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{detailError}</span>
+        </div>
+      ) : (
+        <AgentRunResultView result={result} />
+      )}
+    </div>
+  );
+}
+
 function RunHistory() {
   const [runs, setRuns] = useState<AgentRunRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<AgentRunRecord | null>(null);
-  const [events, setEvents] = useState<AgentEventRecord[] | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
 
   async function refresh() {
     setRuns(null);
@@ -865,73 +955,8 @@ function RunHistory() {
     void refresh();
   }, []);
 
-  async function open(run: AgentRunRecord) {
-    setSelected(run);
-    setEvents(null);
-    setDetailError(null);
-    try {
-      setEvents(await getRunEvents(run.id));
-    } catch (loadError) {
-      setDetailError(String(loadError));
-      setEvents([]);
-    }
-  }
-
   if (selected) {
-    const result: AgentRunResult = {
-      run_id: selected.id,
-      model: selected.model ?? "",
-      answer: selected.answer ?? "",
-      steps: events ? eventsToSteps(events) : [],
-      raw_model_output: "",
-    };
-    return (
-      <div className="run-detail">
-        <button
-          type="button"
-          className="agent-back"
-          onClick={() => setSelected(null)}
-        >
-          <ArrowLeft size={16} />
-          All runs
-        </button>
-
-        <div className="run-detail-head">
-          <span className={`run-status ${selected.status}`}>
-            {selected.status}
-          </span>
-          <span className="run-detail-time">
-            {formatTimestamp(selected.started_at)}
-          </span>
-          {selected.model ? (
-            <span className="run-detail-model">{selected.model}</span>
-          ) : null}
-        </div>
-
-        <div className="run-prompt">{selected.prompt}</div>
-
-        {selected.error ? (
-          <div className="agent-run-state error sm">
-            <AlertTriangle size={15} />
-            <span>{selected.error}</span>
-          </div>
-        ) : null}
-
-        {events === null ? (
-          <div className="agent-run-state busy sm">
-            <Loader2 size={15} className="spin" />
-            <span>Loading trace…</span>
-          </div>
-        ) : detailError ? (
-          <div className="agent-run-state error sm">
-            <AlertTriangle size={15} />
-            <span>{detailError}</span>
-          </div>
-        ) : (
-          <AgentRunResultView result={result} />
-        )}
-      </div>
-    );
+    return <RunDetail run={selected} onBack={() => setSelected(null)} />;
   }
 
   return (
@@ -966,22 +991,217 @@ function RunHistory() {
       ) : (
         <ul className="run-list">
           {runs.map((run) => (
-            <li key={run.id}>
-              <button
-                type="button"
-                className="run-row"
-                onClick={() => void open(run)}
-              >
-                <span className={`run-status-dot ${run.status}`} />
-                <span className="run-row-prompt">{run.prompt}</span>
-                <span className="run-row-meta">
-                  {formatTimestamp(run.started_at)}
-                </span>
-              </button>
-            </li>
+            <RunRow key={run.id} run={run} onOpen={() => setSelected(run)} />
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inspect view — a read-only look at one agent: the prompt it sends, the tools
+// it can call, and its own run history (drilling into any run reuses the same
+// RunDetail trace the History tab uses). Running is still available here so
+// global agents, which have no note-panel entry point, stay reachable.
+// ---------------------------------------------------------------------------
+
+// Runs don't yet carry an agent id, so Inspect identifies an agent's runs by a
+// stable substring of the prompt each records. Built-in agents that run through
+// their own flow (Slack, follow-up email) don't use `instructions` as their
+// prompt, so they need an explicit signature. Interim until runs store an
+// agent_id (see the planned consolidation).
+function agentRunSignature(agent: AgentDefinition): string {
+  switch (agent.id) {
+    case "meeting-follow-up-email":
+      return "Write a follow-up email for note '";
+    case "share-note-slack":
+      return "You are preparing one note for an explicit, user-approved Slack post.";
+    default:
+      return agent.instructions.trim();
+  }
+}
+
+function AgentInspect({
+  agent,
+  note,
+  onRun,
+  onBack,
+}: {
+  agent: AgentDefinition;
+  note: AgentNoteRef | null;
+  onRun: () => void;
+  onBack: () => void;
+}) {
+  const [tools, setTools] = useState<AgentToolInfo[] | null>(null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<AgentRunRecord[] | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [selectedRun, setSelectedRun] = useState<AgentRunRecord | null>(null);
+
+  const Icon = AGENT_ICONS[agent.icon];
+  const noteScoped = agent.scope === "note";
+  const canRun = !noteScoped || !!note;
+
+  // For note-scoped agents show the prompt with a placeholder note, so the
+  // template is legible even when no note is currently selected.
+  const promptNote: AgentNoteRef | null = noteScoped
+    ? note ?? { id: "<note-id>", title: "<note title>" }
+    : null;
+  const prompt = composeAgentPrompt(agent, promptNote);
+  const runSignature = useMemo(() => agentRunSignature(agent), [agent]);
+
+  useEffect(() => {
+    let active = true;
+    listAgentTools()
+      .then((rows) => {
+        if (active) setTools(rows);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setTools([]);
+        setToolsError(String(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listRuns(200)
+      .then((all) => {
+        if (active) {
+          setRuns(all.filter((run) => run.prompt.includes(runSignature)));
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        setRuns([]);
+        setRunsError(String(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [runSignature]);
+
+  if (selectedRun) {
+    return (
+      <RunDetail
+        run={selectedRun}
+        backLabel={`${agent.name} runs`}
+        onBack={() => setSelectedRun(null)}
+      />
+    );
+  }
+
+  return (
+    <div className="agents-view">
+      <header className="agents-header run">
+        <button type="button" className="agent-back" onClick={onBack}>
+          <ArrowLeft size={16} />
+          All agents
+        </button>
+        <button
+          type="button"
+          className="agent-run-btn"
+          disabled={!canRun}
+          title={canRun ? `Run ${agent.name}` : "Pick a note in the agent list first"}
+          onClick={onRun}
+        >
+          <Play size={14} />
+          Run
+        </button>
+      </header>
+
+      <div className="agent-inspect">
+        <div className="agent-run-title">
+          <div className="agent-card-icon">
+            <Icon size={18} />
+          </div>
+          <div>
+            <h2>{agent.name}</h2>
+            <p className="agent-run-target">
+              {agent.description || "No description."}
+            </p>
+          </div>
+          <span className={noteScoped ? "scope-badge note" : "scope-badge global"}>
+            {noteScoped ? "This note" : "Whole bank"}
+          </span>
+        </div>
+
+        <section className="inspect-section">
+          <h3>Prompt</h3>
+          <p className="inspect-hint">
+            {noteScoped
+              ? "Sent to the model with the open note’s id and title filled in; the agent reads the note through the read_note tool."
+              : "Sent to the model as-is."}
+          </p>
+          <pre className="inspect-prompt">{prompt}</pre>
+        </section>
+
+        <section className="inspect-section">
+          <h3>
+            Tools
+            {tools ? <span className="inspect-count">{tools.length}</span> : null}
+          </h3>
+          <p className="inspect-hint">
+            Agents can call any of these tools over your local notes.
+          </p>
+          {toolsError ? (
+            <div className="agent-run-state error sm">
+              <AlertTriangle size={15} />
+              <span>{toolsError}</span>
+            </div>
+          ) : tools === null ? (
+            <div className="agent-run-state busy sm">
+              <Loader2 size={15} className="spin" />
+              <span>Loading tools…</span>
+            </div>
+          ) : (
+            <ul className="inspect-tools">
+              {tools.map((tool) => (
+                <li key={tool.name} className="inspect-tool">
+                  <div className="inspect-tool-name">
+                    <Wrench size={13} />
+                    <code>{tool.name}</code>
+                  </div>
+                  <span>{tool.description}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="inspect-section">
+          <h3>
+            Runs
+            {runs ? <span className="inspect-count">{runs.length}</span> : null}
+          </h3>
+          <p className="inspect-hint">
+            Past runs of this agent. The History tab lists runs from every agent.
+          </p>
+          {runsError ? (
+            <div className="agent-run-state error sm">
+              <AlertTriangle size={15} />
+              <span>{runsError}</span>
+            </div>
+          ) : runs === null ? (
+            <div className="agent-run-state busy sm">
+              <Loader2 size={15} className="spin" />
+              <span>Loading runs…</span>
+            </div>
+          ) : runs.length === 0 ? (
+            <p className="agent-empty">No runs yet.</p>
+          ) : (
+            <ul className="run-list">
+              {runs.map((run) => (
+                <RunRow key={run.id} run={run} onOpen={() => setSelectedRun(run)} />
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
