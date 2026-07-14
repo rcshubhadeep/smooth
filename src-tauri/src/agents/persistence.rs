@@ -5,7 +5,7 @@
 //! workers, approvals and schedulers can reuse the same event log without
 //! changing tool implementations.
 
-use rusqlite::{params, Connection};
+use rusqlite::{named_params, params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
@@ -80,7 +80,38 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                 ON agent_definitions(updated_at);
             ",
         )
-        .map_err(db_error)
+        .map_err(db_error)?;
+    migrate_agent_runs_schema(connection)
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(db_error)?;
+    let mut names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?;
+    names.try_fold(false, |found, name| {
+        Ok(found || name.map_err(db_error)? == column)
+    })
+}
+
+/// Tag runs with the agent that produced them. Added after the fact, so an
+/// `ALTER TABLE` is needed for existing databases; old rows keep `agent_id`
+/// NULL and simply do not appear under any agent in the inspect view.
+fn migrate_agent_runs_schema(connection: &Connection) -> Result<(), String> {
+    if !has_column(connection, "agent_runs", "agent_id")? {
+        connection
+            .execute("ALTER TABLE agent_runs ADD COLUMN agent_id TEXT", [])
+            .map_err(db_error)?;
+    }
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS agent_runs_agent_idx ON agent_runs(agent_id)",
+            [],
+        )
+        .map_err(db_error)?;
+    Ok(())
 }
 
 pub(crate) struct AgentRunRecorder {
@@ -92,6 +123,7 @@ pub(crate) struct AgentRunRecorder {
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentRunRecord {
     pub(crate) id: String,
+    pub(crate) agent_id: Option<String>,
     pub(crate) run_kind: String,
     pub(crate) status: String,
     pub(crate) prompt: String,
@@ -122,6 +154,8 @@ pub(crate) struct AgentEventRecord {
 #[derive(Debug, Deserialize)]
 pub(crate) struct AgentRunListOptions {
     pub(crate) limit: Option<u32>,
+    /// When set, only runs produced by this agent are returned.
+    pub(crate) agent_id: Option<String>,
 }
 
 pub(crate) struct AgentEvent<'a> {
@@ -135,7 +169,12 @@ pub(crate) struct AgentEvent<'a> {
 }
 
 impl AgentRunRecorder {
-    pub(crate) fn start(app: AppHandle, prompt: &str, max_steps: u8) -> Result<Self, String> {
+    pub(crate) fn start(
+        app: AppHandle,
+        agent_id: Option<&str>,
+        prompt: &str,
+        max_steps: u8,
+    ) -> Result<Self, String> {
         let run_id = format!("{}-{}", new_id("agent-run"), std::process::id());
         let started_at = now_string();
         let connection = open_database(&app)?;
@@ -143,11 +182,12 @@ impl AgentRunRecorder {
             .execute(
                 "
                 INSERT INTO agent_runs (
-                    id, run_kind, status, prompt, max_steps, started_at, updated_at
+                    id, agent_id, run_kind, status, prompt, max_steps,
+                    started_at, updated_at
                 )
-                VALUES (?1, 'foreground', 'running', ?2, ?3, ?4, ?4)
+                VALUES (?1, ?2, 'foreground', 'running', ?3, ?4, ?5, ?5)
                 ",
-                params![run_id, prompt, max_steps, started_at],
+                params![run_id, agent_id, prompt, max_steps, started_at],
             )
             .map_err(db_error)?;
 
@@ -264,42 +304,50 @@ fn json_to_string(value: Option<&Value>) -> Result<Option<String>, String> {
         .map_err(|error| error.to_string())
 }
 
+fn row_to_run_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
+    Ok(AgentRunRecord {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        run_kind: row.get(2)?,
+        status: row.get(3)?,
+        prompt: row.get(4)?,
+        model: row.get(5)?,
+        max_steps: row.get(6)?,
+        answer: row.get(7)?,
+        error: row.get(8)?,
+        started_at: row.get(9)?,
+        completed_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+const RUN_COLUMNS: &str = "id, agent_id, run_kind, status, prompt, model, \
+    max_steps, answer, error, started_at, completed_at, updated_at";
+
 pub(crate) fn list_runs(
     app: AppHandle,
     options: Option<AgentRunListOptions>,
 ) -> Result<Vec<AgentRunRecord>, String> {
-    let limit = options
-        .and_then(|options| options.limit)
-        .unwrap_or(50)
-        .clamp(1, 200);
+    let (limit, agent_id) = match options {
+        Some(options) => (options.limit.unwrap_or(50).clamp(1, 200), options.agent_id),
+        None => (50, None),
+    };
     let connection = open_database(&app)?;
-    let mut statement = connection
-        .prepare(
-            "
-            SELECT id, run_kind, status, prompt, model, max_steps, answer, error,
-                   started_at, completed_at, updated_at
-            FROM agent_runs
-            ORDER BY CAST(started_at AS INTEGER) DESC
-            LIMIT ?1
-            ",
-        )
-        .map_err(db_error)?;
-    let rows = statement
-        .query_map(params![limit], |row| {
-            Ok(AgentRunRecord {
-                id: row.get(0)?,
-                run_kind: row.get(1)?,
-                status: row.get(2)?,
-                prompt: row.get(3)?,
-                model: row.get(4)?,
-                max_steps: row.get(5)?,
-                answer: row.get(6)?,
-                error: row.get(7)?,
-                started_at: row.get(8)?,
-                completed_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })
+    let mut sql = format!("SELECT {RUN_COLUMNS} FROM agent_runs");
+    if agent_id.is_some() {
+        sql.push_str(" WHERE agent_id = :agent_id");
+    }
+    sql.push_str(" ORDER BY CAST(started_at AS INTEGER) DESC LIMIT :limit");
+
+    let mut statement = connection.prepare(&sql).map_err(db_error)?;
+    let mapped = match agent_id.as_deref() {
+        Some(agent_id) => statement.query_map(
+            named_params![":agent_id": agent_id, ":limit": limit],
+            row_to_run_record,
+        ),
+        None => statement.query_map(named_params![":limit": limit], row_to_run_record),
+    };
+    let rows = mapped
         .map_err(db_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db_error)?;

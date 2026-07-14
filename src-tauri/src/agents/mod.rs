@@ -60,10 +60,11 @@ pub(crate) fn agent_list_tools(runtime: State<'_, AgentRuntime>) -> Vec<ToolDesc
 pub(crate) async fn agent_run(
     app: AppHandle,
     runtime: State<'_, AgentRuntime>,
+    agent_id: Option<String>,
     prompt: String,
     max_steps: Option<u8>,
 ) -> Result<flow::AgentRunResult, String> {
-    flow::run_agent_once(app, &runtime, prompt, max_steps).await
+    flow::run_agent_once(app, &runtime, agent_id.as_deref(), prompt, max_steps).await
 }
 
 /// Tauri bridge: inspect recent persisted agent runs.

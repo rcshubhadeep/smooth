@@ -71,7 +71,8 @@ pub(crate) async fn prepare_follow_up_email(
         "Write a follow-up email for note '{}' ({})",
         note.title, note.id
     );
-    let mut recorder = AgentRunRecorder::start(app.clone(), &run_prompt, 1)?;
+    let mut recorder =
+        AgentRunRecorder::start(app.clone(), Some("meeting-follow-up-email"), &run_prompt, 1)?;
     let note_event = json!({
         "note_id": note.id,
         "title": note.title,

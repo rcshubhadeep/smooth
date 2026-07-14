@@ -162,6 +162,7 @@ export async function runAgent(
 ): Promise<AgentRunResult> {
   const prompt = composeAgentPrompt(agent, note);
   return invoke<AgentRunResult>("agent_run", {
+    agentId: agent.id,
     prompt,
     maxSteps: agent.maxSteps ?? null,
   });
@@ -262,6 +263,7 @@ export async function listAgentTools(): Promise<AgentToolInfo[]> {
 /** Mirrors `persistence::AgentRunRecord`. */
 export type AgentRunRecord = {
   id: string;
+  agent_id: string | null;
   run_kind: string;
   status: string;
   prompt: string;
@@ -289,8 +291,15 @@ export type AgentEventRecord = {
   created_at: string;
 };
 
-export async function listRuns(limit = 50): Promise<AgentRunRecord[]> {
-  return invoke<AgentRunRecord[]>("agent_list_runs", { options: { limit } });
+export async function listRuns(
+  options: { limit?: number; agentId?: string } = {},
+): Promise<AgentRunRecord[]> {
+  return invoke<AgentRunRecord[]>("agent_list_runs", {
+    options: {
+      limit: options.limit ?? 50,
+      agent_id: options.agentId ?? null,
+    },
+  });
 }
 
 export async function getRunEvents(runId: string): Promise<AgentEventRecord[]> {
@@ -1006,22 +1015,6 @@ function RunHistory() {
 // global agents, which have no note-panel entry point, stay reachable.
 // ---------------------------------------------------------------------------
 
-// Runs don't yet carry an agent id, so Inspect identifies an agent's runs by a
-// stable substring of the prompt each records. Built-in agents that run through
-// their own flow (Slack, follow-up email) don't use `instructions` as their
-// prompt, so they need an explicit signature. Interim until runs store an
-// agent_id (see the planned consolidation).
-function agentRunSignature(agent: AgentDefinition): string {
-  switch (agent.id) {
-    case "meeting-follow-up-email":
-      return "Write a follow-up email for note '";
-    case "share-note-slack":
-      return "You are preparing one note for an explicit, user-approved Slack post.";
-    default:
-      return agent.instructions.trim();
-  }
-}
-
 function AgentInspect({
   agent,
   note,
@@ -1049,7 +1042,6 @@ function AgentInspect({
     ? note ?? { id: "<note-id>", title: "<note title>" }
     : null;
   const prompt = composeAgentPrompt(agent, promptNote);
-  const runSignature = useMemo(() => agentRunSignature(agent), [agent]);
 
   useEffect(() => {
     let active = true;
@@ -1069,11 +1061,9 @@ function AgentInspect({
 
   useEffect(() => {
     let active = true;
-    listRuns(200)
-      .then((all) => {
-        if (active) {
-          setRuns(all.filter((run) => run.prompt.includes(runSignature)));
-        }
+    listRuns({ agentId: agent.id, limit: 200 })
+      .then((rows) => {
+        if (active) setRuns(rows);
       })
       .catch((error) => {
         if (!active) return;
@@ -1083,7 +1073,7 @@ function AgentInspect({
     return () => {
       active = false;
     };
-  }, [runSignature]);
+  }, [agent.id]);
 
   if (selectedRun) {
     return (

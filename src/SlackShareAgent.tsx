@@ -39,6 +39,7 @@ export default function SlackShareAgent({
     setError(null);
     try {
       const result = await invoke<AgentRunResult>("agent_run", {
+        agentId: "share-note-slack",
         prompt: [
           "You are preparing one note for an explicit, user-approved Slack post.",
           `Note id: ${note.id}`,

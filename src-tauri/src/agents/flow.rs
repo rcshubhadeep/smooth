@@ -119,6 +119,7 @@ impl Default for ToolArguments {
 pub(crate) async fn run_agent_once(
     app: AppHandle,
     runtime: &AgentRuntime,
+    agent_id: Option<&str>,
     prompt: String,
     max_steps: Option<u8>,
 ) -> Result<AgentRunResult, String> {
@@ -130,7 +131,7 @@ pub(crate) async fn run_agent_once(
     let max_steps = max_steps
         .unwrap_or(DEFAULT_MAX_AGENT_STEPS)
         .clamp(1, MAX_AGENT_STEPS);
-    let mut recorder = AgentRunRecorder::start(app.clone(), &prompt, max_steps)?;
+    let mut recorder = AgentRunRecorder::start(app.clone(), agent_id, &prompt, max_steps)?;
     recorder.record(AgentEvent {
         event_type: "user_prompt",
         role: Some("user"),
