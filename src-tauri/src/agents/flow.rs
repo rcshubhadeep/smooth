@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
-use crate::{chat_llama_target, llama_endpoint};
+use crate::{chat_llama_target, is_bonsai_model, llama_endpoint};
 
 use super::context::AgentContext;
 use super::persistence::{AgentEvent, AgentRunRecorder};
@@ -23,7 +23,9 @@ use super::runtime::AgentRuntime;
 
 const DEFAULT_MAX_AGENT_STEPS: u8 = 3;
 const MAX_AGENT_STEPS: u8 = 6;
-const AGENT_MAX_TOKENS: u32 = 1024;
+const DEFAULT_AGENT_MAX_TOKENS: u32 = 1024;
+const BONSAI_AGENT_MAX_TOKENS: u32 = 2048;
+const MAX_AGENT_ANSWER_CONTINUATIONS: usize = 3;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentRunResult {
@@ -79,6 +81,8 @@ struct CompletionResponse {
 #[derive(Deserialize)]
 struct CompletionChoice {
     message: CompletionMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -231,12 +235,13 @@ async fn run_agent_once_inner(
         })?;
         let response =
             complete_agent_turn(&client, &base_url, &model, &messages, Some(&openai_tools)).await?;
-        let raw_model_output = response.content.clone().unwrap_or_default();
-        let tool_calls = extract_tool_calls(&response)?;
+        let raw_model_output = response.message.content.clone().unwrap_or_default();
+        let tool_calls = extract_tool_calls(&response.message)?;
         let tool_calls_json = tool_calls_to_json(&tool_calls);
         let model_response = json!({
             "content": raw_model_output,
             "tool_calls": tool_calls_json,
+            "finish_reason": response.finish_reason,
         });
         recorder.record(AgentEvent {
             event_type: "model_response",
@@ -249,6 +254,16 @@ async fn run_agent_once_inner(
         })?;
 
         if tool_calls.is_empty() {
+            let raw_model_output = complete_agent_answer(
+                &client,
+                &base_url,
+                &model,
+                &messages,
+                raw_model_output,
+                response.finish_reason,
+                recorder,
+            )
+            .await?;
             let answer = clean_model_text(raw_model_output.clone());
             recorder.record(AgentEvent {
                 event_type: "final_answer",
@@ -358,7 +373,17 @@ async fn run_agent_once_inner(
         error: None,
     })?;
     let response = complete_agent_turn(&client, &base_url, &model, &messages, None).await?;
-    let raw_model_output = response.content.clone().unwrap_or_default();
+    let initial_output = response.message.content.clone().unwrap_or_default();
+    let raw_model_output = complete_agent_answer(
+        &client,
+        &base_url,
+        &model,
+        &messages,
+        initial_output,
+        response.finish_reason,
+        recorder,
+    )
+    .await?;
     let answer = clean_model_text(raw_model_output.clone());
     recorder.record(AgentEvent {
         event_type: "final_answer",
@@ -450,18 +475,8 @@ async fn complete_agent_turn(
     model: &str,
     messages: &[Value],
     tools: Option<&[Value]>,
-) -> Result<CompletionMessage, String> {
-    let mut payload = json!({
-        "model": model,
-        "messages": messages,
-        "stream": false,
-        "temperature": 0.2,
-        "max_tokens": AGENT_MAX_TOKENS,
-    });
-    if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
-        payload["tools"] = Value::Array(tools.to_vec());
-        payload["tool_choice"] = json!("auto");
-    }
+) -> Result<CompletionChoice, String> {
+    let payload = agent_completion_payload(model, messages, tools);
 
     let response = client
         .post(llama_endpoint(base_url, "/v1/chat/completions"))
@@ -486,8 +501,116 @@ async fn complete_agent_turn(
         .choices
         .into_iter()
         .next()
-        .map(|choice| choice.message)
         .ok_or_else(|| "llama.cpp returned no choices".to_string())
+}
+
+fn agent_max_tokens(model: &str) -> u32 {
+    if is_bonsai_model(model) {
+        BONSAI_AGENT_MAX_TOKENS
+    } else {
+        DEFAULT_AGENT_MAX_TOKENS
+    }
+}
+
+fn agent_completion_payload(model: &str, messages: &[Value], tools: Option<&[Value]>) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+        "temperature": 0.2,
+        "max_tokens": agent_max_tokens(model)
+    });
+    if is_bonsai_model(model) {
+        payload["reasoning_format"] = json!("none");
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+    if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
+        payload["tools"] = Value::Array(tools.to_vec());
+        payload["tool_choice"] = json!("auto");
+    }
+    payload
+}
+
+async fn complete_agent_answer(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    messages: &[Value],
+    initial_output: String,
+    initial_finish_reason: Option<String>,
+    recorder: &mut AgentRunRecorder,
+) -> Result<String, String> {
+    if !is_bonsai_model(model) {
+        return Ok(initial_output);
+    }
+
+    let mut messages = messages.to_vec();
+    let mut full = initial_output;
+    let mut last_part = full.clone();
+    let mut finish_reason = initial_finish_reason;
+
+    for continuation in 0..MAX_AGENT_ANSWER_CONTINUATIONS {
+        if finish_reason.as_deref() != Some("length") {
+            return Ok(full);
+        }
+
+        messages.push(json!({ "role": "assistant", "content": last_part }));
+        messages.push(json!({
+            "role": "user",
+            "content": "Continue exactly where you stopped. Do not restart, repeat earlier text, or call tools."
+        }));
+        let model_request = json!({
+            "continuation": continuation + 1,
+            "messages": messages,
+            "tools": [],
+        });
+        recorder.record(AgentEvent {
+            event_type: "model_request",
+            role: Some("assistant"),
+            tool_name: None,
+            content: None,
+            input: Some(&model_request),
+            output: None,
+            error: None,
+        })?;
+
+        let response = complete_agent_turn(client, base_url, model, &messages, None).await?;
+        if !extract_tool_calls(&response.message)?.is_empty() {
+            return Err(
+                "The model attempted a tool call while continuing its final answer".to_string(),
+            );
+        }
+        last_part = response.message.content.clone().unwrap_or_default();
+        if last_part.trim().is_empty() {
+            return Err("The model returned an empty continuation".to_string());
+        }
+        finish_reason = response.finish_reason.clone();
+        let model_response = json!({
+            "content": last_part,
+            "tool_calls": [],
+            "finish_reason": finish_reason,
+        });
+        recorder.record(AgentEvent {
+            event_type: "model_response",
+            role: Some("assistant"),
+            tool_name: None,
+            content: Some(&last_part),
+            input: None,
+            output: Some(&model_response),
+            error: None,
+        })?;
+        full.push_str(&last_part);
+    }
+
+    if finish_reason.as_deref() == Some("length") {
+        Err(format!(
+            "The agent answer exceeded {} output tokens across {} completion parts",
+            agent_max_tokens(model),
+            MAX_AGENT_ANSWER_CONTINUATIONS + 1
+        ))
+    } else {
+        Ok(full)
+    }
 }
 
 fn extract_tool_calls(message: &CompletionMessage) -> Result<Vec<ToolCall>, String> {
@@ -817,6 +940,41 @@ fn clean_model_text(text: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_completion_finish_reason() {
+        let response = serde_json::from_value::<CompletionResponse>(json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": { "content": "Partial answer", "tool_calls": [] }
+            }]
+        }))
+        .expect("completion response");
+
+        assert_eq!(response.choices[0].finish_reason.as_deref(), Some("length"));
+        assert_eq!(
+            response.choices[0].message.content.as_deref(),
+            Some("Partial answer")
+        );
+    }
+
+    #[test]
+    fn model_profiles_keep_gemma_legacy_and_tune_bonsai() {
+        let messages = [json!({ "role": "user", "content": "Summarize this note" })];
+        let gemma = agent_completion_payload(
+            "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL",
+            &messages,
+            None,
+        );
+        let bonsai = agent_completion_payload("prism-ml/Bonsai-27B-gguf:Q1_0", &messages, None);
+
+        assert_eq!(gemma["max_tokens"], 1024);
+        assert!(gemma.get("reasoning_format").is_none());
+        assert!(gemma.get("chat_template_kwargs").is_none());
+        assert_eq!(bonsai["max_tokens"], 2048);
+        assert_eq!(bonsai["reasoning_format"], "none");
+        assert_eq!(bonsai["chat_template_kwargs"]["enable_thinking"], false);
+    }
 
     #[test]
     fn parses_gemma_tool_call_arguments() {

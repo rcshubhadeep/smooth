@@ -29,6 +29,7 @@ use std::{
     fs,
     net::IpAddr,
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use stt::{
@@ -315,6 +316,23 @@ enum ChunkExtractionError {
     Retry(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExtractionResponseMode {
+    StrictSchema,
+    JsonObject,
+    PlainJson,
+}
+
+impl ExtractionResponseMode {
+    fn log_name(self) -> &'static str {
+        match self {
+            Self::StrictSchema => "strict_schema",
+            Self::JsonObject => "json_object_fallback",
+            Self::PlainJson => "plain_json_fallback",
+        }
+    }
+}
+
 const DEFAULT_EXTRACTION_CONTEXT_TOKENS: usize = 8192;
 const EXTRACTION_CONTEXT_RESERVE_TOKENS: usize = 256;
 const EXTRACTION_MIN_OUTPUT_TOKENS: usize = 700;
@@ -322,6 +340,11 @@ const EXTRACTION_MAX_OUTPUT_TOKENS: usize = 1600;
 const EXTRACTION_MIN_INPUT_TOKENS: usize = 700;
 const EXTRACTION_MIN_SPLIT_CHARS: usize = 300;
 const EXTRACTION_POLL_SECONDS: u64 = 2;
+const EXTRACTION_CHARS_PER_ENTITY_BUDGET: usize = 180;
+const EXTRACTION_TOKENS_PER_ENTITY_BUDGET: usize = 48;
+
+static EXTRACTION_RESPONSE_MODES: OnceLock<Mutex<HashMap<String, ExtractionResponseMode>>> =
+    OnceLock::new();
 
 const ENTITY_TYPES: [&str; 12] = [
     "PERSON",
@@ -1137,7 +1160,7 @@ fn clear_extraction_job(
     Ok(())
 }
 
-fn extraction_budget(context_tokens: Option<usize>) -> ExtractionBudget {
+fn extraction_budget(context_tokens: Option<usize>, model: &str) -> ExtractionBudget {
     let context_tokens = context_tokens.unwrap_or(DEFAULT_EXTRACTION_CONTEXT_TOKENS);
     let reserve_tokens = EXTRACTION_CONTEXT_RESERVE_TOKENS.min(context_tokens / 8);
     let output_ceiling =
@@ -1149,11 +1172,23 @@ fn extraction_budget(context_tokens: Option<usize>) -> ExtractionBudget {
         .saturating_sub(max_output_tokens + reserve_tokens)
         .max(EXTRACTION_MIN_INPUT_TOKENS);
 
+    if !is_bonsai_model(model) {
+        return ExtractionBudget {
+            input_tokens,
+            max_output_tokens,
+            initial_chars: input_tokens.saturating_mul(4),
+            max_entities: (max_output_tokens / 25).clamp(30, 80),
+        };
+    }
+
+    let max_entities = (max_output_tokens / EXTRACTION_TOKENS_PER_ENTITY_BUDGET).clamp(12, 32);
     ExtractionBudget {
         input_tokens,
         max_output_tokens,
-        initial_chars: input_tokens.saturating_mul(4),
-        max_entities: (max_output_tokens / 25).clamp(30, 80),
+        initial_chars: input_tokens
+            .saturating_mul(4)
+            .min(max_entities.saturating_mul(EXTRACTION_CHARS_PER_ENTITY_BUDGET)),
+        max_entities,
     }
 }
 
@@ -1194,9 +1229,11 @@ fn extraction_schema(max_entities: usize) -> serde_json::Value {
 }
 
 fn extraction_messages(
+    model: &str,
     title: &str,
     chunk: &str,
     interests: &[EntityInterestDefinition],
+    max_entities: usize,
 ) -> serde_json::Value {
     let interest_guidance = if interests.is_empty() {
         "No custom user interests are configured.".to_string()
@@ -1218,25 +1255,52 @@ fn extraction_messages(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let system_content = if is_bonsai_model(model) {
+        concat!(
+            "Extract important named entities and durable knowledge keywords from the note. ",
+            "Use only these entity types: PERSON, ORGANIZATION, LOCATION, EVENT, DATE, TIME, ",
+            "DATETIME, PRODUCT, PROJECT, TECHNOLOGY, CONCEPT, OTHER. ",
+            "Canonicalize names conservatively. Do not merge people or organizations merely ",
+            "because their names are similar. Include meaningful concepts, but omit generic ",
+            "words and incidental nouns. surface_text must be text appearing in the input. ",
+            "Return one JSON object with exactly this shape: ",
+            "{\"entities\":[{\"name\":\"canonical name\",\"entity_type\":\"PERSON\",",
+            "\"surface_text\":\"exact input text\"}]}. Every entity must contain exactly the ",
+            "keys name, entity_type, and surface_text. Do not use a key named type. Do not ",
+            "repeat an entity or list category labels as entities. Stop immediately after the ",
+            "closing JSON brace. Do not include markdown, explanations, thinking text, or ",
+            "thinking tags."
+        )
+    } else {
+        concat!(
+            "Extract important named entities and durable knowledge keywords from the note. ",
+            "Use only these entity types: PERSON, ORGANIZATION, LOCATION, EVENT, DATE, TIME, ",
+            "DATETIME, PRODUCT, PROJECT, TECHNOLOGY, CONCEPT, OTHER. ",
+            "Canonicalize names conservatively. Do not merge people or organizations merely ",
+            "because their names are similar. Include meaningful concepts, but omit generic ",
+            "words and incidental nouns. surface_text must be text appearing in the input. ",
+            "Return only the schema-constrained JSON. Do not include markdown, explanations, ",
+            "thinking text, or thinking tags."
+        )
+    };
+    let user_content = if is_bonsai_model(model) {
+        format!(
+            "Return at most {max_entities} unique entities.\n\nUser is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
+        )
+    } else {
+        format!(
+            "User is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
+        )
+    };
+
     json!([
         {
             "role": "system",
-            "content": concat!(
-                "Extract important named entities and durable knowledge keywords from the note. ",
-                "Use only these entity types: PERSON, ORGANIZATION, LOCATION, EVENT, DATE, TIME, ",
-                "DATETIME, PRODUCT, PROJECT, TECHNOLOGY, CONCEPT, OTHER. ",
-                "Canonicalize names conservatively. Do not merge people or organizations merely ",
-                "because their names are similar. Include meaningful concepts, but omit generic ",
-                "words and incidental nouns. surface_text must be text appearing in the input. ",
-                "Return only the schema-constrained JSON. Do not include markdown, explanations, ",
-                "thinking text, or thinking tags."
-            )
+            "content": system_content
         },
         {
             "role": "user",
-            "content": format!(
-                "User is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
-            )
+            "content": user_content
         }
     ])
 }
@@ -1247,12 +1311,12 @@ fn extraction_request_payload(
     title: &str,
     chunk: &str,
     interests: &[EntityInterestDefinition],
-    strict_schema: bool,
+    response_mode: ExtractionResponseMode,
 ) -> serde_json::Value {
     let mut payload = json!({
         "model": model,
-        "messages": extraction_messages(title, chunk, interests),
-        "temperature": 0.1,
+        "messages": extraction_messages(model, title, chunk, interests, budget.max_entities),
+        "temperature": if is_bonsai_model(model) { 0.0 } else { 0.1 },
         "top_p": 0.9,
         "max_tokens": budget.max_output_tokens,
         "stream": false,
@@ -1262,21 +1326,23 @@ fn extraction_request_payload(
         }
     });
 
-    if strict_schema {
+    let response_format = match response_mode {
+        ExtractionResponseMode::StrictSchema => Some(json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "note_entities",
+                "strict": true,
+                "schema": extraction_schema(budget.max_entities)
+            }
+        })),
+        ExtractionResponseMode::JsonObject => Some(json!({ "type": "json_object" })),
+        ExtractionResponseMode::PlainJson => None,
+    };
+    if let Some(response_format) = response_format {
         payload
             .as_object_mut()
             .expect("payload is an object")
-            .insert(
-                "response_format".to_string(),
-                json!({
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "note_entities",
-                        "strict": true,
-                        "schema": extraction_schema(budget.max_entities)
-                    }
-                }),
-            );
+            .insert("response_format".to_string(), response_format);
     }
 
     payload
@@ -1286,7 +1352,53 @@ fn is_grammar_sampler_error(body: &str) -> bool {
     let lower = body.to_lowercase();
     lower.contains("grammar sampler")
         || lower.contains("error initializing grammar")
+        || lower.contains("failed to initialize samplers")
+        || lower.contains("common_sampler_init")
         || lower.contains("generation prompt:")
+}
+
+fn extraction_response_mode(config: &LlamaConfig, model: &str) -> ExtractionResponseMode {
+    if !is_bonsai_model(model) {
+        return ExtractionResponseMode::StrictSchema;
+    }
+    let key = format!("{}\n{model}", config.base_url.trim_end_matches('/'));
+    EXTRACTION_RESPONSE_MODES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|modes| modes.get(&key).copied())
+        .unwrap_or(ExtractionResponseMode::StrictSchema)
+}
+
+fn remember_extraction_response_mode(
+    config: &LlamaConfig,
+    model: &str,
+    response_mode: ExtractionResponseMode,
+) {
+    if !is_bonsai_model(model) {
+        return;
+    }
+    let key = format!("{}\n{model}", config.base_url.trim_end_matches('/'));
+    if let Ok(mut modes) = EXTRACTION_RESPONSE_MODES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        modes.insert(key, response_mode);
+    }
+}
+
+fn next_extraction_response_mode(
+    model: &str,
+    response_mode: ExtractionResponseMode,
+) -> Option<ExtractionResponseMode> {
+    match response_mode {
+        ExtractionResponseMode::StrictSchema if is_bonsai_model(model) => {
+            Some(ExtractionResponseMode::JsonObject)
+        }
+        ExtractionResponseMode::StrictSchema => Some(ExtractionResponseMode::PlainJson),
+        ExtractionResponseMode::JsonObject => Some(ExtractionResponseMode::PlainJson),
+        ExtractionResponseMode::PlainJson => None,
+    }
 }
 
 fn normalize_entity_name(value: &str) -> String {
@@ -1484,6 +1596,7 @@ async fn count_extraction_input_tokens(
     title: &str,
     chunk: &str,
     interests: &[EntityInterestDefinition],
+    max_entities: usize,
 ) -> Option<usize> {
     let response = client
         .post(llama_endpoint(
@@ -1492,7 +1605,7 @@ async fn count_extraction_input_tokens(
         ))
         .json(&json!({
             "model": model,
-            "messages": extraction_messages(title, chunk, interests)
+            "messages": extraction_messages(model, title, chunk, interests, max_entities)
         }))
         .send()
         .await
@@ -1520,8 +1633,16 @@ async fn fit_chunks_to_context(
     let mut chunks = Vec::new();
 
     while let Some(chunk) = pending.pop_front() {
-        let token_count =
-            count_extraction_input_tokens(client, config, model, title, &chunk, interests).await;
+        let token_count = count_extraction_input_tokens(
+            client,
+            config,
+            model,
+            title,
+            &chunk,
+            interests,
+            budget.max_entities,
+        )
+        .await;
         let fits = token_count
             .map(|count| count <= budget.input_tokens)
             .unwrap_or_else(|| chunk.chars().count() <= budget.initial_chars);
@@ -1605,7 +1726,7 @@ async fn extract_chunk_entities(
         title: &str,
         chunk: &str,
         interests: &[EntityInterestDefinition],
-        strict_schema: bool,
+        response_mode: ExtractionResponseMode,
     ) -> Result<(reqwest::StatusCode, String), ChunkExtractionError> {
         let response = client
             .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
@@ -1615,7 +1736,7 @@ async fn extract_chunk_entities(
                 title,
                 chunk,
                 interests,
-                strict_schema,
+                response_mode,
             ))
             .send()
             .await
@@ -1642,39 +1763,51 @@ async fn extract_chunk_entities(
         }
     }
 
-    let (status, mut response) =
-        request_completion(client, config, model, budget, title, chunk, interests, true).await?;
-    let used_fallback = if !status.is_success() && is_grammar_sampler_error(&response) {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[smooth:llm-extraction-fallback]\nmodel={model}\nreason=strict_schema_grammar_error\nerror={}",
-            truncate_chars(response.trim(), 1000)
-        );
-        let (fallback_status, fallback_response) = request_completion(
-            client, config, model, budget, title, chunk, interests, false,
+    let mut response_mode = extraction_response_mode(config, model);
+    let response = loop {
+        let (status, response) = request_completion(
+            client,
+            config,
+            model,
+            budget,
+            title,
+            chunk,
+            interests,
+            response_mode,
         )
         .await?;
-        if !fallback_status.is_success() {
-            return Err(http_extraction_error(fallback_status, &fallback_response));
+        if status.is_success() {
+            break response;
         }
-        response = fallback_response;
-        true
-    } else {
-        if !status.is_success() {
+        if !is_grammar_sampler_error(&response) {
             return Err(http_extraction_error(status, &response));
         }
-        false
+
+        let fallback_mode = match next_extraction_response_mode(model, response_mode) {
+            Some(fallback_mode) => fallback_mode,
+            None => {
+                return Err(http_extraction_error(status, &response));
+            }
+        };
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[smooth:llm-extraction-fallback]\nmodel={model}\nfrom={}\nto={}\nerror={}",
+            response_mode.log_name(),
+            fallback_mode.log_name(),
+            truncate_chars(response.trim(), 1000)
+        );
+        remember_extraction_response_mode(config, model, fallback_mode);
+        response_mode = fallback_mode;
     };
-    #[cfg(not(debug_assertions))]
-    let _ = used_fallback;
 
     #[cfg(debug_assertions)]
     println!(
         "[smooth:llm-extraction-response]\nmodel={model}\nmode={}\ninput_budget={}\noutput_budget={}\nchunk_chars={}\nraw_response={response}",
-        if used_fallback { "plain_json_fallback" } else { "strict_schema" },
+        response_mode.log_name(),
         budget.input_tokens,
         budget.max_output_tokens,
-        chunk.chars().count()
+        chunk.chars().count(),
+        response = truncate_chars(&response, 4000)
     );
 
     let response = serde_json::from_str::<ChatCompletionResponse>(&response).map_err(|error| {
@@ -1842,6 +1975,10 @@ pub(crate) fn llama_endpoint(base_url: &str, path: &str) -> String {
         base_url.trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+pub(crate) fn is_bonsai_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("bonsai")
 }
 
 fn llama_status(
@@ -2385,7 +2522,7 @@ async fn process_extraction_job(
         return Ok(());
     }
 
-    let budget = extraction_budget(model.context_tokens);
+    let budget = extraction_budget(model.context_tokens, &model.id);
     let interests = load_enabled_entity_interests(app)?;
     let chunks = fit_chunks_to_context(
         client,
@@ -4667,12 +4804,12 @@ mod tests {
 
     #[test]
     fn extraction_budget_scales_for_8192_context() {
-        let budget = extraction_budget(Some(8192));
+        let budget = extraction_budget(Some(8192), "prism-ml/Bonsai-27B-gguf:Q1_0");
 
         assert_eq!(budget.input_tokens, 6336);
         assert_eq!(budget.max_output_tokens, 1600);
-        assert_eq!(budget.initial_chars, 25344);
-        assert_eq!(budget.max_entities, 64);
+        assert_eq!(budget.initial_chars, 5760);
+        assert_eq!(budget.max_entities, 32);
     }
 
     #[test]
@@ -4687,12 +4824,97 @@ Generation prompt:
 '"#;
 
         assert!(is_grammar_sampler_error(body));
+        assert!(is_grammar_sampler_error(
+            r#"{"error":{"message":"Failed to initialize samplers: std::exception"}}"#
+        ));
         assert!(!is_grammar_sampler_error("ordinary HTTP failure"));
     }
 
     #[test]
+    fn extraction_payload_uses_json_object_compatibility_mode() {
+        let model = "prism-ml/Bonsai-27B-gguf:Q1_0";
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), model);
+        let payload = extraction_request_payload(
+            model,
+            budget,
+            "Test note",
+            "Curvo uses local models.",
+            &[],
+            ExtractionResponseMode::JsonObject,
+        );
+
+        assert_eq!(payload["response_format"], json!({ "type": "json_object" }));
+        assert_eq!(payload["temperature"], 0.0);
+        let system_prompt = payload["messages"][0]["content"]
+            .as_str()
+            .expect("system prompt");
+        assert!(system_prompt.contains("Do not use a key named type"));
+        assert!(system_prompt.contains("\"entity_type\""));
+    }
+
+    #[test]
+    fn plain_extraction_payload_omits_response_format() {
+        let model = "prism-ml/Bonsai-27B-gguf:Q1_0";
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), model);
+        let payload = extraction_request_payload(
+            model,
+            budget,
+            "Test note",
+            "Curvo uses local models.",
+            &[],
+            ExtractionResponseMode::PlainJson,
+        );
+
+        assert!(payload.get("response_format").is_none());
+    }
+
+    #[test]
+    fn gemma_extraction_preserves_legacy_profile() {
+        let model = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL";
+        let budget = extraction_budget(Some(8192), model);
+        let payload = extraction_request_payload(
+            model,
+            budget,
+            "Test note",
+            "Curvo uses local models.",
+            &[],
+            ExtractionResponseMode::StrictSchema,
+        );
+        let system_prompt = payload["messages"][0]["content"]
+            .as_str()
+            .expect("system prompt");
+        let user_prompt = payload["messages"][1]["content"]
+            .as_str()
+            .expect("user prompt");
+
+        assert_eq!(budget.initial_chars, 25_344);
+        assert_eq!(budget.max_entities, 64);
+        assert_eq!(payload["temperature"], 0.1);
+        assert!(system_prompt.contains("Return only the schema-constrained JSON"));
+        assert!(!user_prompt.contains("Return at most"));
+        assert_eq!(
+            next_extraction_response_mode(model, ExtractionResponseMode::StrictSchema),
+            Some(ExtractionResponseMode::PlainJson)
+        );
+    }
+
+    #[test]
+    fn bonsai_extraction_uses_compatibility_fallback_sequence() {
+        let model = "prism-ml/Bonsai-27B-gguf:Q1_0";
+
+        assert_eq!(
+            next_extraction_response_mode(model, ExtractionResponseMode::StrictSchema),
+            Some(ExtractionResponseMode::JsonObject)
+        );
+        assert_eq!(
+            next_extraction_response_mode(model, ExtractionResponseMode::JsonObject),
+            Some(ExtractionResponseMode::PlainJson)
+        );
+    }
+
+    #[test]
     fn paragraph_chunking_preserves_all_content() {
-        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS));
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), "test-model");
         let first = "A".repeat(budget.initial_chars - 100);
         let second = "B".repeat(250);
         let content = format!("{first}\n\n{second}");
@@ -4705,7 +4927,7 @@ Generation prompt:
 
     #[test]
     fn dense_large_paragraph_is_split_before_inference() {
-        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS));
+        let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), "test-model");
         let sentence = "Entity-rich sentence. ";
         let content = sentence.repeat((budget.initial_chars / sentence.len()) + 20);
         let chunks = initial_note_chunks(&content, budget.initial_chars);

@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use tauri::{ipc::Channel, AppHandle};
 
 use crate::{
-    chat_llama_target, db_error, llama_endpoint, new_id, note_context, now_string, open_database,
+    chat_llama_target, db_error, is_bonsai_model, llama_endpoint, new_id, note_context, now_string,
+    open_database,
 };
 
 /// Assumed context window (tokens) when the model doesn't report one.
@@ -23,6 +24,8 @@ const MAX_SUMMARY_LEVELS: usize = 8;
 const MAX_ANSWER_CONTINUATIONS: usize = 4;
 const MIN_SPLIT_CHARS: usize = 600;
 const INPUT_RESERVE_TOKENS: usize = 300;
+const DEFAULT_MAX_CHAT_ANSWER_TOKENS: usize = 1024;
+const BONSAI_MAX_CHAT_ANSWER_TOKENS: usize = 2048;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChatMessage {
@@ -337,9 +340,14 @@ struct Budget {
     initial_chunk_chars: usize,
 }
 
-fn budget_for(context_tokens: Option<usize>) -> Budget {
+fn budget_for(context_tokens: Option<usize>, model: &str) -> Budget {
     let ctx = context_tokens.unwrap_or(DEFAULT_CTX_TOKENS).max(1024);
-    let answer = (ctx / 4).clamp(256, 1024);
+    let max_answer_tokens = if is_bonsai_model(model) {
+        BONSAI_MAX_CHAT_ANSWER_TOKENS
+    } else {
+        DEFAULT_MAX_CHAT_ANSWER_TOKENS
+    };
+    let answer = (ctx / 4).clamp(256, max_answer_tokens);
     let summary = (ctx / 5).clamp(256, 900);
     let note_input_tokens = ctx.saturating_sub(answer + INPUT_RESERVE_TOKENS).max(400);
     let chunk_input_tokens = ctx
@@ -980,7 +988,7 @@ pub(crate) async fn generate_meeting_note_sections(
         .map_err(|error| error.to_string())?;
     let (base_url, preferred_model) = chat_llama_target(app)?;
     let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
-    let budget = budget_for(context_tokens);
+    let budget = budget_for(context_tokens, &model);
     let (memory, _) = prepare_note_memory_silent(
         app,
         transcript_note_id,
@@ -1036,7 +1044,7 @@ pub(crate) async fn complete_grounded_note_task(
         .map_err(|error| error.to_string())?;
     let (base_url, preferred_model) = chat_llama_target(app)?;
     let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
-    let mut budget = budget_for(context_tokens);
+    let mut budget = budget_for(context_tokens, &model);
     // The task itself occupies context in addition to note memory. Reduce the
     // note against a smaller budget so long instructions cannot make the final
     // request overflow after the memory has already been prepared.
@@ -1167,13 +1175,7 @@ async fn stream_chat_once(
     max_tokens: u32,
     on_event: &Channel<ChatStreamEvent>,
 ) -> Result<(String, Option<String>), String> {
-    let payload = json!({
-        "model": model,
-        "messages": messages,
-        "stream": true,
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-    });
+    let payload = chat_stream_payload(model, messages, max_tokens);
 
     let mut response = client
         .post(llama_endpoint(base_url, "/v1/chat/completions"))
@@ -1240,6 +1242,25 @@ async fn stream_chat_once(
     Ok((full, finish_reason))
 }
 
+fn chat_stream_payload(
+    model: &str,
+    messages: &[serde_json::Value],
+    max_tokens: u32,
+) -> serde_json::Value {
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+        "temperature": 0.4,
+        "max_tokens": max_tokens
+    });
+    if is_bonsai_model(model) {
+        payload["reasoning_format"] = json!("none");
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+    payload
+}
+
 async fn stream_completion(
     app: &AppHandle,
     on_event: &Channel<ChatStreamEvent>,
@@ -1257,7 +1278,7 @@ async fn stream_completion(
         .map_err(|error| error.to_string())?;
 
     let (model, context_tokens) = resolve_model(&client, base_url, preferred_model).await?;
-    let budget = budget_for(context_tokens);
+    let budget = budget_for(context_tokens, &model);
     let (context, summarized) = prepare_note_memory(
         app,
         note_id,
@@ -1296,7 +1317,14 @@ async fn stream_completion(
         }
 
         if continuation == MAX_ANSWER_CONTINUATIONS {
-            return Ok(full);
+            if !is_bonsai_model(&model) {
+                return Ok(full);
+            }
+            return Err(format!(
+                "The chat answer exceeded {} output tokens across {} completion parts",
+                budget.answer_max_tokens,
+                MAX_ANSWER_CONTINUATIONS + 1
+            ));
         }
 
         let _ = on_event.send(ChatStreamEvent::Status {
@@ -1310,4 +1338,38 @@ async fn stream_completion(
     }
 
     Ok(full)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bonsai_chat_budget_and_payload_preserve_visible_output() {
+        let budget = budget_for(Some(65_536), "prism-ml/Bonsai-27B-gguf:Q1_0");
+        let messages = [json!({ "role": "user", "content": "What are the action items?" })];
+        let payload = chat_stream_payload(
+            "prism-ml/Bonsai-27B-gguf:Q1_0",
+            &messages,
+            budget.answer_max_tokens,
+        );
+
+        assert_eq!(budget.answer_max_tokens, 2048);
+        assert_eq!(payload["max_tokens"], 2048);
+        assert_eq!(payload["reasoning_format"], "none");
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+    }
+
+    #[test]
+    fn gemma_chat_preserves_legacy_budget_and_payload() {
+        let model = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL";
+        let budget = budget_for(Some(65_536), model);
+        let messages = [json!({ "role": "user", "content": "What are the action items?" })];
+        let payload = chat_stream_payload(model, &messages, budget.answer_max_tokens);
+
+        assert_eq!(budget.answer_max_tokens, 1024);
+        assert_eq!(payload["max_tokens"], 1024);
+        assert!(payload.get("reasoning_format").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
+    }
 }
