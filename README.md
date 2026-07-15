@@ -36,6 +36,17 @@ npm run tauri:build       # Metal (default on macOS)
 npm run tauri:build:cpu   # CPU-only, no acceleration feature
 ```
 
+These commands run `cargo clean` for the main Tauri crate and the diarization
+sidecar before building. This prevents old feature combinations and incremental
+artifacts from accumulating in their `target` directories. Development commands
+do not clean automatically, so restarting `tauri dev` remains fast.
+
+Additional Tauri build options can be forwarded after `--`:
+
+```bash
+npm run tauri:build -- --debug --bundles app
+```
+
 The build stages `llama-server` as a Tauri sidecar. On macOS it also copies,
 rewrites, and signs the sidecar's non-system dynamic libraries so the app does
 not depend on Homebrew at runtime. Set `LLAMA_SERVER_PATH` when the executable
