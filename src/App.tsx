@@ -3632,9 +3632,9 @@ function MeetingSourcePicker({
 // Each sub-section is its own rail item so the pane shows exactly one section
 // at a time — minimal scrolling, direct navigation (macOS System-Settings style).
 type SettingsSection =
-  | "ai-default"
-  | "ai-remote"
   | "ai-local"
+  | "ai-remote"
+  | "ai-settings"
   | "audio-capture"
   | "system-audio"
   | "speech-to-text"
@@ -3654,9 +3654,9 @@ const SETTINGS_NAV: {
     group: "AI",
     icon: Bot,
     items: [
-      { id: "ai-default", label: "Default AI" },
-      { id: "ai-remote", label: "Remote AI" },
       { id: "ai-local", label: "Local AI" },
+      { id: "ai-remote", label: "Remote AI" },
+      { id: "ai-settings", label: "Settings" },
     ],
   },
   {
@@ -3760,7 +3760,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
   const [settingsSection, setSettingsSection] =
-    useState<SettingsSection>("ai-default");
+    useState<SettingsSection>("ai-local");
   const setSettingsError = useCallback((message: string | null) => {
     if (message) {
       toast.error(message);
@@ -4895,9 +4895,9 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       <div
         className="settings-tabgroup"
         hidden={
-          settingsSection !== "ai-default" &&
+          settingsSection !== "ai-local" &&
           settingsSection !== "ai-remote" &&
-          settingsSection !== "ai-local"
+          settingsSection !== "ai-settings"
         }
       >
         <LlamaSettings
@@ -4905,9 +4905,9 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           view={
             settingsSection === "ai-remote"
               ? "remote"
-              : settingsSection === "ai-local"
-                ? "local"
-                : "default"
+              : settingsSection === "ai-settings"
+                ? "settings"
+                : "local"
           }
         />
       </div>

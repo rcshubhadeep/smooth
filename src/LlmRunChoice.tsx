@@ -13,7 +13,8 @@ export default function LlmRunChoiceDialog({
   onCancel: () => void;
   onChoose: (provider: LlmProvider, remember: boolean) => void;
 }) {
-  const [remember, setRemember] = useState(false);
+  const [alwaysObey, setAlwaysObey] = useState(false);
+  const defaultLabel = defaultProvider === "inception" ? "Remote" : "Local";
 
   return (
     <div className="llm-choice-backdrop" onMouseDown={onCancel}>
@@ -35,7 +36,7 @@ export default function LlmRunChoiceDialog({
         </header>
 
         <div className="llm-choice-options">
-          <button type="button" onClick={() => onChoose("local", remember)}>
+          <button type="button" onClick={() => onChoose("local", alwaysObey)}>
             <Cpu size={18} />
             <span>
               <strong>Local</strong>
@@ -43,10 +44,10 @@ export default function LlmRunChoiceDialog({
             </span>
             {defaultProvider === "local" ? <em>Default</em> : null}
           </button>
-          <button type="button" onClick={() => onChoose("inception", remember)}>
+          <button type="button" onClick={() => onChoose("inception", alwaysObey)}>
             <Cloud size={18} />
             <span>
-              <strong>Inception</strong>
+              <strong>Remote</strong>
               <small>Uses Mercury 2 remotely</small>
             </span>
             {defaultProvider === "inception" ? <em>Default</em> : null}
@@ -56,10 +57,16 @@ export default function LlmRunChoiceDialog({
         <label className="llm-choice-remember">
           <input
             type="checkbox"
-            checked={remember}
-            onChange={(event) => setRemember(event.currentTarget.checked)}
+            checked={alwaysObey}
+            onChange={(event) => setAlwaysObey(event.target.checked)}
           />
-          <span>Remember my choice for this session</span>
+          <span>
+            <strong>Always obey the global setting</strong>
+            <small>
+              Stop asking and always use your default provider ({defaultLabel}).
+              Turn this off again in Settings › AI › Settings.
+            </small>
+          </span>
         </label>
       </section>
     </div>

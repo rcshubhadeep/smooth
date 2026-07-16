@@ -449,7 +449,6 @@ export function AgentsView({
   const [slackShare, setSlackShare] = useState<{ note: AgentNoteRef; provider: LlmProvider | null } | null>(null);
   const [followUp, setFollowUp] = useState<{ note: AgentNoteRef; provider: LlmProvider | null } | null>(null);
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
-  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
   const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
 
   // Note-scoped agents run against the currently-open note (falling back to the
@@ -475,7 +474,6 @@ export function AgentsView({
 
   useEffect(() => {
     let active = true;
-    setSessionProvider(null);
     setPendingAgent(null);
     loadLlmPreferences()
       .then((preferences) => {
@@ -524,20 +522,17 @@ export function AgentsView({
       return;
     }
 
-    let preferences = llmPreferences;
-    if (!preferences) {
-      try {
-        preferences = await loadLlmPreferences();
-        setLlmPreferences(preferences);
-      } catch {
-        preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
-      }
+    // Reload fresh each run so toggling "always obey" in Settings applies now.
+    let preferences: LlmPreferences;
+    try {
+      preferences = await loadLlmPreferences();
+      setLlmPreferences(preferences);
+    } catch {
+      preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
     }
 
     if (preferences.alwaysObeyGlobal) {
       await executeStart(agent, null);
-    } else if (sessionProvider) {
-      await executeStart(agent, sessionProvider);
     } else {
       setPendingAgent(agent);
     }
@@ -548,11 +543,16 @@ export function AgentsView({
       defaultProvider={llmPreferences.defaultProvider}
       actionLabel={`Run “${pendingAgent.name}” with:`}
       onCancel={() => setPendingAgent(null)}
-      onChoose={(provider, remember) => {
+      onChoose={(provider, alwaysObey) => {
         const agent = pendingAgent;
         setPendingAgent(null);
-        if (remember) setSessionProvider(provider);
-        void executeStart(agent, provider);
+        if (alwaysObey) {
+          void invoke("set_always_obey_global_llm", { enabled: true });
+          setLlmPreferences((prev) =>
+            prev ? { ...prev, alwaysObeyGlobal: true } : prev,
+          );
+        }
+        if (agent) void executeStart(agent, provider);
       }}
     />
   ) : null;
@@ -1290,13 +1290,11 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
   const [slackProvider, setSlackProvider] = useState<LlmProvider | null | undefined>(undefined);
   const [followUpProvider, setFollowUpProvider] = useState<LlmProvider | null | undefined>(undefined);
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
-  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
   const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
   const busy = run.status === "running";
 
   useEffect(() => {
     let active = true;
-    setSessionProvider(null);
     setPendingAgent(null);
     loadLlmPreferences()
       .then((preferences) => {
@@ -1329,20 +1327,17 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
   }
 
   async function start(agent: AgentDefinition) {
-    let preferences = llmPreferences;
-    if (!preferences) {
-      try {
-        preferences = await loadLlmPreferences();
-        setLlmPreferences(preferences);
-      } catch {
-        preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
-      }
+    // Reload fresh each run so toggling "always obey" in Settings applies now.
+    let preferences: LlmPreferences;
+    try {
+      preferences = await loadLlmPreferences();
+      setLlmPreferences(preferences);
+    } catch {
+      preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
     }
 
     if (preferences.alwaysObeyGlobal) {
       await executeStart(agent, null);
-    } else if (sessionProvider) {
-      await executeStart(agent, sessionProvider);
     } else {
       setPendingAgent(agent);
     }
@@ -1427,11 +1422,16 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
           defaultProvider={llmPreferences.defaultProvider}
           actionLabel={`Run “${pendingAgent.name}” with:`}
           onCancel={() => setPendingAgent(null)}
-          onChoose={(provider, remember) => {
+          onChoose={(provider, alwaysObey) => {
             const agent = pendingAgent;
             setPendingAgent(null);
-            if (remember) setSessionProvider(provider);
-            void executeStart(agent, provider);
+            if (alwaysObey) {
+              void invoke("set_always_obey_global_llm", { enabled: true });
+              setLlmPreferences((prev) =>
+                prev ? { ...prev, alwaysObeyGlobal: true } : prev,
+              );
+            }
+            if (agent) void executeStart(agent, provider);
           }}
         />
       ) : null}

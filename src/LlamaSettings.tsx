@@ -93,7 +93,7 @@ export default function LlamaSettings({
   view,
 }: {
   onError: (message: string) => void;
-  view: "default" | "remote" | "local";
+  view: "remote" | "local" | "settings";
 }) {
   const [config, setConfig] = useState(defaultConfig);
   const [status, setStatus] = useState<LlamaStatus | null>(null);
@@ -152,6 +152,24 @@ export default function LlamaSettings({
       onError(String(error));
     } finally {
       setSavingGlobalLock(false);
+    }
+  }
+
+  async function setDefaultProvider(provider: "local" | "inception") {
+    if (config.default_provider === provider) return;
+    const previous = config.default_provider;
+    setConfig((current) => ({ ...current, default_provider: provider }));
+    setBusy(true);
+    try {
+      const saved = await invoke<LlamaConfig>("save_llama_config", {
+        config: { ...config, default_provider: provider },
+      });
+      setConfig(saved);
+    } catch (error) {
+      setConfig((current) => ({ ...current, default_provider: previous }));
+      onError(String(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -224,51 +242,27 @@ export default function LlamaSettings({
         ? RefreshCw
         : CircleAlert;
 
+  const providerControls = (provider: "local" | "inception") => (
+    <div className="llama-provider-controls">
+      <label className="settings-checkbox">
+        <input
+          type="checkbox"
+          checked={config.default_provider === provider}
+          disabled={config.default_provider === provider || busy || loading}
+          onChange={() => void setDefaultProvider(provider)}
+        />
+        <span>
+          <strong>Make default</strong>
+          <small>
+            Automatic extraction and background tasks use this provider.
+          </small>
+        </span>
+      </label>
+    </div>
+  );
+
   return (
     <>
-      {view === "default" ? (
-      <section className="settings-section llama-settings">
-        <div className="section-heading">
-          <Server size={18} />
-          <span>Default LLM</span>
-        </div>
-        <div className="segmented llama-mode-toggle" aria-label="Default LLM provider">
-          <button
-            type="button"
-            className={config.default_provider === "local" ? "active" : ""}
-            onClick={() => setConfig((current) => ({ ...current, default_provider: "local" }))}
-          >
-            Local
-          </button>
-          <button
-            type="button"
-            className={config.default_provider === "inception" ? "active" : ""}
-            onClick={() => setConfig((current) => ({ ...current, default_provider: "inception" }))}
-          >
-            Remote
-          </button>
-        </div>
-        <p className="settings-help">
-          Automatic extraction and background tasks use this provider. Chat and agent runs can ask which provider to use.
-        </p>
-        <label className="settings-checkbox llama-global-lock">
-          <input
-            type="checkbox"
-            checked={config.always_obey_global_llm}
-            disabled={loading || savingGlobalLock}
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              void updateGlobalLock(enabled);
-            }}
-          />
-          <span>
-            <strong>Always obey the global LLM setting</strong>
-            <small>Do not ask before chat or agent runs; always use the provider selected above.</small>
-          </span>
-        </label>
-      </section>
-      ) : null}
-
       {view === "remote" ? (
       <section className="settings-section llama-settings">
         <div className="section-heading">
@@ -320,6 +314,7 @@ export default function LlamaSettings({
             </button>
           ) : null}
         </div>
+        {providerControls("inception")}
       </section>
       ) : null}
 
@@ -454,6 +449,7 @@ export default function LlamaSettings({
             )
           ) : null}
         </div>
+        {providerControls("local")}
       </section>
 
       <section className="settings-section">
@@ -501,6 +497,31 @@ export default function LlamaSettings({
         ))}
       </section>
       </>
+      ) : null}
+
+      {view === "settings" ? (
+      <section className="settings-section llama-settings">
+        <div className="section-heading">
+          <span>Settings</span>
+        </div>
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={config.always_obey_global_llm}
+            disabled={loading || savingGlobalLock}
+            onChange={(event) => void updateGlobalLock(event.target.checked)}
+          />
+          <span>
+            <strong>Always obey the global setting</strong>
+            <small>
+              Skip the provider prompt and always use your default provider for
+              chat and agent runs. When off, Smooth asks which provider to use
+              each time. You can also turn this on from the choose-provider
+              dialog; uncheck it here to start being asked again.
+            </small>
+          </span>
+        </label>
+      </section>
       ) : null}
     </>
   );

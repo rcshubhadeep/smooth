@@ -1612,6 +1612,45 @@ select:hover {
   gap: 12px;
 }
 
+.llama-provider-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.settings-checkbox input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.settings-checkbox > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-checkbox strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.settings-checkbox small {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .llama-cache-path {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4847,7 +4886,7 @@ body.resizing {
 
 .llm-choice-remember {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 8px 14px 14px;
   color: var(--text-soft);
@@ -4857,6 +4896,25 @@ body.resizing {
 
 .llm-choice-remember input {
   accent-color: var(--accent);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.llm-choice-remember > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.llm-choice-remember strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.llm-choice-remember small {
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 /* Preparing / thinking status */

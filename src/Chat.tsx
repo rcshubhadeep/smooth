@@ -154,7 +154,6 @@ export default function NoteChat({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
-  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const streamState = useSyncExternalStore(
@@ -185,7 +184,6 @@ export default function NoteChat({
 
   useEffect(() => {
     let active = true;
-    setSessionProvider(null);
     setPendingQuestion(null);
     loadLlmPreferences()
       .then((preferences) => {
@@ -270,25 +268,23 @@ export default function NoteChat({
       const question = text.trim();
       if (!question || isSending || pendingQuestion) return;
 
-      let preferences = llmPreferences;
-      if (!preferences) {
-        try {
-          preferences = await loadLlmPreferences();
-          setLlmPreferences(preferences);
-        } catch {
-          preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
-        }
+      // Reload fresh each send so toggling "always obey" in Settings takes
+      // effect immediately (no stale cached preference).
+      let preferences: LlmPreferences;
+      try {
+        preferences = await loadLlmPreferences();
+        setLlmPreferences(preferences);
+      } catch {
+        preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
       }
 
       if (preferences.alwaysObeyGlobal) {
         await performSend(question, null);
-      } else if (sessionProvider) {
-        await performSend(question, sessionProvider);
       } else {
         setPendingQuestion(question);
       }
     },
-    [isSending, llmPreferences, pendingQuestion, performSend, sessionProvider],
+    [isSending, pendingQuestion, performSend],
   );
 
   async function clearChat() {
@@ -444,11 +440,16 @@ export default function NoteChat({
           defaultProvider={llmPreferences.defaultProvider}
           actionLabel="Send this chat message with:"
           onCancel={() => setPendingQuestion(null)}
-          onChoose={(provider, remember) => {
+          onChoose={(provider, alwaysObey) => {
             const question = pendingQuestion;
             setPendingQuestion(null);
-            if (remember) setSessionProvider(provider);
-            void performSend(question, provider);
+            if (alwaysObey) {
+              void invoke("set_always_obey_global_llm", { enabled: true });
+              setLlmPreferences((prev) =>
+                prev ? { ...prev, alwaysObeyGlobal: true } : prev,
+              );
+            }
+            if (question) void performSend(question, provider);
           }}
         />
       ) : null}
