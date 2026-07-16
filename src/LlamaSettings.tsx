@@ -174,6 +174,25 @@ export default function LlamaSettings({
     }
   }
 
+  async function removeRemoteKey() {
+    setBusy(true);
+    try {
+      const saved = await invoke<LlamaConfig>("save_llama_config", {
+        config: {
+          ...config,
+          inception_api_key: null,
+          clear_inception_api_key: true,
+        },
+      });
+      setConfig(saved);
+      await refresh();
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function start() {
     setBusy(true);
     try {
@@ -226,7 +245,7 @@ export default function LlamaSettings({
             className={config.default_provider === "inception" ? "active" : ""}
             onClick={() => setConfig((current) => ({ ...current, default_provider: "inception" }))}
           >
-            Inception
+            Remote
           </button>
         </div>
         <p className="settings-help">
@@ -253,7 +272,7 @@ export default function LlamaSettings({
       {view === "remote" ? (
       <section className="settings-section llama-settings">
         <div className="section-heading">
-          <span>Inception</span>
+          <span>Remote</span>
           <small>OpenAI-compatible remote API</small>
         </div>
         <label className="settings-field">
@@ -268,7 +287,7 @@ export default function LlamaSettings({
                 clear_inception_api_key: false,
               }))
             }
-            placeholder={config.inception_api_key_configured ? "Configured; enter a new key to replace" : "Enter Inception API key"}
+            placeholder={config.inception_api_key_configured ? "Configured; enter a new key to replace" : "Enter API key"}
             autoComplete="off"
           />
         </label>
@@ -286,21 +305,20 @@ export default function LlamaSettings({
             onChange={(event) => setConfig((current) => ({ ...current, inception_base_url: event.target.value }))}
           />
         </label>
-        {config.inception_api_key_configured ? (
-          <label className="settings-checkbox">
-            <input
-              type="checkbox"
-              checked={config.clear_inception_api_key}
-              onChange={(event) => setConfig((current) => ({ ...current, clear_inception_api_key: event.target.checked }))}
-            />
-            <span>Remove saved API key</span>
-          </label>
-        ) : null}
         {remoteStatus ? <p className="settings-help">{remoteStatus}</p> : null}
         <div className="settings-actions">
           <button type="button" onClick={() => void testInception()} disabled={busy || loading}>
             <RefreshCw size={15} /> Test connection
           </button>
+          {config.inception_api_key_configured ? (
+            <button
+              type="button"
+              onClick={() => void removeRemoteKey()}
+              disabled={busy || loading}
+            >
+              Remove saved API key
+            </button>
+          ) : null}
         </div>
       </section>
       ) : null}
@@ -364,20 +382,6 @@ export default function LlamaSettings({
                     setConfig((current) => ({
                       ...current,
                       context_size: Number(event.target.value),
-                    }))
-                  }
-                />
-              </label>
-              <label className="settings-field">
-                <span>GPU layers</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={config.gpu_layers}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      gpu_layers: Number(event.target.value),
                     }))
                   }
                 />
