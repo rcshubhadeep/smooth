@@ -64,8 +64,17 @@ pub(crate) async fn agent_run(
     agent_id: Option<String>,
     prompt: String,
     max_steps: Option<u8>,
+    selection: Option<crate::llm::LlmSelection>,
 ) -> Result<flow::AgentRunResult, String> {
-    flow::run_agent_once(app, &runtime, agent_id.as_deref(), prompt, max_steps).await
+    flow::run_agent_once(
+        app,
+        &runtime,
+        agent_id.as_deref(),
+        prompt,
+        max_steps,
+        selection,
+    )
+    .await
 }
 
 /// Tauri bridge: inspect recent persisted agent runs.

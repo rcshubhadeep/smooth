@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
-use crate::{chat_llama_target, is_bonsai_model, llama_endpoint};
+use crate::{
+    is_bonsai_model, llama_endpoint,
+    llm::{is_remote_model, resolve_target, LlmSelection},
+};
 
 use super::context::AgentContext;
 use super::persistence::{AgentEvent, AgentRunRecorder};
@@ -25,6 +28,7 @@ const DEFAULT_MAX_AGENT_STEPS: u8 = 3;
 const MAX_AGENT_STEPS: u8 = 6;
 const DEFAULT_AGENT_MAX_TOKENS: u32 = 1024;
 const BONSAI_AGENT_MAX_TOKENS: u32 = 2048;
+const MERCURY_AGENT_MAX_TOKENS: u32 = 4096;
 const MAX_AGENT_ANSWER_CONTINUATIONS: usize = 3;
 
 #[derive(Debug, Serialize)]
@@ -126,8 +130,18 @@ pub(crate) async fn run_agent_once(
     agent_id: Option<&str>,
     prompt: String,
     max_steps: Option<u8>,
+    selection: Option<LlmSelection>,
 ) -> Result<AgentRunResult, String> {
-    run_agent_once_with_kind(app, runtime, agent_id, prompt, max_steps, "foreground").await
+    run_agent_once_with_kind(
+        app,
+        runtime,
+        agent_id,
+        prompt,
+        max_steps,
+        selection,
+        "foreground",
+    )
+    .await
 }
 
 pub(crate) async fn run_agent_once_with_kind(
@@ -136,6 +150,7 @@ pub(crate) async fn run_agent_once_with_kind(
     agent_id: Option<&str>,
     prompt: String,
     max_steps: Option<u8>,
+    selection: Option<LlmSelection>,
     run_kind: &str,
 ) -> Result<AgentRunResult, String> {
     let prompt = prompt.trim().to_string();
@@ -158,7 +173,15 @@ pub(crate) async fn run_agent_once_with_kind(
         error: None,
     })?;
 
-    let outcome = run_agent_once_inner(app, runtime, prompt, max_steps, &mut recorder).await;
+    let outcome = run_agent_once_inner(
+        app,
+        runtime,
+        prompt,
+        max_steps,
+        selection.as_ref(),
+        &mut recorder,
+    )
+    .await;
     match &outcome {
         Ok(result) => recorder.complete_success(&result.answer, &result.raw_model_output)?,
         Err(error) => {
@@ -182,6 +205,7 @@ async fn run_agent_once_inner(
     runtime: &AgentRuntime,
     prompt: String,
     max_steps: u8,
+    selection: Option<&LlmSelection>,
     recorder: &mut AgentRunRecorder,
 ) -> Result<AgentRunResult, String> {
     let ctx = AgentContext::new(app.clone());
@@ -196,13 +220,15 @@ async fn run_agent_once_inner(
         .map(openai_tool_descriptor)
         .collect::<Vec<_>>();
 
-    let (base_url, preferred_model) = chat_llama_target(&app)?;
-    let client = reqwest::Client::builder()
+    let target = resolve_target(&app, selection)?;
+    let base_url = target.base_url.clone();
+    let client = target
+        .client_builder()?
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| error.to_string())?;
-    let model = resolve_model(&client, &base_url, preferred_model).await?;
+    let model = resolve_model(&client, &base_url, target.model.clone()).await?;
     recorder.set_model(&model, &base_url)?;
 
     let mut messages = vec![
@@ -505,7 +531,9 @@ async fn complete_agent_turn(
 }
 
 fn agent_max_tokens(model: &str) -> u32 {
-    if is_bonsai_model(model) {
+    if is_remote_model(model) {
+        MERCURY_AGENT_MAX_TOKENS
+    } else if is_bonsai_model(model) {
         BONSAI_AGENT_MAX_TOKENS
     } else {
         DEFAULT_AGENT_MAX_TOKENS
@@ -523,6 +551,8 @@ fn agent_completion_payload(model: &str, messages: &[Value], tools: Option<&[Val
     if is_bonsai_model(model) {
         payload["reasoning_format"] = json!("none");
         payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    } else if is_remote_model(model) {
+        payload["reasoning_effort"] = json!("low");
     }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
         payload["tools"] = Value::Array(tools.to_vec());
@@ -540,7 +570,7 @@ async fn complete_agent_answer(
     initial_finish_reason: Option<String>,
     recorder: &mut AgentRunRecorder,
 ) -> Result<String, String> {
-    if !is_bonsai_model(model) {
+    if !is_bonsai_model(model) && !is_remote_model(model) {
         return Ok(initial_output);
     }
 
@@ -959,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn model_profiles_keep_gemma_legacy_and_tune_bonsai() {
+    fn model_profiles_keep_gemma_legacy_and_tune_bonsai_and_mercury() {
         let messages = [json!({ "role": "user", "content": "Summarize this note" })];
         let gemma = agent_completion_payload(
             "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL",
@@ -967,6 +997,7 @@ mod tests {
             None,
         );
         let bonsai = agent_completion_payload("prism-ml/Bonsai-27B-gguf:Q1_0", &messages, None);
+        let mercury = agent_completion_payload("mercury-2", &messages, None);
 
         assert_eq!(gemma["max_tokens"], 1024);
         assert!(gemma.get("reasoning_format").is_none());
@@ -974,6 +1005,10 @@ mod tests {
         assert_eq!(bonsai["max_tokens"], 2048);
         assert_eq!(bonsai["reasoning_format"], "none");
         assert_eq!(bonsai["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(mercury["max_tokens"], 4096);
+        assert_eq!(mercury["reasoning_effort"], "low");
+        assert!(mercury.get("reasoning_format").is_none());
+        assert!(mercury.get("chat_template_kwargs").is_none());
     }
 
     #[test]

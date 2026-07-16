@@ -2,15 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, Loader2, MessageSquare, Send, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AgentNoteRef, AgentRunResult } from "./Agents";
+import type { LlmProvider } from "./llmPreferences";
 
 type NoteWithContent = AgentNoteRef & { content: string };
 type Mode = "as-written" | "ai";
 
 export default function SlackShareAgent({
   note,
+  provider,
   onClose,
 }: {
   note: AgentNoteRef;
+  provider: LlmProvider | null;
   onClose: () => void;
 }) {
   const [destination, setDestination] = useState(
@@ -50,6 +53,7 @@ export default function SlackShareAgent({
           `Editing instruction: ${instructions.trim()}`,
         ].join("\n"),
         maxSteps: 3,
+        selection: provider ? { provider, model: null } : null,
       });
       setMessage(result.answer.trim());
     } catch (processError) {
@@ -131,7 +135,6 @@ export default function SlackShareAgent({
                 Process with AI
               </button>
             </div>
-
             {mode === "ai" ? (
               <div className="slack-share-ai">
                 <label className="settings-field">

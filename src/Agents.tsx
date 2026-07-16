@@ -22,6 +22,12 @@ import SlackShareAgent from "./SlackShareAgent";
 import FollowUpEmailAgent from "./FollowUpEmailAgent";
 import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
+import LlmRunChoiceDialog from "./LlmRunChoice";
+import {
+  loadLlmPreferences,
+  type LlmPreferences,
+  type LlmProvider,
+} from "./llmPreferences";
 
 // ---------------------------------------------------------------------------
 // Domain types + built-in agents
@@ -159,12 +165,14 @@ export function composeAgentPrompt(
 export async function runAgent(
   agent: AgentDefinition,
   note?: AgentNoteRef | null,
+  provider: LlmProvider | null = null,
 ): Promise<AgentRunResult> {
   const prompt = composeAgentPrompt(agent, note);
   return invoke<AgentRunResult>("agent_run", {
     agentId: agent.id,
     prompt,
     maxSteps: agent.maxSteps ?? null,
+    selection: provider ? { provider, model: null } : null,
   });
 }
 
@@ -438,8 +446,11 @@ export function AgentsView({
   const [editor, setEditor] = useState<EditorState>(null);
   // Inline confirm — native window.confirm() is blocked in the Tauri webview.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [slackShareNote, setSlackShareNote] = useState<AgentNoteRef | null>(null);
-  const [followUpNote, setFollowUpNote] = useState<AgentNoteRef | null>(null);
+  const [slackShare, setSlackShare] = useState<{ note: AgentNoteRef; provider: LlmProvider | null } | null>(null);
+  const [followUp, setFollowUp] = useState<{ note: AgentNoteRef; provider: LlmProvider | null } | null>(null);
+  const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
+  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
+  const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
 
   // Note-scoped agents run against the currently-open note (falling back to the
   // first note). The Agents page no longer shows a note picker — those agents
@@ -462,7 +473,23 @@ export function AgentsView({
     if (CUSTOM_AGENTS_ENABLED) void refresh();
   }, []);
 
-  async function start(agent: AgentDefinition) {
+  useEffect(() => {
+    let active = true;
+    setSessionProvider(null);
+    setPendingAgent(null);
+    loadLlmPreferences()
+      .then((preferences) => {
+        if (active) setLlmPreferences(preferences);
+      })
+      .catch(() => {
+        if (active) setLlmPreferences({ defaultProvider: "local", alwaysObeyGlobal: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentNoteId]);
+
+  async function executeStart(agent: AgentDefinition, provider: LlmProvider | null) {
     const note = agent.scope === "note" ? targetNote : null;
     if (agent.scope === "note" && !note) {
       setRun({
@@ -474,22 +501,61 @@ export function AgentsView({
       return;
     }
     if (agent.id === "share-note-slack" && note) {
-      setSlackShareNote(note);
+      setSlackShare({ note, provider });
       return;
     }
     if (agent.id === "meeting-follow-up-email" && note) {
-      setFollowUpNote(note);
+      setFollowUp({ note, provider });
       return;
     }
 
     setRun({ status: "running", agent, note });
     try {
-      const result = await runAgent(agent, note);
+      const result = await runAgent(agent, note, provider);
       setRun({ status: "done", agent, note, result });
     } catch (error) {
       setRun({ status: "error", agent, note, message: String(error) });
     }
   }
+
+  async function start(agent: AgentDefinition) {
+    if (agent.scope === "note" && !targetNote) {
+      await executeStart(agent, null);
+      return;
+    }
+
+    let preferences = llmPreferences;
+    if (!preferences) {
+      try {
+        preferences = await loadLlmPreferences();
+        setLlmPreferences(preferences);
+      } catch {
+        preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
+      }
+    }
+
+    if (preferences.alwaysObeyGlobal) {
+      await executeStart(agent, null);
+    } else if (sessionProvider) {
+      await executeStart(agent, sessionProvider);
+    } else {
+      setPendingAgent(agent);
+    }
+  }
+
+  const choiceDialog = pendingAgent && llmPreferences ? (
+    <LlmRunChoiceDialog
+      defaultProvider={llmPreferences.defaultProvider}
+      actionLabel={`Run “${pendingAgent.name}” with:`}
+      onCancel={() => setPendingAgent(null)}
+      onChoose={(provider, remember) => {
+        const agent = pendingAgent;
+        setPendingAgent(null);
+        if (remember) setSessionProvider(provider);
+        void executeStart(agent, provider);
+      }}
+    />
+  ) : null;
 
   async function remove(agent: AgentDefinition) {
     try {
@@ -503,32 +569,38 @@ export function AgentsView({
   }
 
   // A live run takes over the whole view; the editor is next in priority.
-  if (slackShareNote) {
-    return <SlackShareAgent note={slackShareNote} onClose={() => setSlackShareNote(null)} />;
+  if (slackShare) {
+    return <SlackShareAgent note={slackShare.note} provider={slackShare.provider} onClose={() => setSlackShare(null)} />;
   }
 
-  if (followUpNote) {
-    return <FollowUpEmailAgent note={followUpNote} onClose={() => setFollowUpNote(null)} />;
+  if (followUp) {
+    return <FollowUpEmailAgent note={followUp.note} provider={followUp.provider} onClose={() => setFollowUp(null)} />;
   }
 
   if (run.status !== "idle") {
     return (
+      <>
       <AgentRunPanel
         run={run}
         onBack={() => setRun({ status: "idle" })}
         onRerun={() => void start(run.agent)}
       />
+      {choiceDialog}
+      </>
     );
   }
 
   if (inspect) {
     return (
+      <>
       <AgentInspect
         agent={inspect}
         note={inspect.scope === "note" ? targetNote : null}
         onRun={() => void start(inspect)}
         onBack={() => setInspect(null)}
       />
+      {choiceDialog}
+      </>
     );
   }
 
@@ -708,6 +780,7 @@ export function AgentsView({
           ) : null}
         </>
       ) : null}
+      {choiceDialog}
     </div>
   );
 }
@@ -1214,25 +1287,64 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
     [],
   );
   const [run, setRun] = useState<NoteRunState>({ status: "idle" });
-  const [slackShareOpen, setSlackShareOpen] = useState(false);
-  const [followUpOpen, setFollowUpOpen] = useState(false);
+  const [slackProvider, setSlackProvider] = useState<LlmProvider | null | undefined>(undefined);
+  const [followUpProvider, setFollowUpProvider] = useState<LlmProvider | null | undefined>(undefined);
+  const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
+  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
+  const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
   const busy = run.status === "running";
 
-  async function start(agent: AgentDefinition) {
+  useEffect(() => {
+    let active = true;
+    setSessionProvider(null);
+    setPendingAgent(null);
+    loadLlmPreferences()
+      .then((preferences) => {
+        if (active) setLlmPreferences(preferences);
+      })
+      .catch(() => {
+        if (active) setLlmPreferences({ defaultProvider: "local", alwaysObeyGlobal: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, [note.id]);
+
+  async function executeStart(agent: AgentDefinition, provider: LlmProvider | null) {
     if (agent.id === "share-note-slack") {
-      setSlackShareOpen(true);
+      setSlackProvider(provider);
       return;
     }
     if (agent.id === "meeting-follow-up-email") {
-      setFollowUpOpen(true);
+      setFollowUpProvider(provider);
       return;
     }
     setRun({ status: "running", agent });
     try {
-      const result = await runAgent(agent, note);
+      const result = await runAgent(agent, note, provider);
       setRun({ status: "done", agent, result });
     } catch (error) {
       setRun({ status: "error", agent, message: String(error) });
+    }
+  }
+
+  async function start(agent: AgentDefinition) {
+    let preferences = llmPreferences;
+    if (!preferences) {
+      try {
+        preferences = await loadLlmPreferences();
+        setLlmPreferences(preferences);
+      } catch {
+        preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
+      }
+    }
+
+    if (preferences.alwaysObeyGlobal) {
+      await executeStart(agent, null);
+    } else if (sessionProvider) {
+      await executeStart(agent, sessionProvider);
+    } else {
+      setPendingAgent(agent);
     }
   }
 
@@ -1304,11 +1416,24 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
         </div>
       ) : null}
 
-      {slackShareOpen ? (
-        <SlackShareAgent note={note} onClose={() => setSlackShareOpen(false)} />
+      {slackProvider !== undefined ? (
+        <SlackShareAgent note={note} provider={slackProvider ?? null} onClose={() => setSlackProvider(undefined)} />
       ) : null}
-      {followUpOpen ? (
-        <FollowUpEmailAgent note={note} onClose={() => setFollowUpOpen(false)} />
+      {followUpProvider !== undefined ? (
+        <FollowUpEmailAgent note={note} provider={followUpProvider ?? null} onClose={() => setFollowUpProvider(undefined)} />
+      ) : null}
+      {pendingAgent && llmPreferences ? (
+        <LlmRunChoiceDialog
+          defaultProvider={llmPreferences.defaultProvider}
+          actionLabel={`Run “${pendingAgent.name}” with:`}
+          onCancel={() => setPendingAgent(null)}
+          onChoose={(provider, remember) => {
+            const agent = pendingAgent;
+            setPendingAgent(null);
+            if (remember) setSessionProvider(provider);
+            void executeStart(agent, provider);
+          }}
+        />
       ) : null}
     </div>
   );

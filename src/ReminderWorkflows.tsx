@@ -337,6 +337,7 @@ export function ReminderWorkflowAssignment({
   const [steps, setSteps] = useState<ReminderWorkflowStepDraft[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [provider, setProvider] = useState<"default" | "local" | "inception">("default");
 
   async function save() {
     if (!steps.length) return;
@@ -344,7 +345,11 @@ export function ReminderWorkflowAssignment({
     setError(null);
     try {
       await invoke("set_reminder_workflow", {
-        input: { reminderId, steps },
+        input: {
+          reminderId,
+          steps,
+          selection: provider === "default" ? null : { provider, model: null },
+        },
       });
       await onChanged();
       setExpanded(false);
@@ -371,6 +376,19 @@ export function ReminderWorkflowAssignment({
   return (
     <section className="reminder-workflow-assignment">
       <ReminderWorkflowBuilder steps={steps} onChange={setSteps} />
+      <label className="settings-field reminder-workflow-provider">
+        <span>LLM provider</span>
+        <select
+          value={provider}
+          onChange={(event) =>
+            setProvider(event.currentTarget.value as "default" | "local" | "inception")
+          }
+        >
+          <option value="default">Use default</option>
+          <option value="local">Local</option>
+          <option value="inception">Inception</option>
+        </select>
+      </label>
       {error ? <p className="form-error">{error}</p> : null}
       <footer>
         <button type="button" onClick={() => setExpanded(false)}>Cancel</button>

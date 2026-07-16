@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, Loader2, Mail, RefreshCw, Send, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AgentNoteRef } from "./Agents";
+import type { LlmProvider } from "./llmPreferences";
 
 type PreparedFollowUp = {
   run_id: string;
@@ -18,9 +19,11 @@ type GmailDraftResult = {
 
 export default function FollowUpEmailAgent({
   note,
+  provider,
   onClose,
 }: {
   note: AgentNoteRef;
+  provider: LlmProvider | null;
   onClose: () => void;
 }) {
   const [to, setTo] = useState("");
@@ -35,7 +38,10 @@ export default function FollowUpEmailAgent({
     setError(null);
     try {
       const prepared = await invoke<PreparedFollowUp>("prepare_follow_up_email", {
-        request: { note_id: note.id },
+        request: {
+          note_id: note.id,
+          selection: provider ? { provider, model: null } : null,
+        },
       });
       setDraft(prepared);
     } catch (prepareError) {
@@ -47,7 +53,7 @@ export default function FollowUpEmailAgent({
 
   useEffect(() => {
     void prepare();
-  }, [note.id]);
+  }, [note.id, provider]);
 
   async function createDraft() {
     if (!draft) return;

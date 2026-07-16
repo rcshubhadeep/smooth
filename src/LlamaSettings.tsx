@@ -10,6 +10,8 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 type LlamaConfig = {
+  default_provider: "local" | "inception";
+  always_obey_global_llm: boolean;
   mode: "managed" | "external";
   base_url: string;
   preferred_model: string | null;
@@ -24,6 +26,11 @@ type LlamaConfig = {
   cache_type_v: string;
   spec_type: string;
   spec_draft_n_max: number;
+  inception_base_url: string;
+  inception_model: string;
+  inception_api_key: string | null;
+  clear_inception_api_key: boolean;
+  inception_api_key_configured: boolean;
 };
 
 type LlamaModel = {
@@ -53,6 +60,8 @@ type LlamaStatus = {
 };
 
 const defaultConfig: LlamaConfig = {
+  default_provider: "local",
+  always_obey_global_llm: false,
   mode: "managed",
   base_url: "http://127.0.0.1:8080",
   preferred_model: null,
@@ -67,6 +76,11 @@ const defaultConfig: LlamaConfig = {
   cache_type_v: "q8_0",
   spec_type: "draft-mtp",
   spec_draft_n_max: 2,
+  inception_base_url: "https://api.inceptionlabs.ai",
+  inception_model: "mercury-2",
+  inception_api_key: null,
+  clear_inception_api_key: false,
+  inception_api_key_configured: false,
 };
 
 function formatLargeValue(value: number | null, suffix: string) {
@@ -83,6 +97,8 @@ export default function LlamaSettings({
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [remoteStatus, setRemoteStatus] = useState<string | null>(null);
+  const [savingGlobalLock, setSavingGlobalLock] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -115,6 +131,40 @@ export default function LlamaSettings({
       const saved = await invoke<LlamaConfig>("save_llama_config", { config });
       setConfig(saved);
       await refresh();
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateGlobalLock(enabled: boolean) {
+    const previous = config.always_obey_global_llm;
+    setConfig((current) => ({ ...current, always_obey_global_llm: enabled }));
+    setSavingGlobalLock(true);
+    try {
+      const saved = await invoke<boolean>("set_always_obey_global_llm", { enabled });
+      setConfig((current) => ({ ...current, always_obey_global_llm: saved }));
+    } catch (error) {
+      setConfig((current) => ({ ...current, always_obey_global_llm: previous }));
+      onError(String(error));
+    } finally {
+      setSavingGlobalLock(false);
+    }
+  }
+
+  async function testInception() {
+    setBusy(true);
+    setRemoteStatus(null);
+    try {
+      const saved = await invoke<LlamaConfig>("save_llama_config", { config });
+      setConfig(saved);
+      const models = await invoke<LlamaModel[]>("test_inception_connection");
+      setRemoteStatus(
+        models.some((model) => model.id === saved.inception_model)
+          ? `${saved.inception_model} is available`
+          : `Connected; ${models.length} model${models.length === 1 ? "" : "s"} available`,
+      );
     } catch (error) {
       onError(String(error));
     } finally {
@@ -155,6 +205,100 @@ export default function LlamaSettings({
 
   return (
     <>
+      <section className="settings-section llama-settings">
+        <div className="section-heading">
+          <Server size={18} />
+          <span>Default LLM</span>
+        </div>
+        <div className="segmented llama-mode-toggle" aria-label="Default LLM provider">
+          <button
+            type="button"
+            className={config.default_provider === "local" ? "active" : ""}
+            onClick={() => setConfig((current) => ({ ...current, default_provider: "local" }))}
+          >
+            Local
+          </button>
+          <button
+            type="button"
+            className={config.default_provider === "inception" ? "active" : ""}
+            onClick={() => setConfig((current) => ({ ...current, default_provider: "inception" }))}
+          >
+            Inception
+          </button>
+        </div>
+        <p className="settings-help">
+          Automatic extraction and background tasks use this provider. Chat and agent runs can ask which provider to use.
+        </p>
+        <label className="settings-checkbox llama-global-lock">
+          <input
+            type="checkbox"
+            checked={config.always_obey_global_llm}
+            disabled={loading || savingGlobalLock}
+            onChange={(event) => {
+              const enabled = event.currentTarget.checked;
+              void updateGlobalLock(enabled);
+            }}
+          />
+          <span>
+            <strong>Always obey the global LLM setting</strong>
+            <small>Do not ask before chat or agent runs; always use the provider selected above.</small>
+          </span>
+        </label>
+      </section>
+
+      <section className="settings-section llama-settings">
+        <div className="section-heading">
+          <span>Inception</span>
+          <small>OpenAI-compatible remote API</small>
+        </div>
+        <label className="settings-field">
+          <span>API key</span>
+          <input
+            type="password"
+            value={config.inception_api_key ?? ""}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                inception_api_key: event.currentTarget.value || null,
+                clear_inception_api_key: false,
+              }))
+            }
+            placeholder={config.inception_api_key_configured ? "Configured; enter a new key to replace" : "Enter Inception API key"}
+            autoComplete="off"
+          />
+        </label>
+        <label className="settings-field">
+          <span>Model</span>
+          <input
+            value={config.inception_model}
+            onChange={(event) => setConfig((current) => ({ ...current, inception_model: event.currentTarget.value }))}
+          />
+        </label>
+        <label className="settings-field">
+          <span>API URL</span>
+          <input
+            value={config.inception_base_url}
+            onChange={(event) => setConfig((current) => ({ ...current, inception_base_url: event.currentTarget.value }))}
+          />
+        </label>
+        {config.inception_api_key_configured ? (
+          <label className="settings-checkbox">
+            <input
+              type="checkbox"
+              checked={config.clear_inception_api_key}
+              onChange={(event) => setConfig((current) => ({ ...current, clear_inception_api_key: event.currentTarget.checked }))}
+            />
+            <span>Remove saved API key</span>
+          </label>
+        ) : null}
+        {remoteStatus ? <p className="settings-help">{remoteStatus}</p> : null}
+        <div className="settings-actions">
+          <button type="button" onClick={() => void testInception()} disabled={busy || loading}>
+            <RefreshCw size={15} /> Test connection
+          </button>
+        </div>
+      </section>
+
       <section className="settings-section llama-settings">
         <div className="section-heading">
           <Server size={18} />

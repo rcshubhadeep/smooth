@@ -2,7 +2,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{db_error, gmail, new_id, now_string, open_database, reminders, slack};
+use crate::{
+    db_error, gmail,
+    llm::{LlmProvider, LlmSelection},
+    new_id, now_string, open_database, reminders, slack,
+};
 
 use super::{flow, AgentRuntime};
 
@@ -56,6 +60,8 @@ pub(crate) struct ApproveWorkflowStepInput {
 pub(crate) struct SetReminderWorkflowInput {
     reminder_id: String,
     steps: Vec<WorkflowStepInput>,
+    #[serde(default)]
+    selection: Option<LlmSelection>,
 }
 
 struct AgentSpec {
@@ -69,6 +75,7 @@ struct AgentSpec {
 struct ClaimedWorkflow {
     id: String,
     reminder_id: String,
+    selection: Option<LlmSelection>,
 }
 
 struct PendingStep {
@@ -94,6 +101,8 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                         'succeeded', 'failed', 'cancelled'
                     )),
                 error TEXT,
+                llm_provider TEXT,
+                llm_model TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -131,7 +140,36 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
             ",
         )
         .map_err(db_error)?;
-    migrate_external_gmail_step_kind(connection)
+    migrate_external_gmail_step_kind(connection)?;
+    migrate_workflow_llm_columns(connection)
+}
+
+fn migrate_workflow_llm_columns(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(reminder_workflows)")
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(db_error)?;
+    if !columns.contains("llm_provider") {
+        connection
+            .execute(
+                "ALTER TABLE reminder_workflows ADD COLUMN llm_provider TEXT",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    if !columns.contains("llm_model") {
+        connection
+            .execute(
+                "ALTER TABLE reminder_workflows ADD COLUMN llm_model TEXT",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 fn migrate_external_gmail_step_kind(connection: &Connection) -> Result<(), String> {
@@ -222,6 +260,15 @@ pub(crate) fn insert_workflow(
     reminder_id: &str,
     steps: &[WorkflowStepInput],
 ) -> Result<Option<String>, String> {
+    insert_workflow_with_selection(connection, reminder_id, steps, None)
+}
+
+fn insert_workflow_with_selection(
+    connection: &Connection,
+    reminder_id: &str,
+    steps: &[WorkflowStepInput],
+    selection: Option<&LlmSelection>,
+) -> Result<Option<String>, String> {
     if steps.is_empty() {
         return Ok(None);
     }
@@ -244,12 +291,23 @@ pub(crate) fn insert_workflow(
 
     let workflow_id = new_id("reminder-workflow");
     let now = now_string();
+    let provider =
+        selection
+            .and_then(|selection| selection.provider)
+            .map(|provider| match provider {
+                LlmProvider::Local => "local",
+                LlmProvider::Inception => "inception",
+            });
+    let model = selection
+        .and_then(|selection| selection.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     connection
         .execute(
             "INSERT INTO reminder_workflows
-                (id, reminder_id, status, created_at, updated_at)
-             VALUES (?1, ?2, 'scheduled', ?3, ?3)",
-            params![workflow_id, reminder_id, now],
+                (id, reminder_id, status, llm_provider, llm_model, created_at, updated_at)
+             VALUES (?1, ?2, 'scheduled', ?3, ?4, ?5, ?5)",
+            params![workflow_id, reminder_id, provider, model, now],
         )
         .map_err(db_error)?;
 
@@ -378,8 +436,13 @@ pub(crate) fn set_reminder_workflow(
             params![input.reminder_id],
         )
         .map_err(db_error)?;
-    let workflow_id =
-        insert_workflow(&transaction, &input.reminder_id, &input.steps)?.unwrap_or_default();
+    let workflow_id = insert_workflow_with_selection(
+        &transaction,
+        &input.reminder_id,
+        &input.steps,
+        input.selection.as_ref(),
+    )?
+    .unwrap_or_default();
     transaction.commit().map_err(db_error)?;
     emit_changed(&app, &workflow_id, Some(&input.reminder_id));
     Ok(())
@@ -607,7 +670,7 @@ fn claim_due(connection: &mut Connection) -> Result<Option<ClaimedWorkflow>, Str
     let transaction = connection.transaction().map_err(db_error)?;
     let claimed = transaction
         .query_row(
-            "SELECT w.id, w.reminder_id
+            "SELECT w.id, w.reminder_id, w.llm_provider, w.llm_model
              FROM reminder_workflows w
              JOIN reminders r ON r.id = w.reminder_id
              WHERE w.status = 'scheduled'
@@ -615,9 +678,19 @@ fn claim_due(connection: &mut Connection) -> Result<Option<ClaimedWorkflow>, Str
              ORDER BY r.scheduled_at ASC LIMIT 1",
             params![chrono::Utc::now().timestamp_millis()],
             |row| {
+                let provider = row.get::<_, Option<String>>(2)?;
+                let model = row.get::<_, Option<String>>(3)?;
                 Ok(ClaimedWorkflow {
                     id: row.get(0)?,
                     reminder_id: row.get(1)?,
+                    selection: provider.map(|provider| LlmSelection {
+                        provider: Some(if provider == "inception" {
+                            LlmProvider::Inception
+                        } else {
+                            LlmProvider::Local
+                        }),
+                        model,
+                    }),
                 })
             },
         )
@@ -796,6 +869,7 @@ async fn execute_workflow(app: &AppHandle, workflow: ClaimedWorkflow) -> Result<
             Some(&step.agent_id),
             prompt,
             Some(step.max_steps),
+            workflow.selection.clone(),
             "reminder",
         )
         .await;

@@ -8,6 +8,7 @@ mod export_notes;
 mod gmail;
 mod imports;
 mod llama_runtime;
+mod llm;
 mod mcp;
 mod meeting_notes;
 mod reminders;
@@ -120,8 +121,20 @@ enum LlamaMode {
     External,
 }
 
+fn default_inception_base_url() -> String {
+    llm::INCEPTION_DEFAULT_BASE_URL.to_string()
+}
+
+fn default_inception_model() -> String {
+    llm::INCEPTION_DEFAULT_MODEL.to_string()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct LlamaConfig {
+    #[serde(default)]
+    default_provider: llm::LlmProvider,
+    #[serde(default)]
+    always_obey_global_llm: bool,
     mode: LlamaMode,
     base_url: String,
     preferred_model: Option<String>,
@@ -136,6 +149,16 @@ struct LlamaConfig {
     cache_type_v: String,
     spec_type: String,
     spec_draft_n_max: u16,
+    #[serde(default = "default_inception_base_url")]
+    inception_base_url: String,
+    #[serde(default = "default_inception_model")]
+    inception_model: String,
+    #[serde(default)]
+    inception_api_key: Option<String>,
+    #[serde(default)]
+    clear_inception_api_key: bool,
+    #[serde(default)]
+    inception_api_key_configured: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -205,6 +228,7 @@ struct ExtractionJob {
     attempts: u32,
     max_attempts: u32,
     lease_token: String,
+    selection: Option<llm::LlmSelection>,
 }
 
 #[derive(Clone, Debug)]
@@ -526,7 +550,9 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
                 updated_at TEXT NOT NULL,
                 started_at TEXT,
                 lease_token TEXT,
-                last_error TEXT
+                last_error TEXT,
+                llm_provider TEXT,
+                llm_model TEXT
             );
 
             CREATE INDEX IF NOT EXISTS extraction_jobs_claim_idx
@@ -547,6 +573,7 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     agents::reminder_workflows::init_schema(&connection)?;
     migrate_note_links_schema(&connection)?;
     migrate_entity_schema(&connection)?;
+    migrate_extraction_jobs_schema(&connection)?;
     seed_default_entity_interests(&connection)?;
     migrate_legacy_store(app, &mut connection)?;
     Ok(connection)
@@ -784,6 +811,24 @@ fn migrate_entity_schema(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn migrate_extraction_jobs_schema(connection: &Connection) -> Result<(), String> {
+    let columns = table_columns(connection, "extraction_jobs")?;
+    if !columns.contains("llm_provider") {
+        connection
+            .execute(
+                "ALTER TABLE extraction_jobs ADD COLUMN llm_provider TEXT",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    if !columns.contains("llm_model") {
+        connection
+            .execute("ALTER TABLE extraction_jobs ADD COLUMN llm_model TEXT", [])
+            .map_err(db_error)?;
+    }
+    Ok(())
+}
+
 fn seed_default_entity_interests(connection: &Connection) -> Result<(), String> {
     let now = now_string();
     for (index, (name, description)) in DEFAULT_ENTITY_INTERESTS.iter().enumerate() {
@@ -812,12 +857,6 @@ pub(crate) fn note_context(app: &AppHandle, note_id: &str) -> Result<(String, St
     }
     let content = read_note_content(app, note_id)?;
     Ok((meta.title, content))
-}
-
-/// llama.cpp base URL and the user's preferred model (if any).
-pub(crate) fn chat_llama_target(app: &AppHandle) -> Result<(String, Option<String>), String> {
-    let config = resolved_llama_config(app)?;
-    Ok((config.base_url, config.preferred_model))
 }
 
 fn resolved_llama_config(app: &AppHandle) -> Result<LlamaConfig, String> {
@@ -1062,9 +1101,10 @@ fn enqueue_extraction(
             "
             INSERT INTO extraction_jobs (
                 note_id, content_hash, status, priority, attempts, max_attempts,
-                available_at, created_at, updated_at, started_at, lease_token, last_error
+                available_at, created_at, updated_at, started_at, lease_token, last_error,
+                llm_provider, llm_model
             )
-            VALUES (?1, ?2, 'pending', 0, 0, 3, ?3, ?3, ?3, NULL, NULL, NULL)
+            VALUES (?1, ?2, 'pending', 0, 0, 3, ?3, ?3, ?3, NULL, NULL, NULL, NULL, NULL)
             ON CONFLICT(note_id) DO UPDATE SET
                 content_hash = excluded.content_hash,
                 status = 'pending',
@@ -1073,7 +1113,9 @@ fn enqueue_extraction(
                 updated_at = excluded.updated_at,
                 started_at = NULL,
                 lease_token = NULL,
-                last_error = NULL
+                last_error = NULL,
+                llm_provider = NULL,
+                llm_model = NULL
             ",
             params![note_id, hash, now],
         )
@@ -1098,15 +1140,36 @@ fn force_enqueue_extraction(
     note_id: &str,
     hash: &str,
 ) -> Result<(), String> {
+    force_enqueue_extraction_with_selection(transaction, note_id, hash, None)
+}
+
+fn force_enqueue_extraction_with_selection(
+    transaction: &rusqlite::Transaction<'_>,
+    note_id: &str,
+    hash: &str,
+    selection: Option<&llm::LlmSelection>,
+) -> Result<(), String> {
     let now = now_string();
+    let provider =
+        selection
+            .and_then(|selection| selection.provider)
+            .map(|provider| match provider {
+                llm::LlmProvider::Local => "local",
+                llm::LlmProvider::Inception => "inception",
+            });
+    let model = selection
+        .and_then(|selection| selection.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     transaction
         .execute(
             "
             INSERT INTO extraction_jobs (
                 note_id, content_hash, status, priority, attempts, max_attempts,
-                available_at, created_at, updated_at, started_at, lease_token, last_error
+                available_at, created_at, updated_at, started_at, lease_token, last_error,
+                llm_provider, llm_model
             )
-            VALUES (?1, ?2, 'pending', 0, 0, 3, ?3, ?3, ?3, NULL, NULL, NULL)
+            VALUES (?1, ?2, 'pending', 0, 0, 3, ?3, ?3, ?3, NULL, NULL, NULL, ?4, ?5)
             ON CONFLICT(note_id) DO UPDATE SET
                 content_hash = excluded.content_hash,
                 status = 'pending',
@@ -1115,9 +1178,11 @@ fn force_enqueue_extraction(
                 updated_at = excluded.updated_at,
                 started_at = NULL,
                 lease_token = NULL,
-                last_error = NULL
+                last_error = NULL,
+                llm_provider = excluded.llm_provider,
+                llm_model = excluded.llm_model
             ",
-            params![note_id, hash, now],
+            params![note_id, hash, now, provider, model],
         )
         .map_err(db_error)?;
     transaction
@@ -1172,7 +1237,7 @@ fn extraction_budget(context_tokens: Option<usize>, model: &str) -> ExtractionBu
         .saturating_sub(max_output_tokens + reserve_tokens)
         .max(EXTRACTION_MIN_INPUT_TOKENS);
 
-    if !is_bonsai_model(model) {
+    if !is_bonsai_model(model) && !llm::is_remote_model(model) {
         return ExtractionBudget {
             input_tokens,
             max_output_tokens,
@@ -1255,7 +1320,7 @@ fn extraction_messages(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let system_content = if is_bonsai_model(model) {
+    let system_content = if is_bonsai_model(model) || llm::is_remote_model(model) {
         concat!(
             "Extract important named entities and durable knowledge keywords from the note. ",
             "Use only these entity types: PERSON, ORGANIZATION, LOCATION, EVENT, DATE, TIME, ",
@@ -1283,7 +1348,7 @@ fn extraction_messages(
             "thinking text, or thinking tags."
         )
     };
-    let user_content = if is_bonsai_model(model) {
+    let user_content = if is_bonsai_model(model) || llm::is_remote_model(model) {
         format!(
             "Return at most {max_entities} unique entities.\n\nUser is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
         )
@@ -1319,12 +1384,14 @@ fn extraction_request_payload(
         "temperature": if is_bonsai_model(model) { 0.0 } else { 0.1 },
         "top_p": 0.9,
         "max_tokens": budget.max_output_tokens,
-        "stream": false,
-        "reasoning_format": "none",
-        "chat_template_kwargs": {
-            "enable_thinking": false
-        }
+        "stream": false
     });
+    if llm::is_remote_model(model) {
+        payload["reasoning_effort"] = json!("low");
+    } else {
+        payload["reasoning_format"] = json!("none");
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
 
     let response_format = match response_mode {
         ExtractionResponseMode::StrictSchema => Some(json!({
@@ -1598,6 +1665,9 @@ async fn count_extraction_input_tokens(
     interests: &[EntityInterestDefinition],
     max_entities: usize,
 ) -> Option<usize> {
+    if llm::is_remote_model(model) {
+        return None;
+    }
     let response = client
         .post(llama_endpoint(
             &config.base_url,
@@ -1867,7 +1937,7 @@ async fn extract_entities_adaptively(
     Ok(entities)
 }
 
-fn app_meta_value(connection: &Connection, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn app_meta_value(connection: &Connection, key: &str) -> Result<Option<String>, String> {
     connection
         .query_row(
             "SELECT value FROM app_meta WHERE key = ?1",
@@ -1880,6 +1950,13 @@ fn app_meta_value(connection: &Connection, key: &str) -> Result<Option<String>, 
 
 fn load_llama_config(connection: &Connection) -> Result<LlamaConfig, String> {
     Ok(LlamaConfig {
+        default_provider: match app_meta_value(connection, "llm_default_provider")?.as_deref() {
+            Some("inception") => llm::LlmProvider::Inception,
+            _ => llm::LlmProvider::Local,
+        },
+        always_obey_global_llm: app_meta_value(connection, "always_obey_global_llm")?
+            .map(|value| value == "true")
+            .unwrap_or(false),
         mode: match app_meta_value(connection, "llama_mode")?.as_deref() {
             Some("external") => LlamaMode::External,
             _ => LlamaMode::Managed,
@@ -1917,6 +1994,18 @@ fn load_llama_config(connection: &Connection) -> Result<LlamaConfig, String> {
         spec_draft_n_max: app_meta_value(connection, "llama_spec_draft_n_max")?
             .and_then(|value| value.parse().ok())
             .unwrap_or(2),
+        inception_base_url: app_meta_value(connection, "inception_base_url")?
+            .unwrap_or_else(default_inception_base_url),
+        inception_model: app_meta_value(connection, "inception_model")?
+            .unwrap_or_else(default_inception_model),
+        inception_api_key: None,
+        clear_inception_api_key: false,
+        inception_api_key_configured: std::env::var("INCEPTION_API_KEY")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            || app_meta_value(connection, "inception_api_key")?
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
     })
 }
 
@@ -1969,6 +2058,20 @@ fn validate_llama_base_url(value: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
+fn validate_remote_llm_base_url(value: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(value.trim())
+        .map_err(|_| "Enter a valid Inception API URL".to_string())?;
+    if url.scheme() != "https" {
+        return Err("The Inception API URL must use https".to_string());
+    }
+    if url.host_str().is_none() {
+        return Err("The Inception API URL must include a host".to_string());
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
 pub(crate) fn llama_endpoint(base_url: &str, path: &str) -> String {
     format!(
         "{}/{}",
@@ -2001,8 +2104,13 @@ fn llama_status(
 }
 
 async fn llama_server_ready(client: &reqwest::Client, config: &LlamaConfig) -> bool {
+    let path = if config.default_provider == llm::LlmProvider::Inception {
+        "/v1/models"
+    } else {
+        "/health"
+    };
     client
-        .get(llama_endpoint(&config.base_url, "/health"))
+        .get(llama_endpoint(&config.base_url, path))
         .send()
         .await
         .map(|response| response.status().is_success())
@@ -2071,7 +2179,8 @@ fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String
     let job = transaction
         .query_row(
             "
-            SELECT id, note_id, content_hash, attempts, max_attempts
+            SELECT id, note_id, content_hash, attempts, max_attempts,
+                   llm_provider, llm_model
             FROM extraction_jobs
             WHERE status = 'pending' AND available_at <= ?1
             ORDER BY priority DESC, created_at ASC
@@ -2085,12 +2194,14 @@ fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String
                     row.get::<_, String>(2)?,
                     row.get::<_, u32>(3)?,
                     row.get::<_, u32>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
         .optional()
         .map_err(db_error)?;
-    let Some((id, note_id, content_hash, attempts, max_attempts)) = job else {
+    let Some((id, note_id, content_hash, attempts, max_attempts, provider, model)) = job else {
         transaction.commit().map_err(db_error)?;
         return Ok(None);
     };
@@ -2134,6 +2245,14 @@ fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String
         attempts: attempts + 1,
         max_attempts,
         lease_token,
+        selection: provider.map(|provider| llm::LlmSelection {
+            provider: Some(if provider == "inception" {
+                llm::LlmProvider::Inception
+            } else {
+                llm::LlmProvider::Local
+            }),
+            model,
+        }),
     }))
 }
 
@@ -2556,38 +2675,11 @@ async fn process_extraction_job(
 }
 
 async fn extraction_worker(app: AppHandle) {
-    let client = match reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(180))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return,
-    };
-
     loop {
         if !has_available_extraction_job(&app).unwrap_or(false) {
             tokio::time::sleep(Duration::from_secs(EXTRACTION_POLL_SECONDS)).await;
             continue;
         }
-        let config = match resolved_llama_config(&app) {
-            Ok(config) => config,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_secs(EXTRACTION_POLL_SECONDS)).await;
-                continue;
-            }
-        };
-        if !llama_server_ready(&client, &config).await {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            continue;
-        }
-        let model = match resolve_extraction_model(&client, &config).await {
-            Ok(model) => model,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
         let job = match claim_extraction_job(&app) {
             Ok(Some(job)) => job,
             Ok(None) => {
@@ -2596,6 +2688,55 @@ async fn extraction_worker(app: AppHandle) {
             }
             Err(_) => {
                 tokio::time::sleep(Duration::from_secs(EXTRACTION_POLL_SECONDS)).await;
+                continue;
+            }
+        };
+        let target = match llm::resolve_target(&app, job.selection.as_ref()) {
+            Ok(target) => target,
+            Err(error) => {
+                let _ = fail_extraction_job(&app, &job, &error);
+                continue;
+            }
+        };
+        let mut config =
+            match open_database(&app).and_then(|connection| load_llama_config(&connection)) {
+                Ok(config) => config,
+                Err(error) => {
+                    let _ = fail_extraction_job(&app, &job, &error);
+                    continue;
+                }
+            };
+        config.default_provider = target.provider;
+        config.base_url = target.base_url.clone();
+        config.preferred_model = target.model.clone();
+        let client = match target.client_builder().and_then(|builder| {
+            builder
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(180))
+                .build()
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(client) => client,
+            Err(error) => {
+                let _ = fail_extraction_job(&app, &job, &error);
+                continue;
+            }
+        };
+        if !llama_server_ready(&client, &config).await {
+            let _ = fail_extraction_job(
+                &app,
+                &job,
+                &format!("{} is unavailable", target.provider_name()),
+            );
+            continue;
+        }
+        let model = match resolve_extraction_model(&client, &config).await {
+            Ok(mut model) => {
+                model.context_tokens = target.context_tokens.or(model.context_tokens);
+                model
+            }
+            Err(error) => {
+                let _ = fail_extraction_job(&app, &job, &error);
                 continue;
             }
         };
@@ -2796,8 +2937,29 @@ fn get_llama_config(app: AppHandle) -> Result<LlamaConfig, String> {
 }
 
 #[tauri::command]
+fn set_always_obey_global_llm(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let connection = open_database(&app)?;
+    connection
+        .execute(
+            "
+            INSERT INTO app_meta (key, value)
+            VALUES ('always_obey_global_llm', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            params![enabled.to_string()],
+        )
+        .map_err(db_error)?;
+    Ok(enabled)
+}
+
+#[tauri::command]
 fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig, String> {
     let base_url = validate_llama_base_url(&config.base_url)?;
+    let inception_base_url = validate_remote_llm_base_url(&config.inception_base_url)?;
+    let inception_model = config.inception_model.trim().to_string();
+    if inception_model.is_empty() {
+        return Err("Enter an Inception model name".to_string());
+    }
     let preferred_model = if config.mode == LlamaMode::Managed {
         None
     } else {
@@ -2819,6 +2981,17 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
     let mut connection = open_database(&app)?;
     let transaction = connection.transaction().map_err(db_error)?;
     let values = [
+        (
+            "llm_default_provider",
+            match config.default_provider {
+                llm::LlmProvider::Local => "local".to_string(),
+                llm::LlmProvider::Inception => "inception".to_string(),
+            },
+        ),
+        (
+            "always_obey_global_llm",
+            config.always_obey_global_llm.to_string(),
+        ),
         (
             "llama_mode",
             match config.mode {
@@ -2848,6 +3021,8 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
             "llama_spec_draft_n_max",
             config.spec_draft_n_max.to_string(),
         ),
+        ("inception_base_url", inception_base_url.clone()),
+        ("inception_model", inception_model.clone()),
     ];
     for (key, value) in values {
         transaction
@@ -2861,11 +3036,31 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
             )
             .map_err(db_error)?;
     }
+    if config.clear_inception_api_key {
+        transaction
+            .execute("DELETE FROM app_meta WHERE key = 'inception_api_key'", [])
+            .map_err(db_error)?;
+    } else if let Some(api_key) = config
+        .inception_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        transaction
+            .execute(
+                "INSERT INTO app_meta (key, value) VALUES ('inception_api_key', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![api_key],
+            )
+            .map_err(db_error)?;
+    }
     transaction.commit().map_err(db_error)?;
 
     app.state::<llama_runtime::LlamaRuntimeState>().stop()?;
 
     Ok(LlamaConfig {
+        default_provider: config.default_provider,
+        always_obey_global_llm: config.always_obey_global_llm,
         mode: config.mode,
         base_url,
         preferred_model,
@@ -2880,7 +3075,71 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
         cache_type_v: config.cache_type_v,
         spec_type: config.spec_type,
         spec_draft_n_max: config.spec_draft_n_max,
+        inception_base_url,
+        inception_model,
+        inception_api_key: None,
+        clear_inception_api_key: false,
+        inception_api_key_configured: !config.clear_inception_api_key
+            && (config.inception_api_key_configured
+                || config
+                    .inception_api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .map(|value| !value.is_empty())
+                    .unwrap_or(false)
+                || std::env::var("INCEPTION_API_KEY")
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)),
     })
+}
+
+#[tauri::command]
+async fn test_inception_connection(app: AppHandle) -> Result<Vec<LlamaModel>, String> {
+    let selection = llm::LlmSelection {
+        provider: Some(llm::LlmProvider::Inception),
+        model: None,
+    };
+    let target = llm::resolve_target(&app, Some(&selection))?;
+    let client = target
+        .client_builder()?
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(llama_endpoint(&target.base_url, "/v1/models"))
+        .send()
+        .await
+        .map_err(|error| format!("Unable to reach Inception: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Inception returned HTTP {}: {}",
+            status.as_u16(),
+            truncate_chars(body.trim(), 300)
+        ));
+    }
+    let models = response
+        .json::<LlamaModelsResponse>()
+        .await
+        .map_err(|error| format!("Invalid Inception models response: {error}"))?;
+    Ok(models
+        .data
+        .into_iter()
+        .map(|model| {
+            let context_size = model_context_tokens(&model).map(|value| value as u64);
+            let parameter_count = model.meta.as_ref().and_then(|meta| meta.n_params);
+            let size_bytes = model.meta.as_ref().and_then(|meta| meta.size);
+            LlamaModel {
+                id: model.id,
+                owned_by: model.owned_by,
+                context_size,
+                parameter_count,
+                size_bytes,
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -3664,7 +3923,11 @@ pub(crate) fn get_link_suggestions_internal(
 }
 
 #[tauri::command]
-fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueueStatus, String> {
+fn enqueue_note_extraction(
+    app: AppHandle,
+    id: String,
+    selection: Option<llm::LlmSelection>,
+) -> Result<ExtractionQueueStatus, String> {
     let mut connection = open_database(&app)?;
     let note = load_note_meta(&connection, &id)?;
     if note.deleted_at.is_some() {
@@ -3679,7 +3942,12 @@ fn enqueue_note_extraction(app: AppHandle, id: String) -> Result<ExtractionQueue
     if content.trim().is_empty() {
         clear_extraction_job(&transaction, &id)?;
     } else {
-        force_enqueue_extraction(&transaction, &id, &content_hash(&content))?;
+        force_enqueue_extraction_with_selection(
+            &transaction,
+            &id,
+            &content_hash(&content),
+            selection.as_ref(),
+        )?;
     }
     transaction.commit().map_err(db_error)?;
     get_extraction_queue_status(app)
@@ -4361,9 +4629,17 @@ async fn suggest_chat_created_link_label(
     response: &str,
 ) -> Result<String, String> {
     let fallback = fallback_chat_link_label(prompt);
-    let config = resolved_llama_config(app)?;
+    let target = llm::resolve_target(app, None)?;
+    let mut config = {
+        let connection = open_database(app)?;
+        load_llama_config(&connection)?
+    };
+    config.default_provider = target.provider;
+    config.base_url = target.base_url.clone();
+    config.preferred_model = target.model.clone();
 
-    let client = reqwest::Client::builder()
+    let client = target
+        .client_builder()?
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -4379,32 +4655,35 @@ async fn suggest_chat_created_link_label(
             .ok_or_else(|| "llama.cpp has no available model".to_string())?
     };
 
+    let mut payload = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Name the relationship from the source note to a note created from a chat answer. Return only a short 1-4 word label, no punctuation."
+            },
+            {
+                "role": "user",
+                "content": format!(
+                    "User request:\n{}\n\nCreated note content:\n{}",
+                    truncate_chars(prompt, 800),
+                    truncate_chars(response, 1200)
+                )
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 32,
+        "stream": false
+    });
+    if llm::is_remote_model(&model) {
+        payload["reasoning_effort"] = json!("instant");
+    } else {
+        payload["reasoning_format"] = json!("none");
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
     let response = client
         .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
-        .json(&json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Name the relationship from the source note to a note created from a chat answer. Return only a short 1-4 word label, no punctuation."
-                },
-                {
-                    "role": "user",
-                    "content": format!(
-                        "User request:\n{}\n\nCreated note content:\n{}",
-                        truncate_chars(prompt, 800),
-                        truncate_chars(response, 1200)
-                    )
-                }
-            ],
-            "temperature": 0.0,
-            "max_tokens": 16,
-            "stream": false,
-            "reasoning_format": "none",
-            "chat_template_kwargs": {
-                "enable_thinking": false
-            }
-        }))
+        .json(&payload)
         .send()
         .await
         .map_err(|error| format!("llama.cpp request failed: {error}"))?;
@@ -4547,8 +4826,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_llama_config,
+            set_always_obey_global_llm,
             save_llama_config,
             get_llama_status,
+            test_inception_connection,
             start_llama_server,
             stop_llama_server,
             get_extraction_queue_status,
@@ -4693,7 +4974,9 @@ mod tests {
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
                     lease_token TEXT,
-                    last_error TEXT
+                    last_error TEXT,
+                    llm_provider TEXT,
+                    llm_model TEXT
                 );
 
                 INSERT INTO notes (id) VALUES ('note-1');
@@ -4896,6 +5179,26 @@ Generation prompt:
             next_extraction_response_mode(model, ExtractionResponseMode::StrictSchema),
             Some(ExtractionResponseMode::PlainJson)
         );
+    }
+
+    #[test]
+    fn mercury_extraction_uses_structured_remote_profile() {
+        let model = "mercury-2";
+        let budget = extraction_budget(Some(128_000), model);
+        let payload = extraction_request_payload(
+            model,
+            budget,
+            "Test note",
+            "Curvo uses local models.",
+            &[],
+            ExtractionResponseMode::StrictSchema,
+        );
+
+        assert_eq!(budget.max_entities, 32);
+        assert_eq!(payload["reasoning_effort"], "low");
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert!(payload.get("reasoning_format").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
     }
 
     #[test]

@@ -4168,6 +4168,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
       const result = await invoke<AgentRunResult>("agent_run", {
         prompt: agentPrompt,
         maxSteps: 5,
+        selection: null,
       });
       setAgentRunResult(result);
     } catch (agentError) {
@@ -5510,6 +5511,9 @@ function EntityStrip({
   const [isExpanded, setIsExpanded] = useState(false);
   const [editingEntityId, setEditingEntityId] = useState<number | null>(null);
   const [entityNameDraft, setEntityNameDraft] = useState("");
+  const [extractionProvider, setExtractionProvider] = useState<
+    "default" | "local" | "inception"
+  >("default");
 
   const refreshExtraction = useCallback(async () => {
     const nextExtraction = await invoke<NoteExtractionView>(
@@ -5546,7 +5550,13 @@ function EntityStrip({
   async function queueExtraction() {
     setIsQueuing(true);
     try {
-      await invoke("enqueue_note_extraction", { id: note.id });
+      await invoke("enqueue_note_extraction", {
+        id: note.id,
+        selection:
+          extractionProvider === "default"
+            ? null
+            : { provider: extractionProvider, model: null },
+      });
       const nextExtraction = await refreshExtraction();
       toast.info(
         nextExtraction.status === "queued"
@@ -5641,13 +5651,30 @@ function EntityStrip({
           {statusLabel}
         </small>
         {canQueue ? (
-          <button
-            type="button"
-            onClick={() => void queueExtraction()}
-            disabled={isQueuing}
-          >
-            {extraction.status === "failed" ? "Retry" : "Extract"}
-          </button>
+          <>
+            <select
+              className="entity-provider-select"
+              value={extractionProvider}
+              onChange={(event) =>
+                setExtractionProvider(
+                  event.currentTarget.value as "default" | "local" | "inception",
+                )
+              }
+              title="LLM provider for this extraction"
+              aria-label="Extraction LLM provider"
+            >
+              <option value="default">Default</option>
+              <option value="local">Local</option>
+              <option value="inception">Inception</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => void queueExtraction()}
+              disabled={isQueuing}
+            >
+              {extraction.status === "failed" ? "Retry" : "Extract"}
+            </button>
+          </>
         ) : null}
       </div>
       {extraction.error ? (

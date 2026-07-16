@@ -11,8 +11,9 @@ use sha2::{Digest, Sha256};
 use tauri::{ipc::Channel, AppHandle};
 
 use crate::{
-    chat_llama_target, db_error, is_bonsai_model, llama_endpoint, new_id, note_context, now_string,
-    open_database,
+    db_error, is_bonsai_model, llama_endpoint,
+    llm::{is_remote_model, resolve_target, LlmSelection, LlmTarget},
+    new_id, note_context, now_string, open_database,
 };
 
 /// Assumed context window (tokens) when the model doesn't report one.
@@ -26,6 +27,7 @@ const MIN_SPLIT_CHARS: usize = 600;
 const INPUT_RESERVE_TOKENS: usize = 300;
 const DEFAULT_MAX_CHAT_ANSWER_TOKENS: usize = 1024;
 const BONSAI_MAX_CHAT_ANSWER_TOKENS: usize = 2048;
+const MERCURY_MAX_CHAT_ANSWER_TOKENS: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChatMessage {
@@ -164,6 +166,7 @@ pub(crate) async fn send_chat_message(
     note_id: String,
     content: String,
     note_content: String,
+    selection: Option<LlmSelection>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
     let question = content.trim().to_string();
@@ -192,22 +195,11 @@ pub(crate) async fn send_chat_message(
         load_messages(&connection, &note_id)?
     };
 
-    let (base_url, preferred_model) = chat_llama_target(&app)?;
+    let target = resolve_target(&app, selection.as_ref())?;
 
     // Run the streaming completion; report any failure through the channel so the
     // frontend has a single event stream to listen to.
-    match stream_completion(
-        &app,
-        &on_event,
-        &note_id,
-        &base_url,
-        preferred_model,
-        &title,
-        &body,
-        &history,
-    )
-    .await
-    {
+    match stream_completion(&app, &on_event, &note_id, &target, &title, &body, &history).await {
         Ok(answer) if !answer.trim().is_empty() => {
             let assistant = ChatMessage {
                 id: new_id("msg"),
@@ -342,7 +334,9 @@ struct Budget {
 
 fn budget_for(context_tokens: Option<usize>, model: &str) -> Budget {
     let ctx = context_tokens.unwrap_or(DEFAULT_CTX_TOKENS).max(1024);
-    let max_answer_tokens = if is_bonsai_model(model) {
+    let max_answer_tokens = if is_remote_model(model) {
+        MERCURY_MAX_CHAT_ANSWER_TOKENS
+    } else if is_bonsai_model(model) {
         BONSAI_MAX_CHAT_ANSWER_TOKENS
     } else {
         DEFAULT_MAX_CHAT_ANSWER_TOKENS
@@ -407,7 +401,8 @@ model's context — key facts, decisions, and action items are preserved."
 titled \"{title}\". Base your answers on the note's content — if the note is a meeting \
 transcript, treat it as the conversation so far. If the answer is not in the note, say so \
 plainly instead of guessing. Keep answers concise and format them with Markdown when \
-helpful.{summary_note}\n\n--- NOTE CONTENT ---\n{body}\n--- END NOTE CONTENT ---"
+helpful. Do not use Markdown tables; this answer is shown in a narrow panel, so use short \
+headings and bullet lists instead.{summary_note}\n\n--- NOTE CONTENT ---\n{body}\n--- END NOTE CONTENT ---"
     )
 }
 
@@ -729,7 +724,11 @@ async fn complete_once_with_format(
         payload["response_format"] = response_format;
     }
     if disable_thinking {
-        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        if is_remote_model(model) {
+            payload["reasoning_effort"] = json!("low");
+        } else {
+            payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        }
     }
 
     let response = client
@@ -981,13 +980,17 @@ pub(crate) async fn generate_meeting_note_sections(
     user_note_content: &str,
     empty_headings: &[String],
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
+    let target = resolve_target(app, None)?;
+    let client = target
+        .client_builder()?
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
-    let (base_url, preferred_model) = chat_llama_target(app)?;
-    let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
+    let base_url = target.base_url.clone();
+    let (model, discovered_context) =
+        resolve_model(&client, &base_url, target.model.clone()).await?;
+    let context_tokens = target.context_tokens.or(discovered_context);
     let budget = budget_for(context_tokens, &model);
     let (memory, _) = prepare_note_memory_silent(
         app,
@@ -1036,14 +1039,19 @@ pub(crate) async fn complete_grounded_note_task(
     content: &str,
     instructions: &str,
     response_format: Option<serde_json::Value>,
+    selection: Option<&LlmSelection>,
 ) -> Result<GroundedNoteCompletion, String> {
-    let client = reqwest::Client::builder()
+    let target = resolve_target(app, selection)?;
+    let client = target
+        .client_builder()?
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
-    let (base_url, preferred_model) = chat_llama_target(app)?;
-    let (model, context_tokens) = resolve_model(&client, &base_url, preferred_model).await?;
+    let base_url = target.base_url.clone();
+    let (model, discovered_context) =
+        resolve_model(&client, &base_url, target.model.clone()).await?;
+    let context_tokens = target.context_tokens.or(discovered_context);
     let mut budget = budget_for(context_tokens, &model);
     // The task itself occupies context in addition to note memory. Reduce the
     // note against a smaller budget so long instructions cannot make the final
@@ -1257,6 +1265,8 @@ fn chat_stream_payload(
     if is_bonsai_model(model) {
         payload["reasoning_format"] = json!("none");
         payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    } else if is_remote_model(model) {
+        payload["reasoning_effort"] = json!("low");
     }
     payload
 }
@@ -1265,19 +1275,22 @@ async fn stream_completion(
     app: &AppHandle,
     on_event: &Channel<ChatStreamEvent>,
     note_id: &str,
-    base_url: &str,
-    preferred_model: Option<String>,
+    target: &LlmTarget,
     title: &str,
     note_content: &str,
     history: &[ChatMessage],
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
+    let client = target
+        .client_builder()?
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
 
-    let (model, context_tokens) = resolve_model(&client, base_url, preferred_model).await?;
+    let base_url = target.base_url.as_str();
+    let (model, discovered_context) =
+        resolve_model(&client, base_url, target.model.clone()).await?;
+    let context_tokens = target.context_tokens.or(discovered_context);
     let budget = budget_for(context_tokens, &model);
     let (context, summarized) = prepare_note_memory(
         app,
@@ -1317,7 +1330,7 @@ async fn stream_completion(
         }
 
         if continuation == MAX_ANSWER_CONTINUATIONS {
-            if !is_bonsai_model(&model) {
+            if !is_bonsai_model(&model) && !is_remote_model(&model) {
                 return Ok(full);
             }
             return Err(format!(
@@ -1369,6 +1382,19 @@ mod tests {
 
         assert_eq!(budget.answer_max_tokens, 1024);
         assert_eq!(payload["max_tokens"], 1024);
+        assert!(payload.get("reasoning_format").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn mercury_chat_uses_remote_profile_without_llama_fields() {
+        let model = "mercury-2";
+        let budget = budget_for(Some(128_000), model);
+        let messages = [json!({ "role": "user", "content": "What are the action items?" })];
+        let payload = chat_stream_payload(model, &messages, budget.answer_max_tokens);
+
+        assert_eq!(budget.answer_max_tokens, 4096);
+        assert_eq!(payload["reasoning_effort"], "low");
         assert!(payload.get("reasoning_format").is_none());
         assert!(payload.get("chat_template_kwargs").is_none());
     }

@@ -34,6 +34,8 @@ Do not include recipients, Markdown fences, commentary, or extra fields."#;
 #[derive(Debug, Deserialize)]
 pub(crate) struct FollowUpEmailRequest {
     note_id: String,
+    #[serde(default)]
+    selection: Option<crate::llm::LlmSelection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +102,7 @@ pub(crate) async fn prepare_follow_up_email(
         &note.content,
         FOLLOW_UP_PROMPT,
         Some(email_response_format()),
+        request.selection.as_ref(),
     )
     .await;
 

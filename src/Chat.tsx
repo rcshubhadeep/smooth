@@ -2,6 +2,12 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Check, Copy, FilePlus, Sparkles, Trash2 } from "lucide-react";
 import { marked } from "marked";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import LlmRunChoiceDialog from "./LlmRunChoice";
+import {
+  loadLlmPreferences,
+  type LlmPreferences,
+  type LlmProvider,
+} from "./llmPreferences";
 
 type ChatMessage = {
   id: string;
@@ -147,6 +153,9 @@ export default function NoteChat({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
+  const [sessionProvider, setSessionProvider] = useState<LlmProvider | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const streamState = useSyncExternalStore(
     chatStreamStore.subscribe,
@@ -175,6 +184,24 @@ export default function NoteChat({
   }, [noteId]);
 
   useEffect(() => {
+    let active = true;
+    setSessionProvider(null);
+    setPendingQuestion(null);
+    loadLlmPreferences()
+      .then((preferences) => {
+        if (active) setLlmPreferences(preferences);
+      })
+      .catch(() => {
+        if (active) {
+          setLlmPreferences({ defaultProvider: "local", alwaysObeyGlobal: false });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [noteId]);
+
+  useEffect(() => {
     const completed = chatStreamStore.consumeCompleted(noteId);
     if (!completed) {
       return;
@@ -190,8 +217,8 @@ export default function NoteChat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming]);
 
-  const send = useCallback(
-    async (text: string) => {
+  const performSend = useCallback(
+    async (text: string, provider: LlmProvider | null) => {
       const question = text.trim();
       if (!question || isSending) {
         return;
@@ -228,6 +255,7 @@ export default function NoteChat({
           noteId,
           content: question,
           noteContent: noteContentRef.current,
+          selection: provider ? { provider, model: null } : null,
           onEvent: channel,
         });
       } catch (invokeError) {
@@ -235,6 +263,32 @@ export default function NoteChat({
       }
     },
     [isSending, noteId],
+  );
+
+  const requestSend = useCallback(
+    async (text: string) => {
+      const question = text.trim();
+      if (!question || isSending || pendingQuestion) return;
+
+      let preferences = llmPreferences;
+      if (!preferences) {
+        try {
+          preferences = await loadLlmPreferences();
+          setLlmPreferences(preferences);
+        } catch {
+          preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
+        }
+      }
+
+      if (preferences.alwaysObeyGlobal) {
+        await performSend(question, null);
+      } else if (sessionProvider) {
+        await performSend(question, sessionProvider);
+      } else {
+        setPendingQuestion(question);
+      }
+    },
+    [isSending, llmPreferences, pendingQuestion, performSend, sessionProvider],
   );
 
   async function clearChat() {
@@ -260,7 +314,7 @@ export default function NoteChat({
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void send(input);
+      void requestSend(input);
     }
   }
 
@@ -282,7 +336,7 @@ export default function NoteChat({
                   key={suggestion}
                   type="button"
                   className="chat-suggestion"
-                  onClick={() => void send(suggestion)}
+                  onClick={() => void requestSend(suggestion)}
                 >
                   {suggestion}
                 </button>
@@ -379,12 +433,25 @@ export default function NoteChat({
           type="button"
           className="chat-send"
           disabled={isSending || !input.trim()}
-          onClick={() => void send(input)}
+          onClick={() => void requestSend(input)}
           title="Send (Enter)"
         >
           <ArrowUp size={17} />
         </button>
       </div>
+      {pendingQuestion && llmPreferences ? (
+        <LlmRunChoiceDialog
+          defaultProvider={llmPreferences.defaultProvider}
+          actionLabel="Send this chat message with:"
+          onCancel={() => setPendingQuestion(null)}
+          onChoose={(provider, remember) => {
+            const question = pendingQuestion;
+            setPendingQuestion(null);
+            if (remember) setSessionProvider(provider);
+            void performSend(question, provider);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
