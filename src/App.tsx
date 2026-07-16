@@ -3629,6 +3629,69 @@ function MeetingSourcePicker({
   );
 }
 
+// Each sub-section is its own rail item so the pane shows exactly one section
+// at a time — minimal scrolling, direct navigation (macOS System-Settings style).
+type SettingsSection =
+  | "ai-default"
+  | "ai-remote"
+  | "ai-local"
+  | "audio-capture"
+  | "system-audio"
+  | "speech-to-text"
+  | "entity-interests"
+  | "extraction-queue"
+  | "mcp"
+  | "slack"
+  | "google"
+  | "agent-tools";
+
+const SETTINGS_NAV: {
+  group: string;
+  icon: typeof Mic;
+  items: { id: SettingsSection; label: string }[];
+}[] = [
+  {
+    group: "AI",
+    icon: Bot,
+    items: [
+      { id: "ai-default", label: "Default AI" },
+      { id: "ai-remote", label: "Remote AI" },
+      { id: "ai-local", label: "Local AI" },
+    ],
+  },
+  {
+    group: "Audio & voice",
+    icon: Mic,
+    items: [
+      { id: "audio-capture", label: "Audio capture" },
+      { id: "system-audio", label: "System audio" },
+      { id: "speech-to-text", label: "Speech to text" },
+    ],
+  },
+  {
+    group: "Knowledge",
+    icon: Database,
+    items: [
+      { id: "entity-interests", label: "Entity interests" },
+      { id: "extraction-queue", label: "Extraction queue" },
+    ],
+  },
+  {
+    group: "Integrations",
+    icon: CalendarDays,
+    items: [
+      { id: "mcp", label: "MCP servers" },
+      { id: "slack", label: "Slack" },
+      { id: "google", label: "Google" },
+    ],
+  },
+  {
+    group: "Developer",
+    icon: Wrench,
+    items: [{ id: "agent-tools", label: "Agent tools" }],
+  },
+];
+
 type SettingsViewProps = {
   onCalendarChanged: () => void;
   onClose: () => void;
@@ -3696,6 +3759,8 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
   const [isEntityInterestBusy, setIsEntityInterestBusy] = useState(false);
   const [isAgentToolBusy, setIsAgentToolBusy] = useState(false);
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSection>("ai-default");
   const setSettingsError = useCallback((message: string | null) => {
     if (message) {
       toast.error(message);
@@ -4228,11 +4293,40 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         </div>
       </header>
 
-      <McpSettings />
+      <div className="settings-body">
+        <nav className="settings-rail" aria-label="Settings sections">
+          {SETTINGS_NAV.map((group) => {
+            const GroupIcon = group.icon;
+            return (
+              <div className="settings-rail-group" key={group.group}>
+                <p className="settings-rail-label">
+                  <GroupIcon size={13} />
+                  {group.group}
+                </p>
+                {group.items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={settingsSection === item.id ? "active" : ""}
+                    onClick={() => setSettingsSection(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </nav>
 
-      <SlackSettings />
+        <div className="settings-panes">
+          {settingsSection === "mcp" ? <McpSettings /> : null}
 
-      <section className="settings-section">
+          {settingsSection === "slack" ? <SlackSettings /> : null}
+
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "audio-capture"}
+      >
         <div className="section-heading">
           <Mic size={18} />
           <span>Audio capture</span>
@@ -4293,7 +4387,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         ) : null}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "system-audio"}
+      >
         <div className="section-heading">
           <Monitor size={18} />
           <span>System audio</span>
@@ -4413,7 +4510,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         ) : null}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "speech-to-text"}
+      >
         <div className="section-heading">
           <Sparkles size={18} />
           <span>Speech to text</span>
@@ -4563,7 +4663,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         ) : null}
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "entity-interests"}
+      >
         <div className="section-heading">
           <Sparkles size={18} />
           <span>Entity interests</span>
@@ -4639,7 +4742,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         </div>
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "google"}
+      >
         <div className="section-heading">
           <CalendarDays size={18} />
           <span>Google integrations</span>
@@ -4786,9 +4892,30 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         </div>
       </section>
 
-      <LlamaSettings onError={setSettingsError} />
+      <div
+        className="settings-tabgroup"
+        hidden={
+          settingsSection !== "ai-default" &&
+          settingsSection !== "ai-remote" &&
+          settingsSection !== "ai-local"
+        }
+      >
+        <LlamaSettings
+          onError={setSettingsError}
+          view={
+            settingsSection === "ai-remote"
+              ? "remote"
+              : settingsSection === "ai-local"
+                ? "local"
+                : "default"
+          }
+        />
+      </div>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "agent-tools"}
+      >
         <div className="section-heading">
           <Wrench size={18} />
           <span>Agent tools</span>
@@ -4932,7 +5059,10 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
         </div>
       </section>
 
-      <section className="settings-section">
+      <section
+        className="settings-section"
+        hidden={settingsSection !== "extraction-queue"}
+      >
         <div className="section-heading">
           <Database size={18} />
           <span>Extraction queue</span>
@@ -4975,6 +5105,8 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           </button>
         </div>
       </section>
+        </div>
+      </div>
     </div>
   );
 }

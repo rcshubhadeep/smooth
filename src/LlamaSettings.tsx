@@ -90,8 +90,10 @@ function formatLargeValue(value: number | null, suffix: string) {
 
 export default function LlamaSettings({
   onError,
+  view,
 }: {
   onError: (message: string) => void;
+  view: "default" | "remote" | "local";
 }) {
   const [config, setConfig] = useState(defaultConfig);
   const [status, setStatus] = useState<LlamaStatus | null>(null);
@@ -205,6 +207,7 @@ export default function LlamaSettings({
 
   return (
     <>
+      {view === "default" ? (
       <section className="settings-section llama-settings">
         <div className="section-heading">
           <Server size={18} />
@@ -235,7 +238,7 @@ export default function LlamaSettings({
             checked={config.always_obey_global_llm}
             disabled={loading || savingGlobalLock}
             onChange={(event) => {
-              const enabled = event.currentTarget.checked;
+              const enabled = event.target.checked;
               void updateGlobalLock(enabled);
             }}
           />
@@ -245,7 +248,9 @@ export default function LlamaSettings({
           </span>
         </label>
       </section>
+      ) : null}
 
+      {view === "remote" ? (
       <section className="settings-section llama-settings">
         <div className="section-heading">
           <span>Inception</span>
@@ -259,7 +264,7 @@ export default function LlamaSettings({
             onChange={(event) =>
               setConfig((current) => ({
                 ...current,
-                inception_api_key: event.currentTarget.value || null,
+                inception_api_key: event.target.value || null,
                 clear_inception_api_key: false,
               }))
             }
@@ -271,14 +276,14 @@ export default function LlamaSettings({
           <span>Model</span>
           <input
             value={config.inception_model}
-            onChange={(event) => setConfig((current) => ({ ...current, inception_model: event.currentTarget.value }))}
+            onChange={(event) => setConfig((current) => ({ ...current, inception_model: event.target.value }))}
           />
         </label>
         <label className="settings-field">
           <span>API URL</span>
           <input
             value={config.inception_base_url}
-            onChange={(event) => setConfig((current) => ({ ...current, inception_base_url: event.currentTarget.value }))}
+            onChange={(event) => setConfig((current) => ({ ...current, inception_base_url: event.target.value }))}
           />
         </label>
         {config.inception_api_key_configured ? (
@@ -286,7 +291,7 @@ export default function LlamaSettings({
             <input
               type="checkbox"
               checked={config.clear_inception_api_key}
-              onChange={(event) => setConfig((current) => ({ ...current, clear_inception_api_key: event.currentTarget.checked }))}
+              onChange={(event) => setConfig((current) => ({ ...current, clear_inception_api_key: event.target.checked }))}
             />
             <span>Remove saved API key</span>
           </label>
@@ -298,7 +303,10 @@ export default function LlamaSettings({
           </button>
         </div>
       </section>
+      ) : null}
 
+      {view === "local" ? (
+      <>
       <section className="settings-section llama-settings">
         <div className="section-heading">
           <Server size={18} />
@@ -340,7 +348,7 @@ export default function LlamaSettings({
                 onChange={(event) =>
                   setConfig((current) => ({
                     ...current,
-                    managed_model: event.currentTarget.value,
+                    managed_model: event.target.value,
                   }))
                 }
               />
@@ -355,7 +363,7 @@ export default function LlamaSettings({
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      context_size: Number(event.currentTarget.value),
+                      context_size: Number(event.target.value),
                     }))
                   }
                 />
@@ -369,7 +377,7 @@ export default function LlamaSettings({
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      gpu_layers: Number(event.currentTarget.value),
+                      gpu_layers: Number(event.target.value),
                     }))
                   }
                 />
@@ -383,7 +391,7 @@ export default function LlamaSettings({
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      cache_ram_mb: Number(event.currentTarget.value),
+                      cache_ram_mb: Number(event.target.value),
                     }))
                   }
                 />
@@ -398,7 +406,7 @@ export default function LlamaSettings({
               onChange={(event) =>
                 setConfig((current) => ({
                   ...current,
-                  base_url: event.currentTarget.value,
+                  base_url: event.target.value,
                 }))
               }
               placeholder="http://127.0.0.1:8080"
@@ -457,7 +465,7 @@ export default function LlamaSettings({
               onChange={(event) =>
                 setConfig((current) => ({
                   ...current,
-                  preferred_model: event.currentTarget.value || null,
+                  preferred_model: event.target.value || null,
                 }))
               }
               disabled={!status?.models.length}
@@ -488,6 +496,8 @@ export default function LlamaSettings({
           </div>
         ))}
       </section>
+      </>
+      ) : null}
     </>
   );
 }
