@@ -4,16 +4,17 @@ use tauri::AppHandle;
 
 use crate::{app_meta_value, open_database, resolved_llama_config};
 
-pub(crate) const INCEPTION_DEFAULT_BASE_URL: &str = "https://api.inceptionlabs.ai";
-pub(crate) const INCEPTION_DEFAULT_MODEL: &str = "mercury-2";
-pub(crate) const INCEPTION_CONTEXT_TOKENS: usize = 128_000;
+const LEGACY_INCEPTION_BASE_URL: &str = "https://api.inceptionlabs.ai";
+const LEGACY_INCEPTION_MODEL: &str = "mercury-2";
+pub(crate) const REMOTE_DEFAULT_CONTEXT_TOKENS: usize = 128_000;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LlmProvider {
     #[default]
     Local,
-    Inception,
+    #[serde(alias = "inception")]
+    Remote,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -37,7 +38,7 @@ impl LlmTarget {
     pub(crate) fn provider_name(&self) -> &'static str {
         match self.provider {
             LlmProvider::Local => "local model server",
-            LlmProvider::Inception => "Inception",
+            LlmProvider::Remote => "remote OpenAI-compatible API",
         }
     }
 
@@ -46,7 +47,7 @@ impl LlmTarget {
         if let Some(api_key) = self.api_key.as_deref() {
             let mut headers = HeaderMap::new();
             let value = HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .map_err(|_| "The Inception API key contains invalid characters".to_string())?;
+                .map_err(|_| "The remote API key contains invalid characters".to_string())?;
             headers.insert(AUTHORIZATION, value);
             builder = builder.default_headers(headers);
         }
@@ -59,8 +60,10 @@ pub(crate) fn resolve_target(
     selection: Option<&LlmSelection>,
 ) -> Result<LlmTarget, String> {
     let connection = open_database(app)?;
-    let default_provider = match app_meta_value(&connection, "llm_default_provider")?.as_deref() {
-        Some("inception") => LlmProvider::Inception,
+    let saved_default_provider = app_meta_value(&connection, "llm_default_provider")?;
+    let legacy_inception_config = saved_default_provider.as_deref() == Some("inception");
+    let default_provider = match saved_default_provider.as_deref() {
+        Some("remote" | "inception") => LlmProvider::Remote,
         _ => LlmProvider::Local,
     };
     let always_obey_global = app_meta_value(&connection, "always_obey_global_llm")?
@@ -88,35 +91,56 @@ pub(crate) fn resolve_target(
                 api_key: None,
             })
         }
-        LlmProvider::Inception => {
-            let base_url = app_meta_value(&connection, "inception_base_url")?
-                .unwrap_or_else(|| INCEPTION_DEFAULT_BASE_URL.to_string());
+        LlmProvider::Remote => {
+            let base_url = app_meta_value(&connection, "remote_base_url")?
+                .or(app_meta_value(&connection, "inception_base_url")?)
+                .or_else(|| legacy_inception_config.then(|| LEGACY_INCEPTION_BASE_URL.to_string()))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Configure a remote OpenAI-compatible API URL in Settings".to_string()
+                })?;
             let model = model_override.or_else(|| {
-                app_meta_value(&connection, "inception_model")
+                app_meta_value(&connection, "remote_model")
                     .ok()
                     .flatten()
+                    .or_else(|| {
+                        app_meta_value(&connection, "inception_model")
+                            .ok()
+                            .flatten()
+                    })
                     .filter(|value| !value.trim().is_empty())
             });
-            let api_key = std::env::var("INCEPTION_API_KEY")
+            let api_key = std::env::var("OPENAI_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
-                .or(app_meta_value(&connection, "inception_api_key")?
+                .or(std::env::var("INCEPTION_API_KEY")
+                    .ok()
                     .filter(|value| !value.trim().is_empty()))
-                .ok_or_else(|| {
-                    "Configure an Inception API key in Settings or set INCEPTION_API_KEY"
-                        .to_string()
-                })?;
+                .or(app_meta_value(&connection, "remote_api_key")?
+                    .filter(|value| !value.trim().is_empty()))
+                .or(app_meta_value(&connection, "inception_api_key")?
+                    .filter(|value| !value.trim().is_empty()));
+            let context_tokens = app_meta_value(&connection, "remote_context_tokens")?
+                .and_then(|value| value.parse().ok())
+                .filter(|value| *value >= 1024)
+                .unwrap_or(REMOTE_DEFAULT_CONTEXT_TOKENS);
             Ok(LlmTarget {
                 provider,
                 base_url,
-                model: Some(model.unwrap_or_else(|| INCEPTION_DEFAULT_MODEL.to_string())),
-                context_tokens: Some(INCEPTION_CONTEXT_TOKENS),
-                api_key: Some(api_key),
+                model: Some(
+                    model
+                        .or_else(|| {
+                            legacy_inception_config.then(|| LEGACY_INCEPTION_MODEL.to_string())
+                        })
+                        .ok_or_else(|| "Configure a remote model name in Settings".to_string())?,
+                ),
+                context_tokens: Some(context_tokens),
+                api_key,
             })
         }
     }
 }
 
-pub(crate) fn is_remote_model(model: &str) -> bool {
-    model.eq_ignore_ascii_case(INCEPTION_DEFAULT_MODEL)
+pub(crate) fn is_mercury_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case(LEGACY_INCEPTION_MODEL)
 }

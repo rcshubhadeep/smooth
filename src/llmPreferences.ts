@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type LlmProvider = "local" | "inception";
+export type LlmProvider = "local" | "remote";
 
 export type LlmPreferences = {
   defaultProvider: LlmProvider;

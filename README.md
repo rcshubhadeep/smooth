@@ -8,7 +8,7 @@ Smooth is a desktop knowledge-bank app (built with Tauri + React) for capturing,
 - **Document import** — bring in existing Office, PDF, and text/Markdown files; they're converted to Markdown and dropped into an `Imported` folder.
 - **Meeting capture** — record microphone and/or system audio during a meeting, transcribe it locally with `whisper.cpp`, and optionally diarize speakers.
 - **Semantic search & entity linking** — background extraction jobs surface related notes and suggested links based on shared entities.
-- **Chat** — talk to your notes through Smooth's managed local `llama.cpp` server, with an external-server fallback.
+- **Chat** — talk to your notes through Smooth's managed local `llama.cpp` server or any OpenAI-compatible Chat Completions API.
 - **Gmail & Calendar integration** — draft follow-up emails and read upcoming events from within the app.
 - **MCP server** — expose read-only note access (`read_note`, `search_notes`, `get_link_suggestions`) to MCP clients like Claude Desktop over a local, bearer-token-authenticated HTTP endpoint.
 
@@ -56,6 +56,12 @@ Smooth starts the managed server on first LLM use. Models download into the
 app-data `models/llama` directory via `LLAMA_CACHE`; they are not written to the
 user's global Hugging Face cache. Managed server settings and an external
 localhost-server fallback are available in Settings.
+
+Remote LLM settings accept an OpenAI-compatible base URL either with or
+without the trailing `/v1`, a model name, an optional bearer API key, and the
+model's context size. Smooth reads `OPENAI_API_KEY` when no key is saved in the
+app. Plain HTTP is accepted for localhost development endpoints; non-local
+remote endpoints must use HTTPS.
 
 ## Document import
 

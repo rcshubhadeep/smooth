@@ -10,7 +10,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 type LlamaConfig = {
-  default_provider: "local" | "inception";
+  default_provider: "local" | "remote";
   always_obey_global_llm: boolean;
   mode: "managed" | "external";
   base_url: string;
@@ -26,11 +26,12 @@ type LlamaConfig = {
   cache_type_v: string;
   spec_type: string;
   spec_draft_n_max: number;
-  inception_base_url: string;
-  inception_model: string;
-  inception_api_key: string | null;
-  clear_inception_api_key: boolean;
-  inception_api_key_configured: boolean;
+  remote_base_url: string;
+  remote_model: string;
+  remote_api_key: string | null;
+  clear_remote_api_key: boolean;
+  remote_api_key_configured: boolean;
+  remote_context_tokens: number;
 };
 
 type LlamaModel = {
@@ -76,11 +77,12 @@ const defaultConfig: LlamaConfig = {
   cache_type_v: "q8_0",
   spec_type: "draft-mtp",
   spec_draft_n_max: 2,
-  inception_base_url: "https://api.inceptionlabs.ai",
-  inception_model: "mercury-2",
-  inception_api_key: null,
-  clear_inception_api_key: false,
-  inception_api_key_configured: false,
+  remote_base_url: "",
+  remote_model: "",
+  remote_api_key: null,
+  clear_remote_api_key: false,
+  remote_api_key_configured: false,
+  remote_context_tokens: 128000,
 };
 
 function formatLargeValue(value: number | null, suffix: string) {
@@ -155,7 +157,7 @@ export default function LlamaSettings({
     }
   }
 
-  async function setDefaultProvider(provider: "local" | "inception") {
+  async function setDefaultProvider(provider: "local" | "remote") {
     if (config.default_provider === provider) return;
     const previous = config.default_provider;
     setConfig((current) => ({ ...current, default_provider: provider }));
@@ -173,16 +175,16 @@ export default function LlamaSettings({
     }
   }
 
-  async function testInception() {
+  async function testRemote() {
     setBusy(true);
     setRemoteStatus(null);
     try {
       const saved = await invoke<LlamaConfig>("save_llama_config", { config });
       setConfig(saved);
-      const models = await invoke<LlamaModel[]>("test_inception_connection");
+      const models = await invoke<LlamaModel[]>("test_remote_llm_connection");
       setRemoteStatus(
-        models.some((model) => model.id === saved.inception_model)
-          ? `${saved.inception_model} is available`
+        models.some((model) => model.id === saved.remote_model)
+          ? `${saved.remote_model} is available`
           : `Connected; ${models.length} model${models.length === 1 ? "" : "s"} available`,
       );
     } catch (error) {
@@ -198,8 +200,8 @@ export default function LlamaSettings({
       const saved = await invoke<LlamaConfig>("save_llama_config", {
         config: {
           ...config,
-          inception_api_key: null,
-          clear_inception_api_key: true,
+          remote_api_key: null,
+          clear_remote_api_key: true,
         },
       });
       setConfig(saved);
@@ -242,7 +244,7 @@ export default function LlamaSettings({
         ? RefreshCw
         : CircleAlert;
 
-  const providerControls = (provider: "local" | "inception") => (
+  const providerControls = (provider: "local" | "remote") => (
     <div className="llama-provider-controls">
       <label className="settings-checkbox">
         <input
@@ -273,38 +275,56 @@ export default function LlamaSettings({
           <span>API key</span>
           <input
             type="password"
-            value={config.inception_api_key ?? ""}
+            value={config.remote_api_key ?? ""}
             onChange={(event) =>
               setConfig((current) => ({
                 ...current,
-                inception_api_key: event.target.value || null,
-                clear_inception_api_key: false,
+                remote_api_key: event.target.value || null,
+                clear_remote_api_key: false,
               }))
             }
-            placeholder={config.inception_api_key_configured ? "Configured; enter a new key to replace" : "Enter API key"}
+            placeholder={config.remote_api_key_configured ? "Configured; enter a new key to replace" : "Optional API key"}
             autoComplete="off"
           />
         </label>
         <label className="settings-field">
           <span>Model</span>
           <input
-            value={config.inception_model}
-            onChange={(event) => setConfig((current) => ({ ...current, inception_model: event.target.value }))}
+            value={config.remote_model}
+            onChange={(event) => setConfig((current) => ({ ...current, remote_model: event.target.value }))}
           />
         </label>
         <label className="settings-field">
           <span>API URL</span>
           <input
-            value={config.inception_base_url}
-            onChange={(event) => setConfig((current) => ({ ...current, inception_base_url: event.target.value }))}
+            value={config.remote_base_url}
+            onChange={(event) => setConfig((current) => ({ ...current, remote_base_url: event.target.value }))}
+            placeholder="https://provider.example/v1"
           />
+        </label>
+        <label className="settings-field">
+          <span>Context size</span>
+          <input
+            type="number"
+            min={1024}
+            max={2000000}
+            step={1024}
+            value={config.remote_context_tokens}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                remote_context_tokens: Number(event.target.value),
+              }))
+            }
+          />
+          <small>Maximum context window advertised by the selected model.</small>
         </label>
         {remoteStatus ? <p className="settings-help">{remoteStatus}</p> : null}
         <div className="settings-actions">
-          <button type="button" onClick={() => void testInception()} disabled={busy || loading}>
+          <button type="button" onClick={() => void testRemote()} disabled={busy || loading}>
             <RefreshCw size={15} /> Test connection
           </button>
-          {config.inception_api_key_configured ? (
+          {config.remote_api_key_configured ? (
             <button
               type="button"
               onClick={() => void removeRemoteKey()}
@@ -314,7 +334,7 @@ export default function LlamaSettings({
             </button>
           ) : null}
         </div>
-        {providerControls("inception")}
+        {providerControls("remote")}
       </section>
       ) : null}
 

@@ -337,7 +337,7 @@ export function ReminderWorkflowAssignment({
   const [steps, setSteps] = useState<ReminderWorkflowStepDraft[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [provider, setProvider] = useState<"default" | "local" | "inception">("default");
+  const [provider, setProvider] = useState<"default" | "local" | "remote">("default");
 
   async function save() {
     if (!steps.length) return;
@@ -381,12 +381,12 @@ export function ReminderWorkflowAssignment({
         <select
           value={provider}
           onChange={(event) =>
-            setProvider(event.currentTarget.value as "default" | "local" | "inception")
+            setProvider(event.currentTarget.value as "default" | "local" | "remote")
           }
         >
           <option value="default">Use default</option>
           <option value="local">Local</option>
-          <option value="inception">Inception</option>
+          <option value="remote">Remote</option>
         </select>
       </label>
       {error ? <p className="form-error">{error}</p> : null}

@@ -14,7 +14,7 @@ export default function LlmRunChoiceDialog({
   onChoose: (provider: LlmProvider, remember: boolean) => void;
 }) {
   const [alwaysObey, setAlwaysObey] = useState(false);
-  const defaultLabel = defaultProvider === "inception" ? "Remote" : "Local";
+  const defaultLabel = defaultProvider === "remote" ? "Remote" : "Local";
 
   return (
     <div className="llm-choice-backdrop" onMouseDown={onCancel}>
@@ -44,13 +44,13 @@ export default function LlmRunChoiceDialog({
             </span>
             {defaultProvider === "local" ? <em>Default</em> : null}
           </button>
-          <button type="button" onClick={() => onChoose("inception", alwaysObey)}>
+          <button type="button" onClick={() => onChoose("remote", alwaysObey)}>
             <Cloud size={18} />
             <span>
               <strong>Remote</strong>
-              <small>Uses Mercury 2 remotely</small>
+              <small>Uses your OpenAI-compatible API</small>
             </span>
-            {defaultProvider === "inception" ? <em>Default</em> : null}
+            {defaultProvider === "remote" ? <em>Default</em> : null}
           </button>
         </div>
 

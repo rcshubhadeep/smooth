@@ -5644,7 +5644,7 @@ function EntityStrip({
   const [editingEntityId, setEditingEntityId] = useState<number | null>(null);
   const [entityNameDraft, setEntityNameDraft] = useState("");
   const [extractionProvider, setExtractionProvider] = useState<
-    "default" | "local" | "inception"
+    "default" | "local" | "remote"
   >("default");
 
   const refreshExtraction = useCallback(async () => {
@@ -5789,7 +5789,7 @@ function EntityStrip({
               value={extractionProvider}
               onChange={(event) =>
                 setExtractionProvider(
-                  event.currentTarget.value as "default" | "local" | "inception",
+                  event.currentTarget.value as "default" | "local" | "remote",
                 )
               }
               title="LLM provider for this extraction"
@@ -5797,7 +5797,7 @@ function EntityStrip({
             >
               <option value="default">Default</option>
               <option value="local">Local</option>
-              <option value="inception">Inception</option>
+              <option value="remote">Remote</option>
             </select>
             <button
               type="button"

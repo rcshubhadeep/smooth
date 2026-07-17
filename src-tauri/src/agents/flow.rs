@@ -16,7 +16,7 @@ use tauri::AppHandle;
 
 use crate::{
     is_bonsai_model, llama_endpoint,
-    llm::{is_remote_model, resolve_target, LlmSelection},
+    llm::{is_mercury_model, resolve_target, LlmSelection},
 };
 
 use super::context::AgentContext;
@@ -531,7 +531,7 @@ async fn complete_agent_turn(
 }
 
 fn agent_max_tokens(model: &str) -> u32 {
-    if is_remote_model(model) {
+    if is_mercury_model(model) {
         MERCURY_AGENT_MAX_TOKENS
     } else if is_bonsai_model(model) {
         BONSAI_AGENT_MAX_TOKENS
@@ -551,7 +551,7 @@ fn agent_completion_payload(model: &str, messages: &[Value], tools: Option<&[Val
     if is_bonsai_model(model) {
         payload["reasoning_format"] = json!("none");
         payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
-    } else if is_remote_model(model) {
+    } else if is_mercury_model(model) {
         payload["reasoning_effort"] = json!("low");
     }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
@@ -570,7 +570,7 @@ async fn complete_agent_answer(
     initial_finish_reason: Option<String>,
     recorder: &mut AgentRunRecorder,
 ) -> Result<String, String> {
-    if !is_bonsai_model(model) && !is_remote_model(model) {
+    if !is_bonsai_model(model) && !is_mercury_model(model) {
         return Ok(initial_output);
     }
 

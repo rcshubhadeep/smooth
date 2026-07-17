@@ -296,7 +296,7 @@ fn insert_workflow_with_selection(
             .and_then(|selection| selection.provider)
             .map(|provider| match provider {
                 LlmProvider::Local => "local",
-                LlmProvider::Inception => "inception",
+                LlmProvider::Remote => "remote",
             });
     let model = selection
         .and_then(|selection| selection.model.as_deref())
@@ -684,8 +684,8 @@ fn claim_due(connection: &mut Connection) -> Result<Option<ClaimedWorkflow>, Str
                     id: row.get(0)?,
                     reminder_id: row.get(1)?,
                     selection: provider.map(|provider| LlmSelection {
-                        provider: Some(if provider == "inception" {
-                            LlmProvider::Inception
+                        provider: Some(if matches!(provider.as_str(), "remote" | "inception") {
+                            LlmProvider::Remote
                         } else {
                             LlmProvider::Local
                         }),

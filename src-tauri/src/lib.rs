@@ -121,12 +121,12 @@ enum LlamaMode {
     External,
 }
 
-fn default_inception_base_url() -> String {
-    llm::INCEPTION_DEFAULT_BASE_URL.to_string()
+fn default_remote_base_url() -> String {
+    String::new()
 }
 
-fn default_inception_model() -> String {
-    llm::INCEPTION_DEFAULT_MODEL.to_string()
+fn default_remote_model() -> String {
+    String::new()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -149,16 +149,25 @@ struct LlamaConfig {
     cache_type_v: String,
     spec_type: String,
     spec_draft_n_max: u16,
-    #[serde(default = "default_inception_base_url")]
-    inception_base_url: String,
-    #[serde(default = "default_inception_model")]
-    inception_model: String,
+    #[serde(default = "default_remote_base_url", alias = "inception_base_url")]
+    remote_base_url: String,
+    #[serde(default = "default_remote_model", alias = "inception_model")]
+    remote_model: String,
     #[serde(default)]
-    inception_api_key: Option<String>,
+    #[serde(alias = "inception_api_key")]
+    remote_api_key: Option<String>,
     #[serde(default)]
-    clear_inception_api_key: bool,
+    #[serde(alias = "clear_inception_api_key")]
+    clear_remote_api_key: bool,
     #[serde(default)]
-    inception_api_key_configured: bool,
+    #[serde(alias = "inception_api_key_configured")]
+    remote_api_key_configured: bool,
+    #[serde(default = "default_remote_context_tokens")]
+    remote_context_tokens: u32,
+}
+
+fn default_remote_context_tokens() -> u32 {
+    llm::REMOTE_DEFAULT_CONTEXT_TOKENS as u32
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1155,7 +1164,7 @@ fn force_enqueue_extraction_with_selection(
             .and_then(|selection| selection.provider)
             .map(|provider| match provider {
                 llm::LlmProvider::Local => "local",
-                llm::LlmProvider::Inception => "inception",
+                llm::LlmProvider::Remote => "remote",
             });
     let model = selection
         .and_then(|selection| selection.model.as_deref())
@@ -1237,7 +1246,7 @@ fn extraction_budget(context_tokens: Option<usize>, model: &str) -> ExtractionBu
         .saturating_sub(max_output_tokens + reserve_tokens)
         .max(EXTRACTION_MIN_INPUT_TOKENS);
 
-    if !is_bonsai_model(model) && !llm::is_remote_model(model) {
+    if !is_bonsai_model(model) && !llm::is_mercury_model(model) {
         return ExtractionBudget {
             input_tokens,
             max_output_tokens,
@@ -1320,7 +1329,7 @@ fn extraction_messages(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let system_content = if is_bonsai_model(model) || llm::is_remote_model(model) {
+    let system_content = if is_bonsai_model(model) || llm::is_mercury_model(model) {
         concat!(
             "Extract important named entities and durable knowledge keywords from the note. ",
             "Use only these entity types: PERSON, ORGANIZATION, LOCATION, EVENT, DATE, TIME, ",
@@ -1348,7 +1357,7 @@ fn extraction_messages(
             "thinking text, or thinking tags."
         )
     };
-    let user_content = if is_bonsai_model(model) || llm::is_remote_model(model) {
+    let user_content = if is_bonsai_model(model) || llm::is_mercury_model(model) {
         format!(
             "Return at most {max_entities} unique entities.\n\nUser is especially interested in these entity categories:\n{interest_guidance}\n\nNote title: {title}\n\nNote chunk:\n{chunk}"
         )
@@ -1372,6 +1381,7 @@ fn extraction_messages(
 
 fn extraction_request_payload(
     model: &str,
+    is_remote: bool,
     budget: ExtractionBudget,
     title: &str,
     chunk: &str,
@@ -1386,9 +1396,7 @@ fn extraction_request_payload(
         "max_tokens": budget.max_output_tokens,
         "stream": false
     });
-    if llm::is_remote_model(model) {
-        payload["reasoning_effort"] = json!("low");
-    } else {
+    if !is_remote {
         payload["reasoning_format"] = json!("none");
         payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
@@ -1425,7 +1433,7 @@ fn is_grammar_sampler_error(body: &str) -> bool {
 }
 
 fn extraction_response_mode(config: &LlamaConfig, model: &str) -> ExtractionResponseMode {
-    if !is_bonsai_model(model) {
+    if !is_bonsai_model(model) && config.default_provider != llm::LlmProvider::Remote {
         return ExtractionResponseMode::StrictSchema;
     }
     let key = format!("{}\n{model}", config.base_url.trim_end_matches('/'));
@@ -1442,7 +1450,7 @@ fn remember_extraction_response_mode(
     model: &str,
     response_mode: ExtractionResponseMode,
 ) {
-    if !is_bonsai_model(model) {
+    if !is_bonsai_model(model) && config.default_provider != llm::LlmProvider::Remote {
         return;
     }
     let key = format!("{}\n{model}", config.base_url.trim_end_matches('/'));
@@ -1456,10 +1464,11 @@ fn remember_extraction_response_mode(
 
 fn next_extraction_response_mode(
     model: &str,
+    is_remote: bool,
     response_mode: ExtractionResponseMode,
 ) -> Option<ExtractionResponseMode> {
     match response_mode {
-        ExtractionResponseMode::StrictSchema if is_bonsai_model(model) => {
+        ExtractionResponseMode::StrictSchema if is_bonsai_model(model) || is_remote => {
             Some(ExtractionResponseMode::JsonObject)
         }
         ExtractionResponseMode::StrictSchema => Some(ExtractionResponseMode::PlainJson),
@@ -1665,7 +1674,7 @@ async fn count_extraction_input_tokens(
     interests: &[EntityInterestDefinition],
     max_entities: usize,
 ) -> Option<usize> {
-    if llm::is_remote_model(model) {
+    if config.default_provider == llm::LlmProvider::Remote {
         return None;
     }
     let response = client
@@ -1802,6 +1811,7 @@ async fn extract_chunk_entities(
             .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
             .json(&extraction_request_payload(
                 model,
+                config.default_provider == llm::LlmProvider::Remote,
                 budget,
                 title,
                 chunk,
@@ -1849,11 +1859,13 @@ async fn extract_chunk_entities(
         if status.is_success() {
             break response;
         }
-        if !is_grammar_sampler_error(&response) {
+        let is_remote = config.default_provider == llm::LlmProvider::Remote;
+        let unsupported_format = is_remote && status == reqwest::StatusCode::BAD_REQUEST;
+        if !is_grammar_sampler_error(&response) && !unsupported_format {
             return Err(http_extraction_error(status, &response));
         }
 
-        let fallback_mode = match next_extraction_response_mode(model, response_mode) {
+        let fallback_mode = match next_extraction_response_mode(model, is_remote, response_mode) {
             Some(fallback_mode) => fallback_mode,
             None => {
                 return Err(http_extraction_error(status, &response));
@@ -1949,9 +1961,11 @@ pub(crate) fn app_meta_value(connection: &Connection, key: &str) -> Result<Optio
 }
 
 fn load_llama_config(connection: &Connection) -> Result<LlamaConfig, String> {
+    let saved_default_provider = app_meta_value(connection, "llm_default_provider")?;
+    let legacy_inception_config = saved_default_provider.as_deref() == Some("inception");
     Ok(LlamaConfig {
-        default_provider: match app_meta_value(connection, "llm_default_provider")?.as_deref() {
-            Some("inception") => llm::LlmProvider::Inception,
+        default_provider: match saved_default_provider.as_deref() {
+            Some("remote" | "inception") => llm::LlmProvider::Remote,
             _ => llm::LlmProvider::Local,
         },
         always_obey_global_llm: app_meta_value(connection, "always_obey_global_llm")?
@@ -1994,18 +2008,29 @@ fn load_llama_config(connection: &Connection) -> Result<LlamaConfig, String> {
         spec_draft_n_max: app_meta_value(connection, "llama_spec_draft_n_max")?
             .and_then(|value| value.parse().ok())
             .unwrap_or(2),
-        inception_base_url: app_meta_value(connection, "inception_base_url")?
-            .unwrap_or_else(default_inception_base_url),
-        inception_model: app_meta_value(connection, "inception_model")?
-            .unwrap_or_else(default_inception_model),
-        inception_api_key: None,
-        clear_inception_api_key: false,
-        inception_api_key_configured: std::env::var("INCEPTION_API_KEY")
+        remote_base_url: app_meta_value(connection, "remote_base_url")?
+            .or(app_meta_value(connection, "inception_base_url")?)
+            .or_else(|| legacy_inception_config.then(|| "https://api.inceptionlabs.ai".to_string()))
+            .unwrap_or_else(default_remote_base_url),
+        remote_model: app_meta_value(connection, "remote_model")?
+            .or(app_meta_value(connection, "inception_model")?)
+            .or_else(|| legacy_inception_config.then(|| "mercury-2".to_string()))
+            .unwrap_or_else(default_remote_model),
+        remote_api_key: None,
+        clear_remote_api_key: false,
+        remote_api_key_configured: std::env::var("OPENAI_API_KEY")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
-            || app_meta_value(connection, "inception_api_key")?
+            || std::env::var("INCEPTION_API_KEY")
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            || app_meta_value(connection, "remote_api_key")?
+                .or(app_meta_value(connection, "inception_api_key")?)
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
+        remote_context_tokens: app_meta_value(connection, "remote_context_tokens")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(default_remote_context_tokens),
     })
 }
 
@@ -2060,12 +2085,22 @@ fn validate_llama_base_url(value: &str) -> Result<String, String> {
 
 fn validate_remote_llm_base_url(value: &str) -> Result<String, String> {
     let mut url = reqwest::Url::parse(value.trim())
-        .map_err(|_| "Enter a valid Inception API URL".to_string())?;
-    if url.scheme() != "https" {
-        return Err("The Inception API URL must use https".to_string());
+        .map_err(|_| "Enter a valid OpenAI-compatible API URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The remote API URL must use http or https".to_string());
     }
-    if url.host_str().is_none() {
-        return Err("The Inception API URL must include a host".to_string());
+    let host = url
+        .host_str()
+        .ok_or_else(|| "The remote API URL must include a host".to_string())?;
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false);
+    if url.scheme() == "http" && !is_loopback {
+        return Err(
+            "Remote API URLs must use https; http is allowed only for localhost".to_string(),
+        );
     }
     url.set_query(None);
     url.set_fragment(None);
@@ -2073,11 +2108,14 @@ fn validate_remote_llm_base_url(value: &str) -> Result<String, String> {
 }
 
 pub(crate) fn llama_endpoint(base_url: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
+    let base = base_url.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    let path = if base.ends_with("/v1") {
+        path.strip_prefix("v1/").unwrap_or(path)
+    } else {
+        path
+    };
+    format!("{base}/{path}")
 }
 
 pub(crate) fn is_bonsai_model(model: &str) -> bool {
@@ -2104,7 +2142,7 @@ fn llama_status(
 }
 
 async fn llama_server_ready(client: &reqwest::Client, config: &LlamaConfig) -> bool {
-    let path = if config.default_provider == llm::LlmProvider::Inception {
+    let path = if config.default_provider == llm::LlmProvider::Remote {
         "/v1/models"
     } else {
         "/health"
@@ -2246,8 +2284,8 @@ fn claim_extraction_job(app: &AppHandle) -> Result<Option<ExtractionJob>, String
         max_attempts,
         lease_token,
         selection: provider.map(|provider| llm::LlmSelection {
-            provider: Some(if provider == "inception" {
-                llm::LlmProvider::Inception
+            provider: Some(if matches!(provider.as_str(), "remote" | "inception") {
+                llm::LlmProvider::Remote
             } else {
                 llm::LlmProvider::Local
             }),
@@ -2955,10 +2993,20 @@ fn set_always_obey_global_llm(app: AppHandle, enabled: bool) -> Result<bool, Str
 #[tauri::command]
 fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig, String> {
     let base_url = validate_llama_base_url(&config.base_url)?;
-    let inception_base_url = validate_remote_llm_base_url(&config.inception_base_url)?;
-    let inception_model = config.inception_model.trim().to_string();
-    if inception_model.is_empty() {
-        return Err("Enter an Inception model name".to_string());
+    let remote_base_url = if config.remote_base_url.trim().is_empty() {
+        if config.default_provider == llm::LlmProvider::Remote {
+            return Err("Enter a remote OpenAI-compatible API URL".to_string());
+        }
+        String::new()
+    } else {
+        validate_remote_llm_base_url(&config.remote_base_url)?
+    };
+    let remote_model = config.remote_model.trim().to_string();
+    if remote_model.is_empty() && config.default_provider == llm::LlmProvider::Remote {
+        return Err("Enter a remote model name".to_string());
+    }
+    if !(1024..=2_000_000).contains(&config.remote_context_tokens) {
+        return Err("Remote context size must be between 1024 and 2000000".to_string());
     }
     let preferred_model = if config.mode == LlamaMode::Managed {
         None
@@ -2985,7 +3033,7 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
             "llm_default_provider",
             match config.default_provider {
                 llm::LlmProvider::Local => "local".to_string(),
-                llm::LlmProvider::Inception => "inception".to_string(),
+                llm::LlmProvider::Remote => "remote".to_string(),
             },
         ),
         (
@@ -3021,8 +3069,12 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
             "llama_spec_draft_n_max",
             config.spec_draft_n_max.to_string(),
         ),
-        ("inception_base_url", inception_base_url.clone()),
-        ("inception_model", inception_model.clone()),
+        ("remote_base_url", remote_base_url.clone()),
+        ("remote_model", remote_model.clone()),
+        (
+            "remote_context_tokens",
+            config.remote_context_tokens.to_string(),
+        ),
     ];
     for (key, value) in values {
         transaction
@@ -3036,19 +3088,22 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
             )
             .map_err(db_error)?;
     }
-    if config.clear_inception_api_key {
+    if config.clear_remote_api_key {
         transaction
-            .execute("DELETE FROM app_meta WHERE key = 'inception_api_key'", [])
+            .execute(
+                "DELETE FROM app_meta WHERE key IN ('remote_api_key', 'inception_api_key')",
+                [],
+            )
             .map_err(db_error)?;
     } else if let Some(api_key) = config
-        .inception_api_key
+        .remote_api_key
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         transaction
             .execute(
-                "INSERT INTO app_meta (key, value) VALUES ('inception_api_key', ?1)
+                "INSERT INTO app_meta (key, value) VALUES ('remote_api_key', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![api_key],
             )
@@ -3075,28 +3130,32 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
         cache_type_v: config.cache_type_v,
         spec_type: config.spec_type,
         spec_draft_n_max: config.spec_draft_n_max,
-        inception_base_url,
-        inception_model,
-        inception_api_key: None,
-        clear_inception_api_key: false,
-        inception_api_key_configured: !config.clear_inception_api_key
-            && (config.inception_api_key_configured
+        remote_base_url,
+        remote_model,
+        remote_api_key: None,
+        clear_remote_api_key: false,
+        remote_api_key_configured: !config.clear_remote_api_key
+            && (config.remote_api_key_configured
                 || config
-                    .inception_api_key
+                    .remote_api_key
                     .as_deref()
                     .map(str::trim)
                     .map(|value| !value.is_empty())
                     .unwrap_or(false)
+                || std::env::var("OPENAI_API_KEY")
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
                 || std::env::var("INCEPTION_API_KEY")
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false)),
+        remote_context_tokens: config.remote_context_tokens,
     })
 }
 
 #[tauri::command]
-async fn test_inception_connection(app: AppHandle) -> Result<Vec<LlamaModel>, String> {
+async fn test_remote_llm_connection(app: AppHandle) -> Result<Vec<LlamaModel>, String> {
     let selection = llm::LlmSelection {
-        provider: Some(llm::LlmProvider::Inception),
+        provider: Some(llm::LlmProvider::Remote),
         model: None,
     };
     let target = llm::resolve_target(&app, Some(&selection))?;
@@ -3110,12 +3169,12 @@ async fn test_inception_connection(app: AppHandle) -> Result<Vec<LlamaModel>, St
         .get(llama_endpoint(&target.base_url, "/v1/models"))
         .send()
         .await
-        .map_err(|error| format!("Unable to reach Inception: {error}"))?;
+        .map_err(|error| format!("Unable to reach remote API: {error}"))?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "Inception returned HTTP {}: {}",
+            "Remote API returned HTTP {}: {}",
             status.as_u16(),
             truncate_chars(body.trim(), 300)
         ));
@@ -3123,7 +3182,7 @@ async fn test_inception_connection(app: AppHandle) -> Result<Vec<LlamaModel>, St
     let models = response
         .json::<LlamaModelsResponse>()
         .await
-        .map_err(|error| format!("Invalid Inception models response: {error}"))?;
+        .map_err(|error| format!("Invalid OpenAI-compatible models response: {error}"))?;
     Ok(models
         .data
         .into_iter()
@@ -4675,7 +4734,7 @@ async fn suggest_chat_created_link_label(
         "max_tokens": 32,
         "stream": false
     });
-    if llm::is_remote_model(&model) {
+    if llm::is_mercury_model(&model) {
         payload["reasoning_effort"] = json!("instant");
     } else {
         payload["reasoning_format"] = json!("none");
@@ -4829,7 +4888,7 @@ pub fn run() {
             set_always_obey_global_llm,
             save_llama_config,
             get_llama_status,
-            test_inception_connection,
+            test_remote_llm_connection,
             start_llama_server,
             stop_llama_server,
             get_extraction_queue_status,
@@ -5119,6 +5178,7 @@ Generation prompt:
         let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), model);
         let payload = extraction_request_payload(
             model,
+            false,
             budget,
             "Test note",
             "Curvo uses local models.",
@@ -5141,6 +5201,7 @@ Generation prompt:
         let budget = extraction_budget(Some(DEFAULT_EXTRACTION_CONTEXT_TOKENS), model);
         let payload = extraction_request_payload(
             model,
+            false,
             budget,
             "Test note",
             "Curvo uses local models.",
@@ -5157,6 +5218,7 @@ Generation prompt:
         let budget = extraction_budget(Some(8192), model);
         let payload = extraction_request_payload(
             model,
+            false,
             budget,
             "Test note",
             "Curvo uses local models.",
@@ -5176,17 +5238,18 @@ Generation prompt:
         assert!(system_prompt.contains("Return only the schema-constrained JSON"));
         assert!(!user_prompt.contains("Return at most"));
         assert_eq!(
-            next_extraction_response_mode(model, ExtractionResponseMode::StrictSchema),
+            next_extraction_response_mode(model, false, ExtractionResponseMode::StrictSchema),
             Some(ExtractionResponseMode::PlainJson)
         );
     }
 
     #[test]
-    fn mercury_extraction_uses_structured_remote_profile() {
+    fn remote_extraction_uses_only_openai_compatible_fields() {
         let model = "mercury-2";
         let budget = extraction_budget(Some(128_000), model);
         let payload = extraction_request_payload(
             model,
+            true,
             budget,
             "Test note",
             "Curvo uses local models.",
@@ -5195,10 +5258,14 @@ Generation prompt:
         );
 
         assert_eq!(budget.max_entities, 32);
-        assert_eq!(payload["reasoning_effort"], "low");
         assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert!(payload.get("reasoning_effort").is_none());
         assert!(payload.get("reasoning_format").is_none());
         assert!(payload.get("chat_template_kwargs").is_none());
+        assert_eq!(
+            next_extraction_response_mode(model, true, ExtractionResponseMode::StrictSchema),
+            Some(ExtractionResponseMode::JsonObject)
+        );
     }
 
     #[test]
@@ -5206,11 +5273,11 @@ Generation prompt:
         let model = "prism-ml/Bonsai-27B-gguf:Q1_0";
 
         assert_eq!(
-            next_extraction_response_mode(model, ExtractionResponseMode::StrictSchema),
+            next_extraction_response_mode(model, false, ExtractionResponseMode::StrictSchema),
             Some(ExtractionResponseMode::JsonObject)
         );
         assert_eq!(
-            next_extraction_response_mode(model, ExtractionResponseMode::JsonObject),
+            next_extraction_response_mode(model, false, ExtractionResponseMode::JsonObject),
             Some(ExtractionResponseMode::PlainJson)
         );
     }
@@ -5239,5 +5306,31 @@ Generation prompt:
         assert!(chunks
             .iter()
             .all(|chunk| chunk.chars().count() <= budget.initial_chars));
+    }
+
+    #[test]
+    fn openai_endpoint_accepts_base_urls_with_or_without_v1() {
+        assert_eq!(
+            llama_endpoint("https://api.example.com", "/v1/models"),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            llama_endpoint("https://api.example.com/v1/", "/v1/chat/completions"),
+            "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            llama_endpoint("https://api.example.com/openai/v1", "/v1/models"),
+            "https://api.example.com/openai/v1/models"
+        );
+    }
+
+    #[test]
+    fn remote_urls_require_tls_except_on_loopback() {
+        assert_eq!(
+            validate_remote_llm_base_url("http://127.0.0.1:1234/v1").unwrap(),
+            "http://127.0.0.1:1234/v1"
+        );
+        assert!(validate_remote_llm_base_url("http://api.example.com/v1").is_err());
+        assert!(validate_remote_llm_base_url("https://api.example.com/v1").is_ok());
     }
 }

@@ -12,7 +12,7 @@ use tauri::{ipc::Channel, AppHandle};
 
 use crate::{
     db_error, is_bonsai_model, llama_endpoint,
-    llm::{is_remote_model, resolve_target, LlmSelection, LlmTarget},
+    llm::{is_mercury_model, resolve_target, LlmSelection, LlmTarget},
     new_id, note_context, now_string, open_database,
 };
 
@@ -334,7 +334,7 @@ struct Budget {
 
 fn budget_for(context_tokens: Option<usize>, model: &str) -> Budget {
     let ctx = context_tokens.unwrap_or(DEFAULT_CTX_TOKENS).max(1024);
-    let max_answer_tokens = if is_remote_model(model) {
+    let max_answer_tokens = if is_mercury_model(model) {
         MERCURY_MAX_CHAT_ANSWER_TOKENS
     } else if is_bonsai_model(model) {
         BONSAI_MAX_CHAT_ANSWER_TOKENS
@@ -724,9 +724,9 @@ async fn complete_once_with_format(
         payload["response_format"] = response_format;
     }
     if disable_thinking {
-        if is_remote_model(model) {
+        if is_mercury_model(model) {
             payload["reasoning_effort"] = json!("low");
-        } else {
+        } else if is_bonsai_model(model) || model.to_ascii_lowercase().contains("gemma") {
             payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
         }
     }
@@ -1265,7 +1265,7 @@ fn chat_stream_payload(
     if is_bonsai_model(model) {
         payload["reasoning_format"] = json!("none");
         payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
-    } else if is_remote_model(model) {
+    } else if is_mercury_model(model) {
         payload["reasoning_effort"] = json!("low");
     }
     payload
@@ -1330,7 +1330,7 @@ async fn stream_completion(
         }
 
         if continuation == MAX_ANSWER_CONTINUATIONS {
-            if !is_bonsai_model(&model) && !is_remote_model(&model) {
+            if !is_bonsai_model(&model) && !is_mercury_model(&model) {
                 return Ok(full);
             }
             return Err(format!(
