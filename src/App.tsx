@@ -3083,18 +3083,12 @@ function App() {
             >
               <Bell size={18} />
             </button>
-            <button
-              className={
-                view === "agents" ? "icon-button active" : "icon-button"
-              }
-              type="button"
-              onClick={() =>
-                setView((current) => (current === "agents" ? "notes" : "agents"))
-              }
-              title={view === "agents" ? "Back to notes" : "Agents"}
-            >
-              <Bot size={18} />
-            </button>
+            {/*
+              Agents nav intentionally hidden — the Agents page needs a rethink,
+              so we don't want users accidentally landing there. All Agents code
+              (the "agents" ViewMode branch + <AgentsView />) is left intact;
+              restore this button to re-enable the entry point.
+            */}
             <button
               className={
                 view === "settings" ? "icon-button active" : "icon-button"
