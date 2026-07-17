@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
   ChevronDown,
+  Copy,
+  FilePlus,
   FileText,
   Link2,
   Loader2,
@@ -1281,7 +1284,13 @@ type NoteRunState =
   | { status: "done"; agent: AgentDefinition; result: AgentRunResult }
   | { status: "error"; agent: AgentDefinition; message: string };
 
-export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
+export function NoteAgentsPanel({
+  note,
+  onCreateNote,
+}: {
+  note: AgentNoteRef;
+  onCreateNote: (content: string, sourcePrompt: string | null) => void;
+}) {
   const agents = useMemo(
     () => BUILTIN_AGENTS.filter((agent) => agent.scope === "note"),
     [],
@@ -1291,7 +1300,18 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
   const [followUpProvider, setFollowUpProvider] = useState<LlmProvider | null | undefined>(undefined);
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
   const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
+  const [copied, setCopied] = useState(false);
   const busy = run.status === "running";
+
+  async function copyResult(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — ignore */
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -1394,14 +1414,36 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
         <div className="note-agent-result">
           <div className="note-agent-result-head">
             <span>{run.agent.name}</span>
-            <button
-              type="button"
-              className="ghost-icon"
-              title="Clear result"
-              onClick={() => setRun({ status: "idle" })}
-            >
-              <X size={14} />
-            </button>
+            <div className="note-agent-result-actions">
+              <button
+                type="button"
+                className="ghost-icon"
+                title={copied ? "Copied" : "Copy to clipboard"}
+                onClick={() => void copyResult(run.result.answer)}
+              >
+                {copied ? (
+                  <Check size={14} className="copy-tick" />
+                ) : (
+                  <Copy size={14} />
+                )}
+              </button>
+              <button
+                type="button"
+                className="ghost-icon"
+                title="Create a note from this"
+                onClick={() => onCreateNote(run.result.answer, null)}
+              >
+                <FilePlus size={14} />
+              </button>
+              <button
+                type="button"
+                className="ghost-icon"
+                title="Clear result"
+                onClick={() => setRun({ status: "idle" })}
+              >
+                <X size={14} />
+              </button>
+            </div>
           </div>
           <AgentRunResultView result={run.result} />
         </div>

@@ -5547,6 +5547,38 @@ body.resizing {
   color: var(--text-soft);
 }
 
+.note-agent-result-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Tick that pops in when a copy succeeds (chat + task results). */
+.copy-tick {
+  color: #3fb27f;
+  animation: copy-tick-pop 0.24s ease-out;
+}
+
+@keyframes copy-tick-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-tick {
+    animation: none;
+  }
+}
+
 .slack-share-backdrop {
   position: fixed;
   inset: 0;

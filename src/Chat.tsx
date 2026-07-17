@@ -355,7 +355,11 @@ export default function NoteChat({
                       title={copiedId === message.id ? "Copied" : "Copy to clipboard"}
                       onClick={() => void copyMessage(message.id, message.content)}
                     >
-                      {copiedId === message.id ? <Check size={14} /> : <Copy size={14} />}
+                      {copiedId === message.id ? (
+                        <Check size={14} className="copy-tick" />
+                      ) : (
+                        <Copy size={14} />
+                      )}
                     </button>
                     <button
                       type="button"

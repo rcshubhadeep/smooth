@@ -7075,7 +7075,11 @@ function ContextPanel({
       </div>
 
       <div className="panel-pane" hidden={tab !== "agents"}>
-        <NoteAgentsPanel key={note.id} note={note} />
+        <NoteAgentsPanel
+          key={note.id}
+          note={note}
+          onCreateNote={onCreateNoteFromContent}
+        />
       </div>
 
       <div className="panel-pane" hidden={tab !== "links"}>
