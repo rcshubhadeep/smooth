@@ -1345,10 +1345,6 @@ export function NoteAgentsPanel({ note }: { note: AgentNoteRef }) {
 
   return (
     <div className="note-agents">
-      <div className="context-heading">
-        <span>Agents</span>
-      </div>
-
       <ul className="note-agent-list">
         {agents.map((agent) => {
           const Icon = AGENT_ICONS[agent.icon];

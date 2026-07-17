@@ -7051,7 +7051,7 @@ function ContextPanel({
             className={tab === "agents" ? "active" : ""}
             onClick={() => setTab("agents")}
           >
-            Agents
+            Tasks
           </button>
         </div>
       </div>
