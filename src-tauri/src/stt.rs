@@ -13,6 +13,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) use engine::SttRuntime;
 
+#[derive(Clone, Debug)]
+pub(crate) struct TranscriptionSession {
+    pub key: String,
+    pub sequence: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SttConfig {
     pub model_path: String,
@@ -515,7 +521,16 @@ async fn process_stt_job(app: AppHandle, runtime: SttRuntime, job: SttJob) {
         }
     };
     let audio_path = PathBuf::from(&job.chunk_path);
-    let result = runtime.transcribe(config, audio_path).await;
+    let result = runtime
+        .transcribe(
+            config,
+            audio_path,
+            Some(TranscriptionSession {
+                key: format!("meeting:{}:{}", job.note_id, job.source),
+                sequence: job.sequence,
+            }),
+        )
+        .await;
 
     match result {
         Ok(transcription) => complete_stt_job(&app, &job, transcription),
@@ -623,7 +638,7 @@ pub async fn transcribe_last_capture(
         load_stt_config(&app, &connection)?
     };
 
-    runtime.transcribe(config, audio_path).await
+    runtime.transcribe(config, audio_path, None).await
 }
 
 #[tauri::command]
@@ -631,6 +646,8 @@ pub async fn transcribe_capture_file(
     app: AppHandle,
     runtime: State<'_, SttRuntime>,
     path: String,
+    session_id: Option<String>,
+    sequence: Option<i64>,
 ) -> Result<SttTranscription, String> {
     let audio_path = validate_capture_audio_path(&app, path)?;
     let config = {
@@ -638,7 +655,13 @@ pub async fn transcribe_capture_file(
         load_stt_config(&app, &connection)?
     };
 
-    runtime.transcribe(config, audio_path).await
+    let session = session_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|key| TranscriptionSession {
+            key: format!("dictation:{key}"),
+            sequence: sequence.unwrap_or_default(),
+        });
+    runtime.transcribe(config, audio_path, session).await
 }
 
 fn validate_capture_audio_path(app: &AppHandle, path: String) -> Result<PathBuf, String> {

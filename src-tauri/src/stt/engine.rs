@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -10,7 +11,7 @@ use std::{
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use super::{stt_status, SttConfig, SttSegment, SttState, SttTranscription};
+use super::{stt_status, SttConfig, SttSegment, SttState, SttTranscription, TranscriptionSession};
 use crate::audio_preprocess::{load_wav_for_whisper, WhisperAudio};
 
 static WHISPER_LOG_HOOKS: Once = Once::new();
@@ -18,6 +19,9 @@ const SILENCE_RMS_DB: f32 = -50.0;
 const VAD_FRAME_SAMPLES: usize = 480; // 30 ms at 16 kHz.
 const VAD_SPEECH_DB: f32 = -42.0;
 const VAD_MIN_SPEECH_FRAMES: usize = 4;
+const CHUNK_OVERLAP_MS: usize = 750;
+const CONTEXT_PROMPT_CHARS: usize = 600;
+const SESSION_IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
 
 #[derive(Clone, Default)]
 pub(crate) struct SttRuntime {
@@ -35,6 +39,7 @@ impl SttRuntime {
         &self,
         config: SttConfig,
         audio_path: PathBuf,
+        session: Option<TranscriptionSession>,
     ) -> Result<SttTranscription, String> {
         if self.inner.shutting_down.load(Ordering::Acquire) {
             return Err("Whisper is shutting down".to_string());
@@ -49,7 +54,7 @@ impl SttRuntime {
             if inner.shutting_down.load(Ordering::Acquire) {
                 return Err("Whisper is shutting down".to_string());
             }
-            engine.transcribe(config, audio_path)
+            engine.transcribe(config, audio_path, session)
         })
         .await
         .map_err(|error| format!("STT worker failed: {error}"))?
@@ -62,6 +67,7 @@ impl SttRuntime {
         self.inner.shutting_down.store(true, Ordering::Release);
         if let Ok(mut engine) = self.inner.engine.lock() {
             engine.loaded = None;
+            engine.sessions.clear();
         }
     }
 }
@@ -69,6 +75,14 @@ impl SttRuntime {
 #[derive(Default)]
 struct WhisperEngine {
     loaded: Option<LoadedWhisperModel>,
+    sessions: HashMap<String, WhisperSession>,
+}
+
+struct WhisperSession {
+    last_sequence: i64,
+    prompt: String,
+    audio_tail: Vec<f32>,
+    last_used: Instant,
 }
 
 struct LoadedWhisperModel {
@@ -88,6 +102,7 @@ impl WhisperEngine {
         &mut self,
         config: SttConfig,
         audio_path: PathBuf,
+        session: Option<TranscriptionSession>,
     ) -> Result<SttTranscription, String> {
         WHISPER_LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
 
@@ -105,6 +120,12 @@ impl WhisperEngine {
         }
 
         if is_silent(&audio) {
+            if let Some(session) = &session {
+                // A full quiet chunk is an utterance boundary. Do not carry old
+                // audio or decoder prompting across it, as that encourages
+                // Whisper to repeat the previous sentence into silence.
+                self.sessions.remove(&session.key);
+            }
             return Ok(empty_transcription(
                 config,
                 audio,
@@ -122,6 +143,7 @@ impl WhisperEngine {
             .unwrap_or(true);
         if model_reloaded {
             self.loaded = None;
+            self.sessions.clear();
             let context = WhisperContext::new_with_params(
                 &config.model_path,
                 WhisperContextParameters::default(),
@@ -138,6 +160,27 @@ impl WhisperEngine {
             0
         };
 
+        self.sessions
+            .retain(|_, value| value.last_used.elapsed() < SESSION_IDLE_TTL);
+        let previous = session.as_ref().and_then(|requested| {
+            self.sessions
+                .get(&requested.key)
+                .filter(|stored| requested.sequence > stored.last_sequence)
+                .map(|stored| (stored.prompt.clone(), stored.audio_tail.clone()))
+        });
+        let (previous_prompt, previous_tail) = previous.unwrap_or_default();
+        let overlap_samples = previous_tail.len();
+        let overlap_ms =
+            (overlap_samples * 1000 / crate::audio_preprocess::WHISPER_SAMPLE_RATE as usize) as i64;
+        let inference_samples = if previous_tail.is_empty() {
+            audio.samples.clone()
+        } else {
+            let mut samples = Vec::with_capacity(previous_tail.len() + audio.samples.len());
+            samples.extend_from_slice(&previous_tail);
+            samples.extend_from_slice(&audio.samples);
+            samples
+        };
+
         let context = &self
             .loaded
             .as_ref()
@@ -150,7 +193,10 @@ impl WhisperEngine {
         params.set_n_threads(config.threads as i32);
         params.set_language(config.language.as_deref());
         params.set_detect_language(config.language.is_none());
-        params.set_no_context(true);
+        params.set_no_context(false);
+        if !previous_prompt.is_empty() {
+            params.set_initial_prompt(&previous_prompt);
+        }
         params.set_temperature(0.0);
         params.set_no_speech_thold(0.6);
         params.set_suppress_blank(true);
@@ -162,7 +208,7 @@ impl WhisperEngine {
 
         let inference_started = Instant::now();
         state
-            .full(params, &audio.samples)
+            .full(params, &inference_samples)
             .map_err(|error| format!("Failed to run Whisper transcription: {error}"))?;
         let inference_ms = inference_started.elapsed().as_millis();
 
@@ -181,12 +227,18 @@ impl WhisperEngine {
             if text.is_empty() || is_noise_segment(&text) {
                 continue;
             }
+            let start_ms = segment.start_timestamp() * 10 - overlap_ms;
+            let end_ms = segment.end_timestamp() * 10 - overlap_ms;
+            if end_ms <= 0 {
+                continue;
+            }
             segments.push(SttSegment {
                 text,
-                start_ms: segment.start_timestamp() * 10,
-                end_ms: segment.end_timestamp() * 10,
+                start_ms: start_ms.max(0),
+                end_ms: end_ms.max(0),
             });
         }
+        remove_repeated_prefix(&previous_prompt, &mut segments);
         let text = segments
             .iter()
             .map(|segment| segment.text.as_str())
@@ -194,6 +246,22 @@ impl WhisperEngine {
             .join(" ")
             .trim()
             .to_string();
+
+        if let Some(requested) = session {
+            let overlap_samples =
+                (crate::audio_preprocess::WHISPER_SAMPLE_RATE as usize * CHUNK_OVERLAP_MS) / 1000;
+            let tail_start = audio.samples.len().saturating_sub(overlap_samples);
+            let prompt = append_prompt(&previous_prompt, &text);
+            self.sessions.insert(
+                requested.key,
+                WhisperSession {
+                    last_sequence: requested.sequence,
+                    prompt,
+                    audio_tail: audio.samples[tail_start..].to_vec(),
+                    last_used: Instant::now(),
+                },
+            );
+        }
         let real_time_factor = if audio.info.duration_ms == 0 {
             0.0
         } else {
@@ -216,6 +284,73 @@ impl WhisperEngine {
             model_path: config.model_path,
         })
     }
+}
+
+fn append_prompt(previous: &str, current: &str) -> String {
+    let combined = match (previous.trim(), current.trim()) {
+        ("", current) => current.to_string(),
+        (previous, "") => previous.to_string(),
+        (previous, current) => format!("{previous} {current}"),
+    };
+    if combined.chars().count() <= CONTEXT_PROMPT_CHARS {
+        return combined;
+    }
+    combined
+        .chars()
+        .rev()
+        .take(CONTEXT_PROMPT_CHARS)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn repeated_prefix_word_count(previous: &str, current: &str) -> usize {
+    let previous = normalized_words(previous);
+    let current = normalized_words(current);
+    let max_overlap = previous.len().min(current.len()).min(24);
+    (2..=max_overlap)
+        .rev()
+        .find(|count| previous[previous.len() - count..] == current[..*count])
+        .unwrap_or(0)
+}
+
+fn remove_repeated_prefix(previous: &str, segments: &mut Vec<SttSegment>) {
+    if previous.is_empty() || segments.is_empty() {
+        return;
+    }
+    let current = segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut words_to_remove = repeated_prefix_word_count(previous, &current);
+    if words_to_remove == 0 {
+        return;
+    }
+
+    for segment in segments.iter_mut() {
+        if words_to_remove == 0 {
+            break;
+        }
+        let words = segment.text.split_whitespace().collect::<Vec<_>>();
+        let removable = words_to_remove.min(words.len());
+        segment.text = words[removable..].join(" ");
+        words_to_remove -= removable;
+    }
+    segments.retain(|segment| !segment.text.trim().is_empty());
 }
 
 fn model_key(path: &Path) -> Result<ModelKey, String> {
@@ -342,10 +477,78 @@ fn is_noise_segment(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn test_audio(samples: Vec<f32>, rms_db: Option<f32>) -> WhisperAudio {
+        let sample_count = samples.len();
+        WhisperAudio {
+            samples,
+            info: crate::audio_preprocess::WhisperAudioInfo {
+                source_sample_rate: crate::audio_preprocess::WHISPER_SAMPLE_RATE,
+                source_channels: 1,
+                sample_rate: crate::audio_preprocess::WHISPER_SAMPLE_RATE,
+                channels: 1,
+                duration_ms: sample_count as u128 * 1000
+                    / crate::audio_preprocess::WHISPER_SAMPLE_RATE as u128,
+                samples: sample_count,
+                rms_db,
+                peak_db: None,
+            },
+        }
+    }
+
     #[test]
     fn energy_vad_rejects_silence_and_accepts_sustained_audio() {
         assert_eq!(frame_db(&vec![0.0; VAD_FRAME_SAMPLES]), None);
         assert!(frame_db(&vec![0.1; VAD_FRAME_SAMPLES]).is_some_and(|db| db > -42.0));
+
+        assert!(is_silent(&test_audio(
+            vec![0.0; VAD_FRAME_SAMPLES * 20],
+            None,
+        )));
+        assert!(is_silent(&test_audio(
+            vec![0.1; VAD_FRAME_SAMPLES * (VAD_MIN_SPEECH_FRAMES - 1)],
+            Some(-20.0),
+        )));
+        assert!(!is_silent(&test_audio(
+            vec![0.1; VAD_FRAME_SAMPLES * VAD_MIN_SPEECH_FRAMES],
+            Some(-20.0),
+        )));
+    }
+
+    #[test]
+    fn removes_words_repeated_by_the_audio_overlap() {
+        let mut segments = vec![
+            SttSegment {
+                text: "à Goa depuis 2011".to_string(),
+                start_ms: 0,
+                end_ms: 500,
+            },
+            SttSegment {
+                text: "et je suis très content ici".to_string(),
+                start_ms: 500,
+                end_ms: 2_000,
+            },
+        ];
+
+        remove_repeated_prefix(
+            "Je suis indien et j'habite à Goa depuis 2011.",
+            &mut segments,
+        );
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "et je suis très content ici");
+    }
+
+    #[test]
+    fn keeps_a_single_repeated_word_to_avoid_eating_real_speech() {
+        let mut segments = vec![SttSegment {
+            text: "Voilà une nouvelle idée".to_string(),
+            start_ms: 0,
+            end_ms: 1_000,
+        }];
+
+        remove_repeated_prefix("Et voilà", &mut segments);
+
+        assert_eq!(segments[0].text, "Voilà une nouvelle idée");
     }
 
     #[test]

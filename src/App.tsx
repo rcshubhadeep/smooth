@@ -5969,6 +5969,8 @@ function NoteEditor({
   const isLoadingNoteRef = useRef(false);
   const dictationActiveRef = useRef(false);
   const dictationChunkRef = useRef<Promise<void> | null>(null);
+  const dictationSessionIdRef = useRef<string | null>(null);
+  const dictationSequenceRef = useRef(0);
   const insertedDictationRef = useRef(false);
   const turndown = useMemo(
     () =>
@@ -6247,6 +6249,8 @@ function NoteEditor({
     }
 
     insertedDictationRef.current = false;
+    dictationSessionIdRef.current = crypto.randomUUID();
+    dictationSequenceRef.current = 0;
     dictationActiveRef.current = true;
     setStreamingTranscript("");
     setDictationState("recording");
@@ -6312,6 +6316,8 @@ function NoteEditor({
 
       const result = await invoke<SttTranscription>("transcribe_capture_file", {
         path: preview.path,
+        sessionId: dictationSessionIdRef.current,
+        sequence: ++dictationSequenceRef.current,
       });
       insertDictationText(result.text);
     })();
