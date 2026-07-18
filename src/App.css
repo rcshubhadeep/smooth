@@ -239,6 +239,22 @@ select:focus-visible,
   background: var(--bg);
 }
 
+/* ---- macOS vibrancy -------------------------------------------------------
+   Under the Tauri macOS shell, the window has a native frosted backdrop
+   (NSVisualEffectView). We drop the opaque shell/titlebar fills so that
+   material shows through, and make the sidebar translucent so it reads as a
+   frosted panel. Content panels keep their opaque --panel-strong fill, so they
+   float as solid cards over the material. Absent `.is-macos`, nothing changes. */
+.is-macos .app-shell,
+.is-macos .titlebar {
+  background: transparent;
+}
+
+.is-macos .sidebar {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  box-shadow: none;
+}
+
 /* Custom unified title bar (traffic lights overlay the left padding) */
 .titlebar {
   display: flex;
@@ -2554,7 +2570,9 @@ select:hover {
 .entity-strip-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 8px;
   min-height: 24px;
   color: var(--muted);
   font-size: 11px;
@@ -2563,13 +2581,22 @@ select:hover {
   text-transform: uppercase;
 }
 
+/* Provider select + Extract button travel together and drop to their own
+   line when the panel is too narrow — so Extract is never clipped. */
+.entity-strip-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .entity-provider-select {
-  height: 28px;
-  max-width: 88px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
+  height: 26px;
+  max-width: 96px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--panel-strong);
+  color: var(--text-soft);
   font: inherit;
   font-size: 11px;
   padding: 0 4px;
@@ -2587,7 +2614,6 @@ select:hover {
   display: inline-flex;
   align-items: center;
   height: 26px;
-  margin-left: auto;
   padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);

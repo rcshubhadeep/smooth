@@ -2,6 +2,16 @@ import { Component, type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 
+// Only opt into the translucent (vibrancy) treatment when running inside the
+// Tauri macOS shell — where the native NSVisualEffectView backdrop actually
+// exists. In a plain browser this class is absent, so backgrounds stay opaque.
+if (
+  "__TAURI_INTERNALS__" in window &&
+  navigator.userAgent.includes("Macintosh")
+) {
+  document.documentElement.classList.add("is-macos");
+}
+
 class RootErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null }

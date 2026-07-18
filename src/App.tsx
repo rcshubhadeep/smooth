@@ -5777,7 +5777,7 @@ function EntityStrip({
           {statusLabel}
         </small>
         {canQueue ? (
-          <>
+          <div className="entity-strip-actions">
             <select
               className="entity-provider-select"
               value={extractionProvider}
@@ -5800,7 +5800,7 @@ function EntityStrip({
             >
               {extraction.status === "failed" ? "Retry" : "Extract"}
             </button>
-          </>
+          </div>
         ) : null}
       </div>
       {extraction.error ? (

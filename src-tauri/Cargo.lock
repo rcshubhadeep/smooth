@@ -4545,6 +4545,7 @@ dependencies = [
  "tokio-tungstenite",
  "unpdf",
  "whisper-rs",
+ "window-vibrancy",
  "zip",
 ]
 

@@ -4865,6 +4865,22 @@ pub fn run() {
         .manage(slack::SlackState::default())
         .manage(agents::AgentRuntime::new())
         .setup(|app| {
+            // Frosted translucent window backdrop on macOS (NSVisualEffectView).
+            // The webview is transparent where CSS allows, so this material
+            // shows through the sidebar and the gaps around content panels.
+            #[cfg(target_os = "macos")]
+            {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = apply_vibrancy(
+                        &window,
+                        NSVisualEffectMaterial::Sidebar,
+                        Some(NSVisualEffectState::Active),
+                        None,
+                    );
+                }
+            }
+
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
             recover_interrupted_stt_jobs(&connection).map_err(std::io::Error::other)?;
