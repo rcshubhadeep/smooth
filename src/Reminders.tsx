@@ -461,6 +461,25 @@ function ReminderCard({
 }) {
   const state = reminderState(reminder, now);
   const selected = reminder.selectedText.trim();
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const restoreRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!restoreOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (restoreRef.current && !restoreRef.current.contains(event.target as Node)) {
+        setRestoreOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [restoreOpen]);
+
+  function restore(minutes: number) {
+    setRestoreOpen(false);
+    void snoozeReminder(reminder.id, minutes);
+  }
+
   return (
     <article className={`reminder-card ${state}`}>
       <div className="reminder-card-body">
@@ -488,9 +507,22 @@ function ReminderCard({
           <>
             <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes"><RotateCcw size={15} /></button>
             <button type="button" onClick={() => void completeReminder(reminder.id)} title="Complete"><Check size={15} /></button>
+            <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
           </>
-        ) : null}
-        <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
+        ) : restoreOpen ? (
+          <div className="reminder-restore-inline" ref={restoreRef}>
+            <span className="reminder-restore-label">Remind</span>
+            <button type="button" onClick={() => restore(15)}>15m</button>
+            <button type="button" onClick={() => restore(60)}>1h</button>
+            <button type="button" onClick={() => restore(24 * 60)}>Tomorrow</button>
+            <button type="button" className="reminder-restore-cancel" onClick={() => setRestoreOpen(false)} title="Cancel"><X size={14} /></button>
+          </div>
+        ) : (
+          <>
+            <button type="button" onClick={() => setRestoreOpen(true)} title="Restore to upcoming"><RotateCcw size={15} /></button>
+            <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
+          </>
+        )}
       </div>
     </article>
   );
