@@ -415,6 +415,12 @@ export function RemindersView({
     announceReminderChange();
   }
 
+  async function clearReminders(ids: string[]) {
+    if (!ids.length) return;
+    await Promise.all(ids.map((id) => invoke("delete_reminder", { id })));
+    announceReminderChange();
+  }
+
   return (
     <section className="reminders-view">
       <header className="view-header">
@@ -433,7 +439,7 @@ export function RemindersView({
         </div>
       ) : null}
       {pending.length ? <ReminderList title="Upcoming" reminders={pending} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
-      {history.length ? <ReminderHistory reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
+      {history.length ? <ReminderHistory reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onClear={clearReminders} onWorkflowChanged={load} /> : null}
     </section>
   );
 }
@@ -562,6 +568,7 @@ function ReminderHistory({
   now,
   onOpen,
   onDelete,
+  onClear,
   onWorkflowChanged,
 }: {
   reminders: ReminderRecord[];
@@ -569,10 +576,12 @@ function ReminderHistory({
   now: number;
   onOpen: (reminder: ReminderRecord) => void;
   onDelete: (id: string) => Promise<void>;
+  onClear: (ids: string[]) => Promise<void>;
   onWorkflowChanged: () => void | Promise<void>;
 }) {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState<"all" | "completed" | "dismissed">("all");
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   const doneCount = useMemo(
     () => reminders.filter((r) => r.status === "completed").length,
@@ -606,41 +615,83 @@ function ReminderHistory({
       .map(([key, items]) => ({ key, items, label: dayLabel(key, now) }));
   }, [reminders, now, filter]);
 
+  // Ids currently shown (respects the active filter) — that's what Clear removes.
+  const visibleIds = groups.flatMap((group) => group.items.map((r) => r.id));
+
   return (
     <div className="reminder-list-section">
       <div className="reminder-history-head">
         <h2>History<span className="reminder-count">{reminders.length}</span></h2>
-        {showFilter ? (
-          <div className="reminder-filter" role="tablist" aria-label="Filter history">
+        <div className="reminder-history-actions">
+          {showFilter ? (
+            <div className="reminder-filter" role="tablist" aria-label="Filter history">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === "all"}
+                className={filter === "all" ? "active" : ""}
+                onClick={() => setFilter("all")}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === "completed"}
+                className={filter === "completed" ? "active" : ""}
+                onClick={() => setFilter("completed")}
+              >
+                Done {doneCount}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === "dismissed"}
+                className={filter === "dismissed" ? "active" : ""}
+                onClick={() => setFilter("dismissed")}
+              >
+                Dismissed {dismissedCount}
+              </button>
+            </div>
+          ) : null}
+          {confirmingClear ? (
+            <span className="reminder-clear-confirm">
+              <span>
+                {filter === "all"
+                  ? `Clear all ${visibleIds.length}?`
+                  : `Clear ${visibleIds.length} ${
+                      filter === "completed" ? "done" : "dismissed"
+                    }?`}
+              </span>
+              <button
+                type="button"
+                className="reminder-clear-cancel"
+                onClick={() => setConfirmingClear(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="reminder-clear-go"
+                onClick={() => {
+                  setConfirmingClear(false);
+                  void onClear(visibleIds);
+                }}
+              >
+                Clear
+              </button>
+            </span>
+          ) : (
             <button
               type="button"
-              role="tab"
-              aria-selected={filter === "all"}
-              className={filter === "all" ? "active" : ""}
-              onClick={() => setFilter("all")}
+              className="reminder-clear-btn"
+              title="Delete the reminders shown below"
+              onClick={() => setConfirmingClear(true)}
             >
-              All
+              <Trash2 size={13} /> Clear
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filter === "completed"}
-              className={filter === "completed" ? "active" : ""}
-              onClick={() => setFilter("completed")}
-            >
-              Done {doneCount}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={filter === "dismissed"}
-              className={filter === "dismissed" ? "active" : ""}
-              onClick={() => setFilter("dismissed")}
-            >
-              Dismissed {dismissedCount}
-            </button>
-          </div>
-        ) : null}
+          )}
+        </div>
       </div>
       <div className="reminder-history-groups">
         {groups.map((group, index) => {
