@@ -54,6 +54,12 @@ import {
 } from "lucide-react";
 import { Bot } from "lucide-react";
 import { AgentsView, NoteAgentsPanel, type AgentRunResult } from "./Agents";
+import LlmRunChoiceDialog from "./LlmRunChoice";
+import {
+  loadLlmPreferences,
+  type LlmPreferences,
+  type LlmProvider,
+} from "./llmPreferences";
 import { marked } from "marked";
 import {
   useCallback,
@@ -5637,9 +5643,10 @@ function EntityStrip({
   const [isExpanded, setIsExpanded] = useState(false);
   const [editingEntityId, setEditingEntityId] = useState<number | null>(null);
   const [entityNameDraft, setEntityNameDraft] = useState("");
-  const [extractionProvider, setExtractionProvider] = useState<
-    "default" | "local" | "remote"
-  >("default");
+  const [pendingExtract, setPendingExtract] = useState(false);
+  const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(
+    null,
+  );
 
   const refreshExtraction = useCallback(async () => {
     const nextExtraction = await invoke<NoteExtractionView>(
@@ -5673,15 +5680,29 @@ function EntityStrip({
     return () => window.clearInterval(interval);
   }, [extraction.status, refreshExtraction]);
 
-  async function queueExtraction() {
+  // Ask which provider to use — same flow as chat/tasks: skip straight to the
+  // default when "always obey" is set, otherwise pop the choice dialog.
+  async function requestExtract() {
+    let preferences: LlmPreferences;
+    try {
+      preferences = await loadLlmPreferences();
+      setLlmPreferences(preferences);
+    } catch {
+      preferences = { defaultProvider: "local", alwaysObeyGlobal: false };
+    }
+    if (preferences.alwaysObeyGlobal) {
+      void queueExtraction(null);
+    } else {
+      setPendingExtract(true);
+    }
+  }
+
+  async function queueExtraction(provider: LlmProvider | null) {
     setIsQueuing(true);
     try {
       await invoke("enqueue_note_extraction", {
         id: note.id,
-        selection:
-          extractionProvider === "default"
-            ? null
-            : { provider: extractionProvider, model: null },
+        selection: provider ? { provider, model: null } : null,
       });
       const nextExtraction = await refreshExtraction();
       toast.info(
@@ -5778,24 +5799,9 @@ function EntityStrip({
         </small>
         {canQueue ? (
           <div className="entity-strip-actions">
-            <select
-              className="entity-provider-select"
-              value={extractionProvider}
-              onChange={(event) =>
-                setExtractionProvider(
-                  event.currentTarget.value as "default" | "local" | "remote",
-                )
-              }
-              title="LLM provider for this extraction"
-              aria-label="Extraction LLM provider"
-            >
-              <option value="default">Default</option>
-              <option value="local">Local</option>
-              <option value="remote">Remote</option>
-            </select>
             <button
               type="button"
-              onClick={() => void queueExtraction()}
+              onClick={() => void requestExtract()}
               disabled={isQueuing}
             >
               {extraction.status === "failed" ? "Retry" : "Extract"}
@@ -5803,6 +5809,24 @@ function EntityStrip({
           </div>
         ) : null}
       </div>
+
+      {pendingExtract && llmPreferences ? (
+        <LlmRunChoiceDialog
+          defaultProvider={llmPreferences.defaultProvider}
+          actionLabel="Extract entities with:"
+          onCancel={() => setPendingExtract(false)}
+          onChoose={(provider, alwaysObey) => {
+            setPendingExtract(false);
+            if (alwaysObey) {
+              void invoke("set_always_obey_global_llm", { enabled: true });
+              setLlmPreferences((prev) =>
+                prev ? { ...prev, alwaysObeyGlobal: true } : prev,
+              );
+            }
+            void queueExtraction(provider);
+          }}
+        />
+      ) : null}
       {extraction.error ? (
         <p className="entity-error">{extraction.error}</p>
       ) : null}
