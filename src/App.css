@@ -6693,6 +6693,72 @@ body.resizing {
   opacity: 0.7;
 }
 
+/* History accordion — one collapsible section per calendar day. */
+.reminder-history-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.reminder-day {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.reminder-day-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.reminder-day-header:hover {
+  background: var(--panel-strong);
+}
+
+.reminder-day-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.reminder-day.open .reminder-day-chevron {
+  transform: rotate(90deg);
+}
+
+.reminder-day-summary {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.reminder-day .reminder-list {
+  padding: 0 8px 8px;
+}
+
+/* Inside a day, cards read as calm archive rows — full card chrome only on hover. */
+.reminder-day .reminder-list article {
+  background: transparent;
+  border-color: transparent;
+}
+
+.reminder-day .reminder-list article:hover {
+  background: var(--panel-strong);
+  border-color: var(--border);
+}
+
 .reminder-list article.dismissed .reminder-note-title {
   text-decoration: line-through;
   text-decoration-color: var(--muted);

@@ -8,6 +8,7 @@ import {
 import {
   Bell,
   Check,
+  ChevronRight,
   Clock3,
   ExternalLink,
   RotateCcw,
@@ -432,8 +433,60 @@ export function RemindersView({
         </div>
       ) : null}
       {pending.length ? <ReminderList title="Upcoming" reminders={pending} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
-      {history.length ? <ReminderList title="History" reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
+      {history.length ? <ReminderHistory reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
     </section>
+  );
+}
+
+function ReminderCard({
+  reminder,
+  workflow,
+  now,
+  onOpen,
+  onDelete,
+  onWorkflowChanged,
+}: {
+  reminder: ReminderRecord;
+  workflow: ReminderWorkflowRecord | undefined;
+  now: number;
+  onOpen: (reminder: ReminderRecord) => void;
+  onDelete: (id: string) => Promise<void>;
+  onWorkflowChanged: () => void | Promise<void>;
+}) {
+  const state = reminderState(reminder, now);
+  const selected = reminder.selectedText.trim();
+  return (
+    <article className={`reminder-card ${state}`}>
+      <div className="reminder-card-body">
+        <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
+          <span className="reminder-card-head">
+            <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
+            <ReminderBadge state={state} />
+          </span>
+          <span className="reminder-time">
+            <Clock3 size={13} />
+            <span className="reminder-time-relative">{formatRelative(reminder.scheduledAt, now)}</span>
+            <span className="reminder-time-abs">{formatTime(reminder.scheduledAt)}</span>
+          </span>
+          {selected ? <q>{selected}</q> : null}
+          {reminder.comment ? <p>{reminder.comment}</p> : null}
+        </button>
+        {workflow ? (
+          <ReminderWorkflowPanel workflow={workflow} onChanged={onWorkflowChanged} />
+        ) : reminder.status === "pending" ? (
+          <ReminderWorkflowAssignment reminderId={reminder.id} onChanged={onWorkflowChanged} />
+        ) : null}
+      </div>
+      <div className="reminder-row-actions">
+        {reminder.status === "pending" ? (
+          <>
+            <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes"><RotateCcw size={15} /></button>
+            <button type="button" onClick={() => void completeReminder(reminder.id)} title="Complete"><Check size={15} /></button>
+          </>
+        ) : null}
+        <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
+      </div>
+    </article>
   );
 }
 
@@ -458,48 +511,126 @@ function ReminderList({
     <div className="reminder-list-section">
       <h2>{title}<span className="reminder-count">{reminders.length}</span></h2>
       <div className="reminder-list">
-        {reminders.map((reminder) => {
-          const state = reminderState(reminder, now);
-          const selected = reminder.selectedText.trim();
-          const workflow = workflows.get(reminder.id);
+        {reminders.map((reminder) => (
+          <ReminderCard
+            key={reminder.id}
+            reminder={reminder}
+            workflow={workflows.get(reminder.id)}
+            now={now}
+            onOpen={onOpen}
+            onDelete={onDelete}
+            onWorkflowChanged={onWorkflowChanged}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function startOfDay(timestamp: number) {
+  const d = new Date(timestamp);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function dayLabel(timestamp: number, now: number) {
+  const diffDays = Math.round((startOfDay(now) - startOfDay(timestamp)) / 86_400_000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  const d = new Date(timestamp);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: d.getFullYear() === new Date(now).getFullYear() ? undefined : "numeric",
+  }).format(d);
+}
+
+function historySummary(reminders: ReminderRecord[]) {
+  const done = reminders.filter((r) => r.status === "completed").length;
+  const dismissed = reminders.filter((r) => r.status === "dismissed").length;
+  const parts: string[] = [];
+  if (done) parts.push(`${done} done`);
+  if (dismissed) parts.push(`${dismissed} dismissed`);
+  return parts.join(" · ");
+}
+
+// History is grouped by calendar day, newest day first, and each day is a
+// collapsible section so the whole archive isn't dumped on screen at once.
+// The most recent day starts open; the user can toggle any day (overrides win).
+function ReminderHistory({
+  reminders,
+  workflows,
+  now,
+  onOpen,
+  onDelete,
+  onWorkflowChanged,
+}: {
+  reminders: ReminderRecord[];
+  workflows: Map<string, ReminderWorkflowRecord>;
+  now: number;
+  onOpen: (reminder: ReminderRecord) => void;
+  onDelete: (id: string) => Promise<void>;
+  onWorkflowChanged: () => void | Promise<void>;
+}) {
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+
+  const groups = useMemo(() => {
+    const sorted = [...reminders].sort((a, b) => b.scheduledAt - a.scheduledAt);
+    const byDay = new Map<number, ReminderRecord[]>();
+    for (const reminder of sorted) {
+      const key = startOfDay(reminder.scheduledAt);
+      const bucket = byDay.get(key);
+      if (bucket) {
+        bucket.push(reminder);
+      } else {
+        byDay.set(key, [reminder]);
+      }
+    }
+    return [...byDay.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([key, items]) => ({ key, items, label: dayLabel(key, now) }));
+  }, [reminders, now]);
+
+  return (
+    <div className="reminder-list-section">
+      <h2>History<span className="reminder-count">{reminders.length}</span></h2>
+      <div className="reminder-history-groups">
+        {groups.map((group, index) => {
+          const open = overrides[group.key] ?? index === 0;
+          const summary = historySummary(group.items);
           return (
-            <article className={`reminder-card ${state}`} key={reminder.id}>
-              <div className="reminder-card-body">
-                <button className="reminder-main" type="button" onClick={() => onOpen(reminder)}>
-                  <span className="reminder-card-head">
-                    <span className="reminder-note-title">{reminder.noteTitle || "Untitled note"}</span>
-                    <ReminderBadge state={state} />
-                  </span>
-                  <span className="reminder-time">
-                    <Clock3 size={13} />
-                    <span className="reminder-time-relative">{formatRelative(reminder.scheduledAt, now)}</span>
-                    <span className="reminder-time-abs">{formatTime(reminder.scheduledAt)}</span>
-                  </span>
-                  {selected ? <q>{selected}</q> : null}
-                  {reminder.comment ? <p>{reminder.comment}</p> : null}
-                </button>
-                {workflow ? (
-                  <ReminderWorkflowPanel
-                    workflow={workflow}
-                    onChanged={onWorkflowChanged}
-                  />
-                ) : reminder.status === "pending" ? (
-                  <ReminderWorkflowAssignment
-                    reminderId={reminder.id}
-                    onChanged={onWorkflowChanged}
-                  />
-                ) : null}
-              </div>
-              <div className="reminder-row-actions">
-                {reminder.status === "pending" ? (
-                  <>
-                    <button type="button" onClick={() => void snoozeReminder(reminder.id, 10)} title="Snooze 10 minutes"><RotateCcw size={15} /></button>
-                    <button type="button" onClick={() => void completeReminder(reminder.id)} title="Complete"><Check size={15} /></button>
-                  </>
-                ) : null}
-                <button type="button" onClick={() => void onDelete(reminder.id)} title="Delete reminder"><Trash2 size={15} /></button>
-              </div>
-            </article>
+            <div className={open ? "reminder-day open" : "reminder-day"} key={group.key}>
+              <button
+                type="button"
+                className="reminder-day-header"
+                aria-expanded={open}
+                onClick={() =>
+                  setOverrides((current) => ({
+                    ...current,
+                    [group.key]: !(current[group.key] ?? index === 0),
+                  }))
+                }
+              >
+                <ChevronRight size={14} className="reminder-day-chevron" />
+                <span className="reminder-day-label">{group.label}</span>
+                <span className="reminder-count">{group.items.length}</span>
+                {summary ? <span className="reminder-day-summary">{summary}</span> : null}
+              </button>
+              {open ? (
+                <div className="reminder-list">
+                  {group.items.map((reminder) => (
+                    <ReminderCard
+                      key={reminder.id}
+                      reminder={reminder}
+                      workflow={workflows.get(reminder.id)}
+                      now={now}
+                      onOpen={onOpen}
+                      onDelete={onDelete}
+                      onWorkflowChanged={onWorkflowChanged}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
           );
         })}
       </div>
