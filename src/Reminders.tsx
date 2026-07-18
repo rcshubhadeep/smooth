@@ -615,7 +615,7 @@ function ReminderHistory({
                 <span className="reminder-count">{group.items.length}</span>
                 {summary ? <span className="reminder-day-summary">{summary}</span> : null}
               </button>
-              {open ? (
+              <div className="reminder-day-body">
                 <div className="reminder-list">
                   {group.items.map((reminder) => (
                     <ReminderCard
@@ -629,7 +629,7 @@ function ReminderHistory({
                     />
                   ))}
                 </div>
-              ) : null}
+              </div>
             </div>
           );
         })}

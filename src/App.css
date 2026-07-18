@@ -6744,7 +6744,21 @@ body.resizing {
   font-weight: 500;
 }
 
-.reminder-day .reminder-list {
+/* Animate height via grid-template-rows 0fr → 1fr (smooth both ways). The
+   content stays mounted; the `.open` class drives the transition. */
+.reminder-day-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--t-view) var(--ease);
+}
+
+.reminder-day.open .reminder-day-body {
+  grid-template-rows: 1fr;
+}
+
+.reminder-day-body > .reminder-list {
+  min-height: 0;
+  overflow: hidden;
   padding: 0 8px 8px;
 }
 
