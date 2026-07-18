@@ -74,6 +74,9 @@
 
   /* Motion */
   --t: 140ms;
+  /* View-level swaps (workspace views, panel panes, settings sections) share
+     one slightly longer beat so the whole app changes state at the same tempo. */
+  --t-view: 180ms;
   --ease: cubic-bezier(0.2, 0.6, 0.25, 1);
 
   --font-ui: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
@@ -1273,6 +1276,10 @@ select:hover {
   border-radius: var(--r-lg);
   background: var(--panel-strong);
   box-shadow: var(--shadow-sm);
+  /* One shared enter beat for every workspace view swap (notes ↔ settings,
+     note switches, empty state). Remounts are rare and deliberate, so this
+     never fires during typing or live transcription. */
+  animation: section-in var(--t-view) var(--ease);
 }
 
 /* Empty state */
@@ -1463,6 +1470,9 @@ select:hover {
   max-width: 760px;
   padding: 24px 26px;
   border-bottom: 1px solid var(--border);
+  /* Sections are display:none-gated by the rail, so this replays on each
+     rail click — the pane rises in instead of snapping. */
+  animation: section-in var(--t-view) var(--ease);
 }
 
 .section-heading {
@@ -2376,10 +2386,11 @@ select:hover {
 
 .title-input {
   font-family: var(--font-ui);
-  font-size: 28px;
-  font-weight: 650;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+  font-size: 31px;
+  font-weight: 680;
+  line-height: 1.15;
+  letter-spacing: -0.024em;
+  text-wrap: balance;
 }
 
 .title-input:disabled {
@@ -2791,7 +2802,7 @@ select:hover {
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-sm);
-  animation: panel-in 200ms var(--ease);
+  animation: panel-in var(--t-view) var(--ease);
 }
 
 .panel-tabs {
@@ -2862,7 +2873,7 @@ select:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  animation: section-in 200ms var(--ease);
+  animation: section-in var(--t-view) var(--ease);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -3802,24 +3813,31 @@ select:hover {
 
 .editor-surface {
   min-height: 100%;
-  max-width: 720px;
+  /* A deliberate reading measure (~66–70ch) — the single biggest "this is a
+     writing app, not a form" signal. Content is a calmer read than the chrome. */
+  max-width: 700px;
   margin: 0 auto;
-  padding: 32px clamp(28px, 6vw, 64px) 80px;
+  padding: 44px clamp(28px, 6vw, 60px) 96px;
   outline: 0;
   color: var(--text-soft);
   font-family: var(--font-ui);
-  font-size: 16px;
-  line-height: 1.7;
+  font-size: 17px;
+  line-height: 1.75;
+  caret-color: var(--accent);
+  /* pretty avoids orphans/short last lines; both are progressive enhancements. */
+  text-wrap: pretty;
+  hanging-punctuation: first;
 }
 
 .editor-surface h1,
 .editor-surface h2,
 .editor-surface h3 {
-  margin: 1.3em 0 0.45em;
+  margin: 1.4em 0 0.45em;
   color: var(--text);
   font-weight: 650;
-  line-height: 1.25;
-  letter-spacing: -0.015em;
+  line-height: 1.22;
+  letter-spacing: -0.018em;
+  text-wrap: balance;
 }
 
 .editor-surface h1 {
@@ -3835,7 +3853,7 @@ select:hover {
 }
 
 .editor-surface p {
-  margin: 0 0 0.9em;
+  margin: 0 0 1em;
 }
 
 .editor-surface ul,
@@ -4121,7 +4139,7 @@ select:hover {
    Tree expand motion + drag-and-drop drop targets
    ============================================================ */
 .tree-children {
-  animation: section-in 160ms var(--ease);
+  animation: section-in var(--t) var(--ease);
 }
 
 .tree-header.drag-over {
@@ -4435,6 +4453,7 @@ body.resizing {
 .chat-msg {
   display: flex;
   max-width: 100%;
+  animation: section-in var(--t) var(--ease);
 }
 
 .chat-msg.user {
@@ -5314,6 +5333,7 @@ body.resizing {
   padding: 14px 16px;
   border-radius: 10px;
   font-size: 13.5px;
+  animation: section-in var(--t) var(--ease);
 }
 
 .agent-run-state.busy {
@@ -5535,6 +5555,7 @@ body.resizing {
   border-radius: 10px;
   padding: 12px;
   background: var(--panel);
+  animation: section-in var(--t) var(--ease);
 }
 
 .note-agent-result-head {
