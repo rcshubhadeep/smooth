@@ -572,9 +572,25 @@ function ReminderHistory({
   onWorkflowChanged: () => void | Promise<void>;
 }) {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState<"all" | "completed" | "dismissed">("all");
+
+  const doneCount = useMemo(
+    () => reminders.filter((r) => r.status === "completed").length,
+    [reminders],
+  );
+  const dismissedCount = useMemo(
+    () => reminders.filter((r) => r.status === "dismissed").length,
+    [reminders],
+  );
+  // Only worth showing the filter when history actually holds both kinds.
+  const showFilter = doneCount > 0 && dismissedCount > 0;
 
   const groups = useMemo(() => {
-    const sorted = [...reminders].sort((a, b) => b.scheduledAt - a.scheduledAt);
+    const source =
+      filter === "all"
+        ? reminders
+        : reminders.filter((r) => r.status === filter);
+    const sorted = [...source].sort((a, b) => b.scheduledAt - a.scheduledAt);
     const byDay = new Map<number, ReminderRecord[]>();
     for (const reminder of sorted) {
       const key = startOfDay(reminder.scheduledAt);
@@ -588,14 +604,50 @@ function ReminderHistory({
     return [...byDay.entries()]
       .sort((a, b) => b[0] - a[0])
       .map(([key, items]) => ({ key, items, label: dayLabel(key, now) }));
-  }, [reminders, now]);
+  }, [reminders, now, filter]);
 
   return (
     <div className="reminder-list-section">
-      <h2>History<span className="reminder-count">{reminders.length}</span></h2>
+      <div className="reminder-history-head">
+        <h2>History<span className="reminder-count">{reminders.length}</span></h2>
+        {showFilter ? (
+          <div className="reminder-filter" role="tablist" aria-label="Filter history">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === "all"}
+              className={filter === "all" ? "active" : ""}
+              onClick={() => setFilter("all")}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === "completed"}
+              className={filter === "completed" ? "active" : ""}
+              onClick={() => setFilter("completed")}
+            >
+              Done {doneCount}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === "dismissed"}
+              className={filter === "dismissed" ? "active" : ""}
+              onClick={() => setFilter("dismissed")}
+            >
+              Dismissed {dismissedCount}
+            </button>
+          </div>
+        ) : null}
+      </div>
       <div className="reminder-history-groups">
         {groups.map((group, index) => {
-          const open = overrides[group.key] ?? index === 0;
+          // A specific filter expands every matching day so the results are
+          // all visible at once; "All" keeps the newest-day-open default.
+          const open =
+            filter !== "all" ? true : overrides[group.key] ?? index === 0;
           const summary = historySummary(group.items);
           return (
             <div className={open ? "reminder-day open" : "reminder-day"} key={group.key}>
