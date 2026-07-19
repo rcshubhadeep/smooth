@@ -3923,6 +3923,7 @@ function SettingsView({
   const [isAgentRunBusy, setIsAgentRunBusy] = useState(false);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("ai-local");
+  const [settingsRefreshKey, setSettingsRefreshKey] = useState(0);
   const setSettingsError = useCallback((message: string | null) => {
     if (message) {
       toast.error(message);
@@ -3970,8 +3971,8 @@ function SettingsView({
     return nextQueueStatus;
   }, []);
 
-  useEffect(() => {
-    Promise.all([
+  const refreshAllSettings = useCallback(async () => {
+    await Promise.all([
       refreshQueueStatus(),
       refreshAudioStatus(),
       refreshSystemCaptureStatus(),
@@ -3999,9 +4000,7 @@ function SettingsView({
           return nextTool;
         });
       }),
-    ])
-      .catch((loadError) => setSettingsError(String(loadError)))
-      .finally(() => setIsLoading(false));
+    ]);
   }, [
     refreshAudioStatus,
     refreshQueueStatus,
@@ -4009,6 +4008,12 @@ function SettingsView({
     refreshSttStatus,
     refreshSystemCaptureStatus,
   ]);
+
+  useEffect(() => {
+    refreshAllSettings()
+      .catch((loadError) => setSettingsError(String(loadError)))
+      .finally(() => setIsLoading(false));
+  }, [refreshAllSettings, setSettingsError]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -4451,7 +4456,13 @@ function SettingsView({
             type="button"
             onClick={() => {
               if (!IS_DEV) {
-                window.location.reload();
+                // Re-read every Settings panel without reloading the webview
+                // or invoking action commands such as starting local AI.
+                setIsLoading(true);
+                setSettingsRefreshKey((current) => current + 1);
+                void refreshAllSettings()
+                  .catch((loadError) => setSettingsError(String(loadError)))
+                  .finally(() => setIsLoading(false));
                 return;
               }
               void refreshQueueStatus();
@@ -4492,7 +4503,10 @@ function SettingsView({
           })}
         </nav>
 
-        <div className="settings-panes">
+        <div
+          className="settings-panes"
+          key={IS_DEV ? "development" : settingsRefreshKey}
+        >
           {settingsSection === "mcp" ? <McpSettings /> : null}
 
           {settingsSection === "slack" ? <SlackSettings /> : null}
