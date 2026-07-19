@@ -7437,3 +7437,69 @@ body.resizing {
   padding: 14px 20px;
   border-top: 1px solid var(--border);
 }
+
+/* System readiness pill (title bar) */
+.system-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  animation: section-in var(--t-view) var(--ease);
+}
+
+.system-status-pill.busy {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.system-status-pill.ready {
+  background: color-mix(in srgb, #3fb27f 16%, transparent);
+  color: #2f8f65;
+}
+
+/* Hover trash on empty, non-system folder rows */
+.tree-section {
+  position: relative;
+}
+
+.tree-delete {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t) var(--ease), color var(--t) var(--ease);
+}
+
+.tree-section:hover > .tree-delete {
+  opacity: 1;
+}
+
+.tree-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* Read-only friendly model name (prod Local AI) */
+.llama-model-name {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 13.5px;
+}

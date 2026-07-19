@@ -147,7 +147,7 @@ function WelcomeStep() {
       <h1>Welcome to Smooth</h1>
       <p>
         Your local-first knowledge bank: notes, meeting transcripts, and an AI
-        that helps you connect them — all on your machine.
+        that helps you connect them, all on your machine.
       </p>
       <p className="onboarding-hint">Setup takes about two minutes. Every step can be skipped.</p>
     </div>
@@ -195,8 +195,8 @@ function AiStep() {
       const models = await invoke<{ id: string }[]>("test_remote_llm_connection");
       setRemoteResult(
         models.some((entry) => entry.id === model.trim())
-          ? `Connected — ${model.trim()} is available`
-          : `Connected — ${models.length} model${models.length === 1 ? "" : "s"} available`,
+          ? `Connected: ${model.trim()} is available`
+          : `Connected: ${models.length} model${models.length === 1 ? "" : "s"} available`,
       );
     } catch (error) {
       setRemoteError(String(error));
@@ -238,7 +238,7 @@ function AiStep() {
       });
       await invoke("start_llama_server");
       setLocalState("downloading");
-      setLocalMessage("Downloading the model — you can keep going, this continues in the background.");
+      setLocalMessage("Downloading the model. You can keep going, this continues in the background.");
       pollLocal();
     } catch (error) {
       setLocalState("error");
@@ -253,7 +253,7 @@ function AiStep() {
       <h2>Choose your AI engine</h2>
       <p className="onboarding-lede">
         Smooth uses an AI model for chat, summaries, and entity extraction. Pick
-        what fits you — you can change this any time in Settings.
+        what fits you. You can change this any time in Settings.
       </p>
 
       <div className="onboarding-choices">
@@ -277,7 +277,7 @@ function AiStep() {
         >
           <span className="onboarding-choice-head"><Cpu size={17} /> Local AI</span>
           <ul>
-            <li className="pro">Complete data privacy — nothing leaves this Mac</li>
+            <li className="pro">Complete data privacy, nothing leaves this Mac</li>
             <li className="pro">No usage costs</li>
             <li className="con">{LOCAL_MODEL_SIZE}, slower results</li>
             <li className="con">Smaller model, slower update cycle</li>
@@ -325,7 +325,7 @@ function AiStep() {
             </label>
           </div>
           <p className="onboarding-hint">
-            Context defaults to 128k tokens — adjustable here and later in
+            Context defaults to 128k tokens, adjustable here and later in
             Settings. In the future this path will route through our server.
           </p>
           {remoteError ? <p className="form-error">{remoteError}</p> : null}
@@ -347,7 +347,7 @@ function AiStep() {
       {choice === "local" ? (
         <div className="onboarding-detail">
           <p>
-            <strong>{LOCAL_MODEL_LABEL}</strong> — {LOCAL_MODEL_SIZE}. Stored in
+            <strong>{LOCAL_MODEL_LABEL}</strong> ({LOCAL_MODEL_SIZE}). Stored in
             your app library, runs fully offline.
           </p>
           {localState === "idle" || localState === "error" ? (
@@ -449,7 +449,7 @@ function TranscriptionStep() {
     <div className="onboarding-step">
       <h2>Meeting transcription</h2>
       <p className="onboarding-lede">
-        <strong>Optional</strong> — only needed if you want Smooth to take
+        <strong>Optional</strong>. Only needed if you want Smooth to take
         meeting notes. Skip freely and set it up later in Settings.
       </p>
 
@@ -550,7 +550,7 @@ function TranscriptionStep() {
       </div>
       {micState === "failed" ? (
         <p className="onboarding-hint">
-          Couldn&rsquo;t request access here — macOS will prompt the first time
+          Couldn&rsquo;t request access here. macOS will prompt the first time
           you start a meeting, or grant it in System Settings › Privacy &
           Security › Microphone.
         </p>
@@ -567,7 +567,7 @@ const TOUR: { icon: typeof Mic; title: string; text: string }[] = [
   { icon: FolderTree, title: "Sidebar", text: "Folders, notes and search live on the left." },
   { icon: PenLine, title: "Editor", text: "Write in Markdown; entities are extracted automatically." },
   { icon: PanelRight, title: "Context panel", text: "Details, links, chat and tasks for the open note." },
-  { icon: Radio, title: "Meeting capsule", text: "Start a meeting from the bar at the bottom — Smooth transcribes and summarizes." },
+  { icon: Radio, title: "Meeting capsule", text: "Start a meeting from the bar at the bottom. Smooth transcribes and summarizes." },
   { icon: Command, title: "Command palette", text: "Press ⌘K to jump anywhere or create anything." },
 ];
 

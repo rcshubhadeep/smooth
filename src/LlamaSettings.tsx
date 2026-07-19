@@ -90,6 +90,20 @@ function formatLargeValue(value: number | null, suffix: string) {
   return `${Intl.NumberFormat(undefined, { notation: "compact" }).format(value)}${suffix}`;
 }
 
+// Development-only settings surfaces: true under `tauri dev`, false in builds.
+const DEV = import.meta.env.DEV;
+
+/// Human-friendly display name for the managed model in production builds,
+/// where the raw Hugging Face identifier would only confuse.
+function friendlyModelName(managedModel: string) {
+  if (managedModel.toLowerCase().includes("gemma-4-12b")) {
+    return "Gemma 4 12B (runs on this Mac)";
+  }
+  // Fallback: strip the org prefix and quant suffix from "org/name:quant".
+  const withoutOrg = managedModel.split("/").pop() ?? managedModel;
+  return withoutOrg.split(":")[0] || managedModel;
+}
+
 export default function LlamaSettings({
   onError,
   view,
@@ -355,67 +369,78 @@ export default function LlamaSettings({
           </button>
         </div>
 
-        <div className="segmented llama-mode-toggle" aria-label="Model server mode">
-          <button
-            type="button"
-            className={config.mode === "managed" ? "active" : ""}
-            onClick={() => setConfig((current) => ({ ...current, mode: "managed" }))}
-          >
-            Managed
-          </button>
-          <button
-            type="button"
-            className={config.mode === "external" ? "active" : ""}
-            onClick={() => setConfig((current) => ({ ...current, mode: "external" }))}
-          >
-            External
-          </button>
-        </div>
+        {DEV ? (
+          <div className="segmented llama-mode-toggle" aria-label="Model server mode">
+            <button
+              type="button"
+              className={config.mode === "managed" ? "active" : ""}
+              onClick={() => setConfig((current) => ({ ...current, mode: "managed" }))}
+            >
+              Managed
+            </button>
+            <button
+              type="button"
+              className={config.mode === "external" ? "active" : ""}
+              onClick={() => setConfig((current) => ({ ...current, mode: "external" }))}
+            >
+              External
+            </button>
+          </div>
+        ) : null}
 
         {config.mode === "managed" ? (
           <>
-            <label className="settings-field">
-              <span>Hugging Face model</span>
-              <input
-                value={config.managed_model}
-                onChange={(event) =>
-                  setConfig((current) => ({
-                    ...current,
-                    managed_model: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <div className="llama-number-grid">
+            {DEV ? (
               <label className="settings-field">
-                <span>Context</span>
+                <span>Hugging Face model</span>
                 <input
-                  type="number"
-                  min={512}
-                  value={config.context_size}
+                  value={config.managed_model}
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      context_size: Number(event.target.value),
+                      managed_model: event.target.value,
                     }))
                   }
                 />
               </label>
+            ) : (
               <label className="settings-field">
-                <span>RAM cache (MB)</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={config.cache_ram_mb}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      cache_ram_mb: Number(event.target.value),
-                    }))
-                  }
-                />
+                <span>Model</span>
+                <p className="llama-model-name">{friendlyModelName(config.managed_model)}</p>
               </label>
-            </div>
+            )}
+            {DEV ? (
+              <div className="llama-number-grid">
+                <label className="settings-field">
+                  <span>Context</span>
+                  <input
+                    type="number"
+                    min={512}
+                    value={config.context_size}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        context_size: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>RAM cache (MB)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={config.cache_ram_mb}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        cache_ram_mb: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            ) : null}
           </>
         ) : (
           <label className="settings-field">
@@ -472,6 +497,7 @@ export default function LlamaSettings({
         {providerControls("local")}
       </section>
 
+      {DEV ? (
       <section className="settings-section">
         <div className="section-heading">
           <span>Model</span>
@@ -516,6 +542,7 @@ export default function LlamaSettings({
           </div>
         ))}
       </section>
+      ) : null}
       </>
       ) : null}
 

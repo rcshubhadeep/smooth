@@ -20,11 +20,13 @@ import {
   Database,
   Download,
   FileText,
+  Check,
   Folder,
   FolderInput,
   FolderPlus,
   FolderOpen,
   GraduationCap,
+  Loader2,
   Heading2,
   Inbox,
   Info,
@@ -898,6 +900,101 @@ function ResizeHandle({
       }}
     />
   );
+}
+
+type SttDownloadEvent = {
+  kind: string;
+  downloaded: number;
+  total: number | null;
+  done: boolean;
+};
+
+/**
+ * Title-bar pill that tells the user when the system is still getting ready —
+ * a whisper model downloading, or the local LLM downloading/loading. Without
+ * it those setups are silent and users try AI features that can't work yet.
+ */
+function SystemStatusPill() {
+  const [download, setDownload] = useState<SttDownloadEvent | null>(null);
+  const [llamaBusy, setLlamaBusy] = useState(false);
+  const [justReady, setJustReady] = useState(false);
+  const wasBusyRef = useRef(false);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return undefined;
+    const unlisten = listen<SttDownloadEvent>(
+      "stt-model-download",
+      ({ payload }) => {
+        setDownload(payload.done ? null : payload);
+      },
+    );
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return undefined;
+    let disposed = false;
+    let readyTimer: number | null = null;
+    const check = async () => {
+      try {
+        const status = await invoke<{
+          state: string;
+          managed: { running: boolean } | null;
+        }>("get_llama_status");
+        if (disposed) return;
+        const busy =
+          status.state === "loading" ||
+          (Boolean(status.managed?.running) && status.state === "offline");
+        if (wasBusyRef.current && !busy && status.state === "ready") {
+          setJustReady(true);
+          if (readyTimer) window.clearTimeout(readyTimer);
+          readyTimer = window.setTimeout(() => setJustReady(false), 6000);
+        }
+        wasBusyRef.current = busy;
+        setLlamaBusy(busy);
+      } catch {
+        /* status check is best-effort */
+      }
+    };
+    void check();
+    const interval = window.setInterval(check, 6000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      if (readyTimer) window.clearTimeout(readyTimer);
+    };
+  }, []);
+
+  if (download) {
+    const percent = download.total
+      ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
+      : null;
+    return (
+      <span className="system-status-pill busy" title="Speech-to-text model is downloading">
+        <Loader2 size={12} className="spin" />
+        Downloading speech model{percent !== null ? ` · ${percent}%` : "…"}
+      </span>
+    );
+  }
+  if (llamaBusy) {
+    return (
+      <span className="system-status-pill busy" title="The local AI model is downloading or loading">
+        <Loader2 size={12} className="spin" />
+        Preparing local AI…
+      </span>
+    );
+  }
+  if (justReady) {
+    return (
+      <span className="system-status-pill ready">
+        <Check size={12} />
+        Local AI ready
+      </span>
+    );
+  }
+  return null;
 }
 
 function App() {
@@ -2432,6 +2529,17 @@ function App() {
     }
   }
 
+  async function deleteFolder(id: string) {
+    const folder = snapshot.folders.find((entry) => entry.id === id);
+    try {
+      const bank = await invoke<BankSnapshot>("delete_folder", { id });
+      setSnapshot(bank);
+      toast.success(`Deleted “${folder?.name ?? "folder"}”`);
+    } catch (deleteError) {
+      toast.error(deleteError);
+    }
+  }
+
   async function moveNote(id: string, folderId: string | null) {
     const note = snapshot.notes.find((item) => item.id === id);
     if (note && !note.deleted_at && note.folder_id === folderId) {
@@ -2771,6 +2879,7 @@ function App() {
             S
           </span>
           <span className="wordmark">Smooth</span>
+          <SystemStatusPill />
         </span>
         <button
           className="palette-trigger"
@@ -2978,6 +3087,11 @@ function App() {
                 renamable={!folder.system_key}
                 startRenaming={renamingFolderId === folder.id}
                 onRename={(name) => void renameFolder(folder.id, name)}
+                onDelete={
+                  !folder.system_key && notes.length === 0
+                    ? () => void deleteFolder(folder.id)
+                    : undefined
+                }
               >
                 {renderNoteRows(notes, folder.id, { indent: true })}
               </TreeSection>
@@ -4617,22 +4731,24 @@ function SettingsView({
               placeholder="en or auto"
             />
           </label>
-          <label className="settings-field">
-            <span>Threads</span>
-            <input
-              min={1}
-              max={32}
-              type="number"
-              value={sttConfig.threads}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setSttConfig((current) => ({
-                  ...current,
-                  threads: Number(value) || 1,
-                }));
-              }}
-            />
-          </label>
+          {IS_DEV ? (
+            <label className="settings-field">
+              <span>Threads</span>
+              <input
+                min={1}
+                max={32}
+                type="number"
+                value={sttConfig.threads}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setSttConfig((current) => ({
+                    ...current,
+                    threads: Number(value) || 1,
+                  }));
+                }}
+              />
+            </label>
+          ) : null}
         </div>
 
         <div
@@ -4647,9 +4763,12 @@ function SettingsView({
               {sttStatus?.message ?? "Choose a Whisper ggml model file"}
             </span>
           </div>
-          <small>{sttStatus?.threads ?? sttConfig.threads} threads</small>
+          {IS_DEV ? (
+            <small>{sttStatus?.threads ?? sttConfig.threads} threads</small>
+          ) : null}
         </div>
 
+        {IS_DEV ? (
         <div className="stt-performance-grid">
           <div>
             <span>STT queue</span>
@@ -4688,7 +4807,9 @@ function SettingsView({
             </small>
           </div>
         </div>
+        ) : null}
 
+        {IS_DEV ? (
         <div className="settings-actions stt-actions">
           <button
             type="button"
@@ -4698,6 +4819,7 @@ function SettingsView({
             {isSttBusy ? "Transcribing" : "Transcribe Last Capture"}
           </button>
         </div>
+        ) : null}
 
         {transcription ? (
           <div className="transcript-preview">
@@ -5185,6 +5307,8 @@ type TreeSectionProps = {
   renamable?: boolean;
   startRenaming?: boolean;
   onRename?: (name: string) => void;
+  /** Shown as a hover trash icon; only passed for empty, non-system folders. */
+  onDelete?: () => void;
 };
 
 function TreeSection({
@@ -5203,6 +5327,7 @@ function TreeSection({
   renamable = false,
   startRenaming = false,
   onRename,
+  onDelete,
 }: TreeSectionProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -5334,6 +5459,19 @@ function TreeSection({
           <small>{count}</small>
         </button>
       )}
+      {!editing && onDelete ? (
+        <button
+          type="button"
+          className="tree-delete"
+          title={`Delete “${title}”`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 size={13} />
+        </button>
+      ) : null}
       {isOpen ? <div className="tree-children">{children}</div> : null}
     </section>
   );
