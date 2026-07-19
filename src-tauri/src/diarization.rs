@@ -156,6 +156,33 @@ pub async fn diarize_capture_file(
     })
 }
 
+/// Force the diarization helper to fetch its Polyvoice models by running it
+/// once over one second of generated silence. Used by onboarding so the model
+/// download happens up front instead of mid-first-meeting. The transcript of
+/// silence is discarded — only the side effect (a warm models cache) matters.
+#[tauri::command]
+pub async fn warm_up_diarization(app: AppHandle) -> Result<(), String> {
+    let helper = diarization_helper_path(&app)?;
+    let models_cache = app_data_dir(&app)?.join("models").join("polyvoice");
+    fs::create_dir_all(&models_cache)
+        .map_err(|error| format!("Failed to create diarization model cache: {error}"))?;
+
+    let warmup_dir = app_data_dir(&app)?.join("audio-captures");
+    fs::create_dir_all(&warmup_dir).map_err(|error| error.to_string())?;
+    let wav_path = warmup_dir.join("diarization-warmup.wav");
+    write_session_wav(&wav_path, &vec![0_i16; 16_000])?;
+
+    let result = tauri::async_runtime::spawn_blocking({
+        let wav_path = wav_path.clone();
+        move || run_diarization_helper(helper, wav_path, models_cache)
+    })
+    .await
+    .map_err(|error| format!("Diarization warm-up failed: {error}"))?;
+    let _ = fs::remove_file(&wav_path);
+    // Silence may legitimately produce zero turns; only a helper error matters.
+    result.map(|_| ())
+}
+
 fn run_diarization_helper(
     helper: PathBuf,
     audio_path: PathBuf,

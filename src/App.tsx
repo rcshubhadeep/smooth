@@ -24,6 +24,7 @@ import {
   FolderInput,
   FolderPlus,
   FolderOpen,
+  GraduationCap,
   Heading2,
   Inbox,
   Info,
@@ -55,6 +56,7 @@ import {
 import { Bot } from "lucide-react";
 import { AgentsView, NoteAgentsPanel, type AgentRunResult } from "./Agents";
 import LlmRunChoiceDialog from "./LlmRunChoice";
+import OnboardingWizard from "./Onboarding";
 import {
   loadLlmPreferences,
   type LlmPreferences,
@@ -915,6 +917,11 @@ function App() {
     );
   });
   const [view, setView] = useState<ViewMode>("notes");
+  // null = status unknown (or non-Tauri); {show, step} once loaded.
+  const [onboarding, setOnboarding] = useState<{
+    show: boolean;
+    step: number;
+  } | null>(null);
   const setError = (message: string | null) => {
     if (message) {
       toast.error(message);
@@ -923,6 +930,16 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
+
+  // First-run onboarding — only under the Tauri shell (no backend in browser).
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    invoke<{ completed: boolean; step: number }>("get_onboarding_status")
+      .then((status) =>
+        setOnboarding({ show: !status.completed, step: status.step }),
+      )
+      .catch(() => setOnboarding(null));
+  }, []);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
@@ -3121,6 +3138,7 @@ function App() {
             <SettingsView
               onCalendarChanged={() => void refreshCalendarEvents()}
               onClose={() => setView("notes")}
+              onShowWelcome={() => setOnboarding({ show: true, step: 0 })}
             />
           ) : view === "agents" ? (
             <AgentsView
@@ -3288,6 +3306,13 @@ function App() {
       ) : null}
 
       <ToastViewport />
+
+      {onboarding?.show ? (
+        <OnboardingWizard
+          initialStep={onboarding.step}
+          onDone={() => setOnboarding({ show: false, step: 0 })}
+        />
+      ) : null}
     </div>
   );
 }
@@ -3692,12 +3717,35 @@ const SETTINGS_NAV: {
   },
 ];
 
+// Settings surfaces meant for development only. `import.meta.env.DEV` is true
+// under `tauri dev` and false in `tauri build`, so production users never see
+// these; the backing features (e.g. the MCP server) keep running regardless.
+const IS_DEV = import.meta.env.DEV;
+
+const PROD_HIDDEN_SECTIONS = new Set<SettingsSection>([
+  "mcp",
+  "extraction-queue",
+  "agent-tools",
+]);
+
+const VISIBLE_SETTINGS_NAV = IS_DEV
+  ? SETTINGS_NAV
+  : SETTINGS_NAV.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !PROD_HIDDEN_SECTIONS.has(item.id)),
+    })).filter((group) => group.items.length > 0);
+
 type SettingsViewProps = {
   onCalendarChanged: () => void;
   onClose: () => void;
+  onShowWelcome: () => void;
 };
 
-function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
+function SettingsView({
+  onCalendarChanged,
+  onClose,
+  onShowWelcome,
+}: SettingsViewProps) {
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(
     null,
   );
@@ -4271,6 +4319,14 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           <button
             className="icon-button"
             type="button"
+            onClick={onShowWelcome}
+            title="Show welcome guide"
+          >
+            <GraduationCap size={17} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
             onClick={onClose}
             title="Back to notes"
           >
@@ -4295,7 +4351,7 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
 
       <div className="settings-body">
         <nav className="settings-rail" aria-label="Settings sections">
-          {SETTINGS_NAV.map((group) => {
+          {VISIBLE_SETTINGS_NAV.map((group) => {
             const GroupIcon = group.icon;
             return (
               <div className="settings-rail-group" key={group.group}>
@@ -4520,29 +4576,31 @@ function SettingsView({ onCalendarChanged, onClose }: SettingsViewProps) {
           <small>{sttStatus?.acceleration.join(", ") ?? "cpu"}</small>
         </div>
 
-        <label className="settings-field">
-          <span>Whisper model path</span>
-          <div className="settings-input-row">
-            <input
-              value={sttConfig.model_path}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setSttConfig((current) => ({
-                  ...current,
-                  model_path: value,
-                }));
-              }}
-              placeholder="Path to ggml-base.en.bin"
-            />
-            <button
-              type="button"
-              onClick={() => void saveAndCheckStt()}
-              disabled={isSttBusy || isLoading}
-            >
-              Save
-            </button>
-          </div>
-        </label>
+        {IS_DEV ? (
+          <label className="settings-field">
+            <span>Whisper model path</span>
+            <div className="settings-input-row">
+              <input
+                value={sttConfig.model_path}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setSttConfig((current) => ({
+                    ...current,
+                    model_path: value,
+                  }));
+                }}
+                placeholder="Path to ggml-base.en.bin"
+              />
+              <button
+                type="button"
+                onClick={() => void saveAndCheckStt()}
+                disabled={isSttBusy || isLoading}
+              >
+                Save
+              </button>
+            </div>
+          </label>
+        ) : null}
 
         <div className="settings-split-row">
           <label className="settings-field">

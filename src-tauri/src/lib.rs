@@ -11,6 +11,7 @@ mod llama_runtime;
 mod llm;
 mod mcp;
 mod meeting_notes;
+mod onboarding;
 mod reminders;
 mod semantic_search;
 mod slack;
@@ -4933,6 +4934,7 @@ pub fn run() {
             calendar::list_upcoming_calendar_events,
             diarization::start_diarization_session,
             diarization::diarize_capture_file,
+            diarization::warm_up_diarization,
             diarization::stop_diarization_session,
             get_audio_capture_status,
             start_audio_capture,
@@ -5004,7 +5006,10 @@ pub fn run() {
             agents::agent_list_definitions,
             agents::agent_create_definition,
             agents::agent_update_definition,
-            agents::agent_delete_definition
+            agents::agent_delete_definition,
+            onboarding::get_onboarding_status,
+            onboarding::set_onboarding_status,
+            onboarding::download_stt_model
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

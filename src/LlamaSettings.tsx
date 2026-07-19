@@ -447,7 +447,7 @@ export default function LlamaSettings({
           ) : null}
         </div>
 
-        {config.mode === "managed" && status?.managed?.cache_dir ? (
+        {import.meta.env.DEV && config.mode === "managed" && status?.managed?.cache_dir ? (
           <p className="settings-help llama-cache-path">
             Models: {status.managed.cache_dir}
           </p>
