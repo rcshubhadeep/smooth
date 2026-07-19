@@ -4450,6 +4450,10 @@ function SettingsView({
             className="icon-button"
             type="button"
             onClick={() => {
+              if (!IS_DEV) {
+                window.location.reload();
+                return;
+              }
               void refreshQueueStatus();
               void refreshAudioStatus();
               void refreshSystemCaptureStatus();
@@ -4571,7 +4575,9 @@ function SettingsView({
                 ? systemAudioStatus.granted
                   ? "Available"
                   : "Permission needed"
-                : "ScreenCaptureKit"}
+                : IS_DEV
+                  ? "ScreenCaptureKit"
+                  : "Ready"}
           </small>
         </div>
 
@@ -4627,7 +4633,7 @@ function SettingsView({
             <Monitor size={19} />
           </div>
           <div className="audio-capture-copy">
-            <strong>ScreenCaptureKit audio</strong>
+            <strong>{IS_DEV ? "ScreenCaptureKit audio" : "Desktop audio"}</strong>
             <span>
               {systemCaptureStatus?.is_recording
                 ? `${formatDuration(systemCaptureStatus.elapsed_ms)} · capturing desktop audio`
@@ -4687,7 +4693,9 @@ function SettingsView({
         <div className="section-heading">
           <Sparkles size={18} />
           <span>Speech to text</span>
-          <small>{sttStatus?.acceleration.join(", ") ?? "cpu"}</small>
+          {IS_DEV ? (
+            <small>{sttStatus?.acceleration.join(", ") ?? "cpu"}</small>
+          ) : null}
         </div>
 
         {IS_DEV ? (

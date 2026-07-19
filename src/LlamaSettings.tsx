@@ -358,15 +358,17 @@ export default function LlamaSettings({
         <div className="section-heading">
           <Server size={18} />
           <span>Local model server</span>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={() => void refresh()}
-            disabled={busy || loading}
-            title="Refresh model server status"
-          >
-            <RefreshCw className={busy ? "spin" : ""} size={16} />
-          </button>
+          {DEV ? (
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => void refresh()}
+              disabled={busy || loading}
+              title="Refresh model server status"
+            >
+              <RefreshCw className={busy ? "spin" : ""} size={16} />
+            </button>
+          ) : null}
         </div>
 
         {DEV ? (
