@@ -2,7 +2,19 @@ use std::{
     collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::{Duration, Instant, SystemTime},
 };
+
+struct DirectoryLock {
+    path: PathBuf,
+}
+
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
 
 fn main() {
     build_system_audio_helper();
@@ -38,6 +50,14 @@ fn stage_llama_server() {
     std::fs::create_dir_all(&binaries_dir).expect("Failed to create binaries directory");
     println!("cargo:rerun-if-changed={}", source.display());
 
+    // Cargo can run this build script more than once concurrently (notably while
+    // Tauri is packaging release targets). The staged dylibs are a shared
+    // resource directory, so serialize the copy/rewrite operation to prevent one
+    // process from deleting files while another is running install_name_tool.
+    let _staging_lock = target
+        .contains("apple-darwin")
+        .then(|| acquire_directory_lock(&binaries_dir.join(".llama-stage.lock")));
+
     if !helper_binary_is_fresh(&source, &output) {
         std::fs::copy(&source, &output).unwrap_or_else(|error| {
             panic!(
@@ -51,6 +71,44 @@ fn stage_llama_server() {
 
     if target.contains("apple-darwin") {
         stage_macos_llama_libraries(&source, &output, &binaries_dir.join("llama-libs"));
+    }
+}
+
+fn acquire_directory_lock(path: &Path) -> DirectoryLock {
+    const STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+    const WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
+    let started = Instant::now();
+
+    loop {
+        match std::fs::create_dir(path) {
+            Ok(()) => {
+                return DirectoryLock {
+                    path: path.to_path_buf(),
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let is_stale = std::fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                    .is_some_and(|age| age > STALE_AFTER);
+                if is_stale {
+                    let _ = std::fs::remove_dir(path);
+                    continue;
+                }
+                if started.elapsed() > WAIT_LIMIT {
+                    panic!(
+                        "Timed out waiting for llama.cpp staging lock at {}",
+                        path.display()
+                    );
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => panic!(
+                "Failed to acquire llama.cpp staging lock at {}: {error}",
+                path.display()
+            ),
+        }
     }
 }
 
