@@ -90,7 +90,9 @@ export default function SlackShareAgent({
       >
         <header>
           <div>
-            <MessageSquare size={18} />
+            <span className="slack-share-icon" aria-hidden="true">
+              <MessageSquare size={17} />
+            </span>
             <div>
               <h2 id="slack-share-title">Share note to Slack</h2>
               <p>{note.title || "Untitled"}</p>
@@ -118,6 +120,10 @@ export default function SlackShareAgent({
                 autoFocus
               />
             </label>
+            <p className="slack-share-hint">
+              A channel ID (e.g. C0367JT1YCE) or a Slack message link. We remember
+              your last destination.
+            </p>
 
             <div className="slack-share-mode" role="group" aria-label="Message preparation">
               <button
