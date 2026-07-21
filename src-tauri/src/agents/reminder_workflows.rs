@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    db_error, gmail,
+    create_standard_note_with_id, db_error, gmail, link_generated_note,
     llm::{LlmProvider, LlmSelection},
-    new_id, now_string, open_database, reminders, slack,
+    new_id, now_string, open_database, reminders, save_note_internal, slack,
 };
 
-use super::{flow, AgentRuntime};
+use super::{catalog, flow, AgentRuntime};
 
 const WORKER_POLL_SECONDS: u64 = 2;
 
@@ -27,6 +27,7 @@ pub(crate) struct ReminderWorkflowRecord {
     pub(crate) error: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    pub(crate) result_note_id: Option<String>,
     pub(crate) steps: Vec<ReminderWorkflowStepRecord>,
 }
 
@@ -68,7 +69,7 @@ struct AgentSpec {
     name: String,
     instructions: String,
     max_steps: u8,
-    step_kind: &'static str,
+    step_kind: String,
 }
 
 #[derive(Clone)]
@@ -85,6 +86,7 @@ struct PendingStep {
     instructions: String,
     max_steps: u8,
     step_kind: String,
+    position: i64,
 }
 
 pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
@@ -103,6 +105,7 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                 error TEXT,
                 llm_provider TEXT,
                 llm_model TEXT,
+                result_note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -141,7 +144,28 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
         )
         .map_err(db_error)?;
     migrate_external_gmail_step_kind(connection)?;
-    migrate_workflow_llm_columns(connection)
+    migrate_workflow_llm_columns(connection)?;
+    migrate_workflow_result_note_column(connection)
+}
+
+fn migrate_workflow_result_note_column(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(reminder_workflows)")
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(db_error)?;
+    if !columns.contains("result_note_id") {
+        connection
+            .execute(
+                "ALTER TABLE reminder_workflows ADD COLUMN result_note_id TEXT",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 fn migrate_workflow_llm_columns(connection: &Connection) -> Result<(), String> {
@@ -337,54 +361,57 @@ fn insert_workflow_with_selection(
 }
 
 fn resolve_agent(connection: &Connection, agent_id: &str) -> Result<AgentSpec, String> {
-    let builtin = match agent_id {
-        "summarize-note" => Some(AgentSpec {
-            name: "Summarize this note".to_string(),
-            instructions: "Write a concise summary in 3-5 bullets. Capture key ideas, decisions, and action items. Stay faithful to the source and return only the summary.".to_string(),
-            max_steps: 3,
-            step_kind: "transform",
-        }),
-        "suggest-links" => Some(AgentSpec {
-            name: "Suggest links".to_string(),
-            instructions: "Find up to five related notes and briefly explain each connection. Return only the recommendations.".to_string(),
-            max_steps: 4,
-            step_kind: "transform",
-        }),
-        "share-note-slack" => Some(AgentSpec {
-            name: "Share to Slack".to_string(),
-            instructions: "Prepare a concise Slack message. Preserve facts, decisions, owners, and next steps. Return only the editable message draft and do not send anything.".to_string(),
-            max_steps: 3,
-            step_kind: "external_slack",
-        }),
-        "create-gmail-draft" => Some(AgentSpec {
-            name: "Prepare Gmail draft".to_string(),
-            instructions: "Prepare a concise email draft from the input. Preserve facts, decisions, owners, and next steps. Return exactly two sections: 'Subject: <subject>' followed by 'Body:' and the editable email body. Do not create or send anything.".to_string(),
-            max_steps: 3,
-            step_kind: "external_gmail",
-        }),
-        _ => None,
-    };
-    if let Some(spec) = builtin {
-        return Ok(spec);
+    if let Some(task) = catalog::resolve_builtin(agent_id) {
+        if task.scope != "note" {
+            return Err(format!(
+                "Task '{}' cannot run from a note reminder",
+                task.name
+            ));
+        }
+        return Ok(AgentSpec {
+            name: task.name,
+            instructions: task.instructions,
+            max_steps: task.max_steps.unwrap_or(3).clamp(1, 6) as u8,
+            step_kind: match task.result_kind.as_str() {
+                "external_slack" => "external_slack",
+                "external_gmail" => "external_gmail",
+                _ => "transform",
+            }
+            .to_string(),
+        });
     }
 
     connection
         .query_row(
-            "SELECT name, instructions, COALESCE(max_steps, 3)
+            "SELECT name, instructions, COALESCE(max_steps, 3), scope
              FROM agent_definitions WHERE id = ?1",
             params![agent_id],
             |row| {
-                Ok(AgentSpec {
-                    name: row.get(0)?,
-                    instructions: row.get(1)?,
-                    max_steps: row.get::<_, i64>(2)?.clamp(1, 6) as u8,
-                    step_kind: "transform",
-                })
+                let scope = row.get::<_, String>(3)?;
+                Ok((
+                    AgentSpec {
+                        name: row.get(0)?,
+                        instructions: row.get(1)?,
+                        max_steps: row.get::<_, i64>(2)?.clamp(1, 6) as u8,
+                        step_kind: "transform".to_string(),
+                    },
+                    scope,
+                ))
             },
         )
         .optional()
         .map_err(db_error)?
         .ok_or_else(|| format!("Agent '{agent_id}' is not available for reminders"))
+        .and_then(|(spec, scope)| {
+            if scope == "note" {
+                Ok(spec)
+            } else {
+                Err(format!(
+                    "Task '{}' cannot run from a note reminder",
+                    spec.name
+                ))
+            }
+        })
 }
 
 #[tauri::command]
@@ -451,7 +478,7 @@ pub(crate) fn set_reminder_workflow(
 fn load_workflows(connection: &Connection) -> Result<Vec<ReminderWorkflowRecord>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, reminder_id, status, error, created_at, updated_at
+            "SELECT id, reminder_id, status, error, created_at, updated_at, result_note_id
              FROM reminder_workflows ORDER BY CAST(created_at AS INTEGER) ASC",
         )
         .map_err(db_error)?;
@@ -464,6 +491,7 @@ fn load_workflows(connection: &Connection) -> Result<Vec<ReminderWorkflowRecord>
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(db_error)?
@@ -471,17 +499,20 @@ fn load_workflows(connection: &Connection) -> Result<Vec<ReminderWorkflowRecord>
         .map_err(db_error)?;
 
     rows.into_iter()
-        .map(|(id, reminder_id, status, error, created_at, updated_at)| {
-            Ok(ReminderWorkflowRecord {
-                steps: load_steps(connection, &id)?,
-                id,
-                reminder_id,
-                status,
-                error,
-                created_at,
-                updated_at,
-            })
-        })
+        .map(
+            |(id, reminder_id, status, error, created_at, updated_at, result_note_id)| {
+                Ok(ReminderWorkflowRecord {
+                    steps: load_steps(connection, &id)?,
+                    id,
+                    reminder_id,
+                    status,
+                    error,
+                    created_at,
+                    updated_at,
+                    result_note_id,
+                })
+            },
+        )
         .collect()
 }
 
@@ -717,7 +748,7 @@ fn load_pending_step(
     connection
         .query_row(
             "SELECT id, agent_id, agent_name, instructions,
-                    max_steps, step_kind
+                    max_steps, step_kind, position
              FROM reminder_workflow_steps
              WHERE workflow_id = ?1 AND status = 'pending'
              ORDER BY position ASC LIMIT 1",
@@ -730,6 +761,7 @@ fn load_pending_step(
                     instructions: row.get(3)?,
                     max_steps: row.get::<_, i64>(4)?.clamp(1, 6) as u8,
                     step_kind: row.get(5)?,
+                    position: row.get(6)?,
                 })
             },
         )
@@ -819,6 +851,84 @@ fn parse_gmail_draft_output(raw: &str, note_title: &str) -> (String, String) {
     (subject, body)
 }
 
+fn should_materialize_result(step_kind: &str, is_final_step: bool) -> bool {
+    step_kind == "transform" && is_final_step
+}
+
+fn materialize_final_text_result(
+    app: &AppHandle,
+    workflow: &ClaimedWorkflow,
+    step: &PendingStep,
+    reminder: &reminders::ReminderRecord,
+    output: &str,
+) -> Result<String, String> {
+    let (status, existing_note_id, folder_id): (String, Option<String>, Option<String>) = {
+        let connection = open_database(app)?;
+        let (status, result_note_id) = connection
+            .query_row(
+                "SELECT status, result_note_id FROM reminder_workflows WHERE id = ?1",
+                params![workflow.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(db_error)?;
+        let folder_id = connection
+            .query_row(
+                "SELECT folder_id FROM notes WHERE id = ?1 AND deleted_at IS NULL",
+                params![reminder.note_id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        (status, result_note_id, folder_id)
+    };
+    if status != "running" {
+        return Err("This reminder workflow is no longer running".to_string());
+    }
+
+    let title = if step.agent_id == "create-todo" {
+        format!("TO-DO — {}", reminder.note_title)
+    } else {
+        format!("{} — {}", step.agent_name, reminder.note_title)
+    };
+    let note_id = if let Some(note_id) = existing_note_id {
+        save_note_internal(
+            app.clone(),
+            note_id.clone(),
+            title,
+            output.to_string(),
+            folder_id,
+            false,
+        )?;
+        note_id
+    } else {
+        let deterministic_note_id = format!("note-result-{}", workflow.id);
+        let note = create_standard_note_with_id(
+            app.clone(),
+            deterministic_note_id,
+            Some(title.clone()),
+            folder_id.clone(),
+        )?;
+        save_note_internal(
+            app.clone(),
+            note.id.clone(),
+            title,
+            output.to_string(),
+            folder_id,
+            false,
+        )?;
+        link_generated_note(app, &reminder.note_id, &note.id, &step.agent_name)?;
+        let connection = open_database(app)?;
+        connection
+            .execute(
+                "UPDATE reminder_workflows SET result_note_id = ?2, updated_at = ?3
+                 WHERE id = ?1 AND status = 'running'",
+                params![workflow.id, note.id, now_string()],
+            )
+            .map_err(db_error)?;
+        note.id
+    };
+    Ok(note_id)
+}
+
 async fn execute_workflow(app: &AppHandle, workflow: ClaimedWorkflow) -> Result<(), String> {
     loop {
         let (step, reminder, previous) = {
@@ -899,6 +1009,39 @@ async fn execute_workflow(app: &AppHandle, workflow: ClaimedWorkflow) -> Result<
                 } else {
                     (None, result.answer.trim().to_string())
                 };
+                let is_final_step = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM reminder_workflow_steps
+                         WHERE workflow_id = ?1 AND position > ?2",
+                        params![workflow.id, step.position],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(db_error)?
+                    == 0;
+                connection
+                    .execute(
+                        "UPDATE reminder_workflow_steps
+                         SET output_text = ?2, subject = ?3, agent_run_id = ?4,
+                             error = NULL, updated_at = ?5 WHERE id = ?1",
+                        params![step.id, output_text, subject, result.run_id, now_string()],
+                    )
+                    .map_err(db_error)?;
+                drop(connection);
+
+                if should_materialize_result(&step.step_kind, is_final_step) {
+                    if let Err(error) = materialize_final_text_result(
+                        app,
+                        &workflow,
+                        &step,
+                        &reminder,
+                        &output_text,
+                    ) {
+                        fail_step(app, &workflow, &step, &error)?;
+                        return Ok(());
+                    }
+                }
+
+                let connection = open_database(app)?;
                 connection
                     .execute(
                         "UPDATE reminder_workflow_steps
@@ -1024,7 +1167,7 @@ mod tests {
                 );
                 CREATE TABLE agent_definitions (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL,
-                    max_steps INTEGER
+                    max_steps INTEGER, scope TEXT NOT NULL DEFAULT 'global'
                 );
                 INSERT INTO notes VALUES ('note-1', 'Note');
                 INSERT INTO reminders VALUES
@@ -1097,6 +1240,32 @@ mod tests {
         assert_eq!(workflows[0].steps[1].agent_id, "create-gmail-draft");
         assert_eq!(workflows[0].steps[1].step_kind, "external_gmail");
         assert_eq!(workflows[0].steps[1].subject, None);
+    }
+
+    #[test]
+    fn create_todo_uses_the_normal_transform_step() {
+        let connection = database();
+        insert_workflow(
+            &connection,
+            "reminder-1",
+            &[WorkflowStepInput {
+                agent_id: "create-todo".to_string(),
+            }],
+        )
+        .expect("insert TO-DO workflow");
+
+        let workflows = load_workflows(&connection).expect("load workflows");
+        assert_eq!(workflows[0].steps[0].agent_id, "create-todo");
+        assert_eq!(workflows[0].steps[0].step_kind, "transform");
+        assert_eq!(workflows[0].result_note_id, None);
+    }
+
+    #[test]
+    fn only_the_final_text_step_creates_a_note() {
+        assert!(!should_materialize_result("transform", false));
+        assert!(should_materialize_result("transform", true));
+        assert!(!should_materialize_result("external_slack", true));
+        assert!(!should_materialize_result("external_gmail", true));
     }
 
     #[test]

@@ -4140,6 +4140,21 @@ pub(crate) fn create_standard_note(
     create_note_with_extraction_status(app, title, folder_id, default_extraction_status())
 }
 
+pub(crate) fn create_standard_note_with_id(
+    app: AppHandle,
+    id: String,
+    title: Option<String>,
+    folder_id: Option<String>,
+) -> Result<NoteWithContent, String> {
+    create_note_with_id_and_extraction_status(
+        app,
+        id,
+        title,
+        folder_id,
+        default_extraction_status(),
+    )
+}
+
 #[tauri::command]
 fn create_meeting_note(
     app: AppHandle,
@@ -4155,10 +4170,37 @@ pub(crate) fn create_note_with_extraction_status(
     folder_id: Option<String>,
     extraction_status: String,
 ) -> Result<NoteWithContent, String> {
+    create_note_with_id_and_extraction_status(
+        app,
+        new_id("note"),
+        title,
+        folder_id,
+        extraction_status,
+    )
+}
+
+fn create_note_with_id_and_extraction_status(
+    app: AppHandle,
+    id: String,
+    title: Option<String>,
+    folder_id: Option<String>,
+    extraction_status: String,
+) -> Result<NoteWithContent, String> {
     let connection = open_database(&app)?;
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1)",
+            params![id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(db_error)?;
+    if exists {
+        drop(connection);
+        return get_note(app, id);
+    }
     let now = now_string();
     let note = NoteMeta {
-        id: new_id("note"),
+        id,
         title: title
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "Untitled note".to_string()),
@@ -4851,6 +4893,42 @@ fn link_chat_created_note(
     Ok(bank)
 }
 
+pub(crate) fn link_generated_note(
+    app: &AppHandle,
+    parent_id: &str,
+    child_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let Some((parent_id, child_id)) = normalize_directed_pair(parent_id, child_id) else {
+        return Err("Cannot link a note to itself".to_string());
+    };
+    let created_at = now_string();
+    let connection = open_database(app)?;
+    connection
+        .execute(
+            "INSERT INTO note_links (source_id, target_id, created_at, label, link_kind)
+             VALUES (?1, ?2, ?3, ?4, 'manual')
+             ON CONFLICT(source_id, target_id) DO UPDATE SET
+                 label = excluded.label, link_kind = excluded.link_kind",
+            params![parent_id, child_id, created_at, label],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "INSERT INTO note_links (source_id, target_id, created_at, label, link_kind)
+             VALUES (?1, ?2, ?3, 'Parent Note', 'manual')
+             ON CONFLICT(source_id, target_id) DO UPDATE SET
+                 label = excluded.label, link_kind = excluded.link_kind",
+            params![child_id, parent_id, created_at],
+        )
+        .map_err(db_error)?;
+    let _ = app.emit(
+        "note-links-updated",
+        json!({ "source_id": parent_id, "target_id": child_id }),
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -5004,6 +5082,7 @@ pub fn run() {
             agents::agent_list_runs,
             agents::agent_get_run_events,
             agents::agent_list_definitions,
+            agents::agent_list_tasks,
             agents::agent_create_definition,
             agents::agent_update_definition,
             agents::agent_delete_definition,

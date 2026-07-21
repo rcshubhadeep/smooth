@@ -1,8 +1,9 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { ArrowUp, Check, Copy, FilePlus, Sparkles, Trash2 } from "lucide-react";
+import { ArrowUp, Check, Copy, FilePlus, ListPlus, Sparkles, Trash2 } from "lucide-react";
 import { marked } from "marked";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import LlmRunChoiceDialog from "./LlmRunChoice";
+import { createUserAgent } from "./Agents";
 import {
   loadLlmPreferences,
   type LlmPreferences,
@@ -37,6 +38,16 @@ let tempCounter = 0;
 function tempId() {
   tempCounter += 1;
   return `local-${tempCounter}`;
+}
+
+function taskNameFromQuestion(question: string) {
+  const compact = question.trim().replace(/\s+/g, " ").replace(/[?.!]+$/, "");
+  const withoutLead = compact.replace(
+    /^(can|could|would) you\s+|^(is|are|was|were|do|does|did) there\s+/i,
+    "",
+  );
+  const candidate = withoutLead || compact || "Chat task";
+  return candidate.length > 56 ? `${candidate.slice(0, 53).trimEnd()}…` : candidate;
 }
 
 type ChatStreamState = {
@@ -156,6 +167,9 @@ export default function NoteChat({
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [taskCreatingId, setTaskCreatingId] = useState<string | null>(null);
+  const [taskCreatedId, setTaskCreatedId] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
   const streamState = useSyncExternalStore(
     chatStreamStore.subscribe,
     () => chatStreamStore.snapshot(noteId),
@@ -165,6 +179,29 @@ export default function NoteChat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const noteContentRef = useRef(noteContent);
   noteContentRef.current = noteContent;
+
+  async function createTask(messageId: string, question: string) {
+    const instructions = question.trim();
+    if (!instructions || taskCreatingId) return;
+    setTaskCreatingId(messageId);
+    setTaskError(null);
+    try {
+      await createUserAgent({
+        name: taskNameFromQuestion(instructions),
+        description: "Reusable note task created from chat.",
+        instructions,
+        max_steps: 3,
+        scope: "note",
+        icon: "overview",
+      });
+      setTaskCreatedId(messageId);
+      window.setTimeout(() => setTaskCreatedId(null), 1800);
+    } catch (reason) {
+      setTaskError(String(reason));
+    } finally {
+      setTaskCreatingId(null);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -377,6 +414,27 @@ export default function NoteChat({
                     >
                       <FilePlus size={14} />
                     </button>
+                    <button
+                      type="button"
+                      className="chat-action"
+                      title={taskCreatedId === message.id ? "Task created" : "Create a reusable task"}
+                      disabled={taskCreatingId !== null}
+                      onClick={() => {
+                        const sourcePrompt =
+                          messages
+                            .slice(0, index)
+                            .reverse()
+                            .find((candidate) => candidate.role === "user")
+                            ?.content ?? "";
+                        void createTask(message.id, sourcePrompt);
+                      }}
+                    >
+                      {taskCreatedId === message.id ? (
+                        <Check size={14} className="copy-tick" />
+                      ) : (
+                        <ListPlus size={14} />
+                      )}
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -408,6 +466,7 @@ export default function NoteChat({
           </>
         )}
         {error ? <p className="chat-error">{error}</p> : null}
+        {taskError ? <p className="chat-error">{taskError}</p> : null}
       </div>
 
       <div className="chat-input-bar">

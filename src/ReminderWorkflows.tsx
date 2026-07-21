@@ -6,6 +6,7 @@ import {
   CircleStop,
   FileText,
   Link2,
+  ListChecks,
   Loader2,
   Mail,
   MessageSquare,
@@ -16,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { listTasks, type AgentDefinition } from "./Agents";
 import "./ReminderWorkflows.css";
 
 export type ReminderWorkflowStepDraft = {
@@ -55,6 +57,7 @@ export type ReminderWorkflowRecord = {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  resultNoteId: string | null;
   steps: ReminderWorkflowStep[];
 };
 
@@ -66,38 +69,16 @@ type ReminderAgentOption = {
   icon: typeof Sparkles;
 };
 
-const REMINDER_AGENT_OPTIONS: ReminderAgentOption[] = [
-  {
-    id: "summarize-note",
-    name: "Summarize",
-    description: "Distill the selected passage into key points and actions.",
-    external: false,
-    icon: FileText,
-  },
-  {
-    id: "suggest-links",
-    name: "Suggest links",
-    description: "Find related notes using the reminder as context.",
-    external: false,
-    icon: Link2,
-  },
-  {
-    id: "share-note-slack",
-    name: "Prepare Slack message",
-    description: "Create an editable draft and wait for approval before posting.",
-    external: true,
-    icon: MessageSquare,
-  },
-  {
-    id: "create-gmail-draft",
-    name: "Prepare Gmail draft",
-    description: "Create an editable email draft and wait for approval before saving it to Gmail.",
-    external: true,
-    icon: Mail,
-  },
-];
-
-const OPTION_BY_ID = new Map(REMINDER_AGENT_OPTIONS.map((agent) => [agent.id, agent]));
+function reminderIcon(agent: AgentDefinition) {
+  switch (agent.icon) {
+    case "summary": return FileText;
+    case "links": return Link2;
+    case "slack": return MessageSquare;
+    case "email": return Mail;
+    case "todo": return ListChecks;
+    default: return Sparkles;
+  }
+}
 
 export function ReminderWorkflowBuilder({
   steps,
@@ -106,9 +87,43 @@ export function ReminderWorkflowBuilder({
   steps: ReminderWorkflowStepDraft[];
   onChange: (steps: ReminderWorkflowStepDraft[]) => void;
 }) {
-  const hasExternal = steps.some(({ agentId }) => OPTION_BY_ID.get(agentId)?.external);
+  const [options, setOptions] = useState<ReminderAgentOption[]>([]);
+  useEffect(() => {
+    let active = true;
+    const refreshTasks = () => {
+      void listTasks()
+        .then((tasks) => {
+          if (!active) return;
+          setOptions(
+            tasks
+              .filter(({ scope }) => scope === "note")
+              .map((task) => ({
+                id: task.id,
+                name: task.name,
+                description: task.description,
+                external: task.resultKind.startsWith("external_"),
+                icon: reminderIcon(task),
+              })),
+          );
+        })
+        .catch(() => {
+          if (active) setOptions([]);
+        });
+    };
+    refreshTasks();
+    window.addEventListener("smooth-agent-definitions-changed", refreshTasks);
+    return () => {
+      active = false;
+      window.removeEventListener("smooth-agent-definitions-changed", refreshTasks);
+    };
+  }, []);
+  const optionById = useMemo(
+    () => new Map(options.map((agent) => [agent.id, agent])),
+    [options],
+  );
+  const hasExternal = steps.some(({ agentId }) => optionById.get(agentId)?.external);
   const selectedAgentIds = new Set(steps.map(({ agentId }) => agentId));
-  const available = REMINDER_AGENT_OPTIONS.filter(
+  const available = options.filter(
     (agent) => !selectedAgentIds.has(agent.id) && (!agent.external || !hasExternal),
   );
 
@@ -121,7 +136,7 @@ export function ReminderWorkflowBuilder({
     <section className="reminder-workflow-builder">
       <div className="reminder-workflow-heading">
         <div>
-          <span>Agent workflow <small>optional</small></span>
+          <span>Task workflow <small>optional</small></span>
           <p>Runs in order when the reminder is due.</p>
         </div>
         {steps.length ? <span className="reminder-workflow-count">{steps.length}</span> : null}
@@ -130,7 +145,7 @@ export function ReminderWorkflowBuilder({
       {steps.length ? (
         <ol className="reminder-workflow-draft">
           {steps.map((step, index) => {
-            const agent = OPTION_BY_ID.get(step.agentId);
+            const agent = optionById.get(step.agentId);
             if (!agent) return null;
             const Icon = agent.icon;
             return (
@@ -159,9 +174,9 @@ export function ReminderWorkflowBuilder({
           <select
             value=""
             onChange={(event) => add(event.currentTarget.value)}
-            aria-label="Agent to add"
+            aria-label="Task to add"
           >
-            <option value="">Add an agent...</option>
+            <option value="">Add a task...</option>
             {available.map((agent) => (
               <option key={agent.id} value={agent.id}>{agent.name}</option>
             ))}
@@ -175,7 +190,7 @@ export function ReminderWorkflowBuilder({
 
       {steps.length && !hasExternal ? (
         <p className="reminder-workflow-generated-only">
-          This workflow only generates a result. Add a Slack or Gmail step for an approved external action.
+          The final text result will be saved as a note linked to the parent note.
         </p>
       ) : null}
     </section>
@@ -191,12 +206,12 @@ export function ReminderWorkflowToastStatus({
   const activeStep = workflow.steps.find(({ status }) => status === "running");
   const hasExternal = workflow.steps.some(({ stepKind }) => stepKind.startsWith("external_"));
   const labels: Record<ReminderWorkflowRecord["status"], string> = {
-    scheduled: "Agent workflow queued",
-    running: activeStep ? `${activeStep.agentName} is working` : "Agents are working",
+    scheduled: "Task workflow queued",
+    running: activeStep ? `${activeStep.agentName} is working` : "Tasks are running",
     awaiting_approval: "Draft ready - approval required",
-    succeeded: hasExternal ? "External action completed" : "Agent result ready",
-    failed: "Agent workflow failed - open to retry",
-    cancelled: "Agent workflow cancelled",
+    succeeded: hasExternal ? "External action completed" : "Task result ready",
+    failed: "Task workflow failed - open to retry",
+    cancelled: "Task workflow cancelled",
   };
   const busy = workflow.status === "scheduled" || workflow.status === "running";
 
@@ -215,9 +230,11 @@ export function ReminderWorkflowToastStatus({
 export function ReminderWorkflowPanel({
   workflow,
   onChanged,
+  onOpenResultNote,
 }: {
   workflow: ReminderWorkflowRecord;
   onChanged: () => void | Promise<void>;
+  onOpenResultNote: (noteId: string) => void;
 }) {
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -254,7 +271,7 @@ export function ReminderWorkflowPanel({
       <header>
         <div>
           <Sparkles size={14} />
-          <strong>Agent workflow</strong>
+          <strong>Task workflow</strong>
         </div>
         <div className="reminder-workflow-header-actions">
           <WorkflowStatus status={workflow.status} />
@@ -314,12 +331,17 @@ export function ReminderWorkflowPanel({
         <div className="reminder-workflow-output">
           <span>Result</span>
           <p>{finalOutput}</p>
+          {workflow.resultNoteId ? (
+            <button type="button" onClick={() => onOpenResultNote(workflow.resultNoteId!)}>
+              <FileText size={14} /> Open result note
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      {workflow.status === "succeeded" && !workflow.steps.some(({ stepKind }) => stepKind.startsWith("external_")) ? (
+      {workflow.status === "succeeded" && workflow.resultNoteId ? (
         <p className="reminder-workflow-generated-only finished">
-          No external action was assigned. This workflow only generated the result above.
+          The final result was saved as a note linked to the parent note.
         </p>
       ) : null}
     </section>
@@ -368,7 +390,7 @@ export function ReminderWorkflowAssignment({
         onClick={() => setExpanded(true)}
       >
         <Sparkles size={14} />
-        Assign agents
+        Assign tasks
       </button>
     );
   }

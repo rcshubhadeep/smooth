@@ -8,6 +8,7 @@ import {
   FilePlus,
   FileText,
   Link2,
+  ListChecks,
   Loader2,
   Mail,
   MessageSquare,
@@ -60,9 +61,10 @@ export type AgentDefinition = {
   /** Optional cap on tool-use iterations; backend clamps to a safe range. */
   maxSteps?: number;
   source: AgentSource;
+  resultKind: "text" | "external_slack" | "external_gmail";
 };
 
-export type AgentIconName = "summary" | "links" | "overview" | "slack" | "email";
+export type AgentIconName = "summary" | "links" | "overview" | "slack" | "email" | "todo";
 
 // Mirrors `flow::AgentRunResult` / `flow::AgentRunStep` in the Rust backend.
 export type AgentRunStep = {
@@ -89,58 +91,20 @@ const AGENT_ICONS: Record<AgentIconName, typeof FileText> = {
   overview: Sparkles,
   slack: MessageSquare,
   email: Mail,
+  todo: ListChecks,
 };
 
-export const BUILTIN_AGENTS: AgentDefinition[] = [
-  {
-    id: "meeting-follow-up-email",
-    name: "Write follow-up email",
-    description: "Turns a meeting transcript into a short, action-oriented Gmail draft.",
-    scope: "note",
-    icon: "email",
-    source: "builtin",
-    instructions: "Prepare an editable follow-up email from this meeting transcript.",
-  },
-  {
-    id: "share-note-slack",
-    name: "Share to Slack",
-    description: "Reviews this note and posts it to a Slack channel or thread.",
-    scope: "note",
-    icon: "slack",
-    source: "builtin",
-    instructions: "Prepare this note for a user-approved Slack post.",
-  },
-  {
-    id: "summarize-note",
-    name: "Summarize this note",
-    description: "Reads the open note and distills it into a few sharp bullets.",
-    scope: "note",
-    icon: "summary",
-    source: "builtin",
-    instructions:
-      "Read the current note and write a concise summary: 3–5 bullet points capturing the key ideas, decisions, and any action items. Stay faithful to the note — do not invent details.",
-  },
-  {
-    id: "suggest-links",
-    name: "Suggest links",
-    description: "Finds related notes and explains why they connect.",
-    scope: "note",
-    icon: "links",
-    source: "builtin",
-    instructions:
-      "For the current note, find the most related notes in the knowledge bank. Recommend up to 5 to link, and for each give one short sentence on why it is relevant (shared topics, entities, or themes).",
-  },
-  {
-    id: "bank-overview",
-    name: "Knowledge bank overview",
-    description: "Surveys your notes and surfaces the main themes.",
-    scope: "global",
-    icon: "overview",
-    source: "builtin",
-    instructions:
-      "Search across the knowledge bank and identify the main recurring themes. For each theme give a short name, one line describing it, and list 2–3 representative note titles.",
-  },
-];
+type TaskDefinitionRecord = {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  scope: string;
+  icon: string;
+  maxSteps: number | null;
+  source: string;
+  resultKind: string;
+};
 
 /**
  * Build the prompt sent to `agent_run`. Note-scoped agents are handed the note
@@ -202,10 +166,12 @@ export type AgentDraft = {
   description: string;
   instructions: string;
   max_steps: number | null;
+  scope?: AgentScope;
+  icon?: AgentIconName;
 };
 
 function normalizeIcon(icon: string): AgentIconName {
-  return icon === "summary" || icon === "links" || icon === "slack" || icon === "email"
+  return icon === "summary" || icon === "links" || icon === "slack" || icon === "email" || icon === "todo"
     ? icon
     : "overview";
 }
@@ -220,7 +186,30 @@ function recordToAgent(record: AgentDefinitionRecord): AgentDefinition {
     icon: normalizeIcon(record.icon),
     maxSteps: record.max_steps ?? undefined,
     source: "user",
+    resultKind: "text",
   };
+}
+
+function taskRecordToAgent(record: TaskDefinitionRecord): AgentDefinition {
+  return {
+    id: record.id,
+    name: record.name,
+    description: record.description,
+    scope: record.scope === "note" ? "note" : "global",
+    instructions: record.instructions,
+    icon: normalizeIcon(record.icon),
+    maxSteps: record.maxSteps ?? undefined,
+    source: record.source === "user" ? "user" : "builtin",
+    resultKind:
+      record.resultKind === "external_slack" || record.resultKind === "external_gmail"
+        ? record.resultKind
+        : "text",
+  };
+}
+
+export async function listTasks(): Promise<AgentDefinition[]> {
+  const rows = await invoke<TaskDefinitionRecord[]>("agent_list_tasks");
+  return rows.map(taskRecordToAgent);
 }
 
 export async function listUserAgents(): Promise<AgentDefinition[]> {
@@ -232,6 +221,7 @@ export async function createUserAgent(draft: AgentDraft): Promise<AgentDefinitio
   const record = await invoke<AgentDefinitionRecord>("agent_create_definition", {
     definition: draft,
   });
+  window.dispatchEvent(new Event("smooth-agent-definitions-changed"));
   return recordToAgent(record);
 }
 
@@ -243,11 +233,13 @@ export async function updateUserAgent(
     id,
     definition: draft,
   });
+  window.dispatchEvent(new Event("smooth-agent-definitions-changed"));
   return recordToAgent(record);
 }
 
 export async function deleteUserAgent(id: string): Promise<void> {
   await invoke("agent_delete_definition", { id });
+  window.dispatchEvent(new Event("smooth-agent-definitions-changed"));
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +422,7 @@ type EditorState =
 // Custom (user-defined) agents are temporarily hidden while the creation flow
 // is being rethought. Flip to `true` to restore the "New agent" button, the
 // editor, and the "Your agents" section — all the code below stays intact.
-const CUSTOM_AGENTS_ENABLED = false;
+const CUSTOM_AGENTS_ENABLED = true;
 
 export function AgentsView({
   notes,
@@ -444,7 +436,7 @@ export function AgentsView({
   const [tab, setTab] = useState<"agents" | "history">("agents");
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const [inspect, setInspect] = useState<AgentDefinition | null>(null);
-  const [userAgents, setUserAgents] = useState<AgentDefinition[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<AgentDefinition[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
   // Inline confirm — native window.confirm() is blocked in the Tauri webview.
@@ -464,7 +456,7 @@ export function AgentsView({
 
   async function refresh() {
     try {
-      setUserAgents(await listUserAgents());
+      setAvailableAgents(await listTasks());
       setLoadError(null);
     } catch (error) {
       setLoadError(String(error));
@@ -472,8 +464,11 @@ export function AgentsView({
   }
 
   useEffect(() => {
-    if (CUSTOM_AGENTS_ENABLED) void refresh();
+    void refresh();
   }, []);
+
+  const builtinAgents = availableAgents.filter(({ source }) => source === "builtin");
+  const userAgents = availableAgents.filter(({ source }) => source === "user");
 
   useEffect(() => {
     let active = true;
@@ -505,7 +500,7 @@ export function AgentsView({
       setSlackShare({ note, provider });
       return;
     }
-    if (agent.id === "meeting-follow-up-email" && note) {
+    if (agent.id === "create-gmail-draft" && note) {
       setFollowUp({ note, provider });
       return;
     }
@@ -766,7 +761,7 @@ export function AgentsView({
           {CUSTOM_AGENTS_ENABLED ? (
             <h3 className="agent-section-label">Built-in</h3>
           ) : null}
-          <div className="agent-grid">{BUILTIN_AGENTS.map(renderCard)}</div>
+          <div className="agent-grid">{builtinAgents.map(renderCard)}</div>
 
           {CUSTOM_AGENTS_ENABLED ? (
             <>
@@ -1291,10 +1286,7 @@ export function NoteAgentsPanel({
   note: AgentNoteRef;
   onCreateNote: (content: string, sourcePrompt: string | null) => void;
 }) {
-  const agents = useMemo(
-    () => BUILTIN_AGENTS.filter((agent) => agent.scope === "note"),
-    [],
-  );
+  const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [run, setRun] = useState<NoteRunState>({ status: "idle" });
   const [slackProvider, setSlackProvider] = useState<LlmProvider | null | undefined>(undefined);
   const [followUpProvider, setFollowUpProvider] = useState<LlmProvider | null | undefined>(undefined);
@@ -1302,6 +1294,25 @@ export function NoteAgentsPanel({
   const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
   const [copied, setCopied] = useState(false);
   const busy = run.status === "running";
+
+  useEffect(() => {
+    let active = true;
+    const refreshTasks = () => {
+      void listTasks()
+        .then((tasks) => {
+          if (active) setAgents(tasks.filter((agent) => agent.scope === "note"));
+        })
+        .catch(() => {
+          if (active) setAgents([]);
+        });
+    };
+    refreshTasks();
+    window.addEventListener("smooth-agent-definitions-changed", refreshTasks);
+    return () => {
+      active = false;
+      window.removeEventListener("smooth-agent-definitions-changed", refreshTasks);
+    };
+  }, []);
 
   async function copyResult(text: string) {
     try {
@@ -1333,7 +1344,7 @@ export function NoteAgentsPanel({
       setSlackProvider(provider);
       return;
     }
-    if (agent.id === "meeting-follow-up-email") {
+    if (agent.id === "create-gmail-draft") {
       setFollowUpProvider(provider);
       return;
     }

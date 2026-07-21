@@ -75,7 +75,7 @@ pub(crate) async fn prepare_follow_up_email(
     );
     let mut recorder = AgentRunRecorder::start(
         app.clone(),
-        Some("meeting-follow-up-email"),
+        Some("create-gmail-draft"),
         "foreground",
         &run_prompt,
         1,

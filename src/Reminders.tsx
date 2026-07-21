@@ -356,9 +356,11 @@ export function ReminderCenter({
 export function RemindersView({
   onClose,
   onOpen,
+  onOpenNote,
 }: {
   onClose: () => void;
   onOpen: (reminder: ReminderRecord) => void;
+  onOpenNote: (noteId: string) => void;
 }) {
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [workflows, setWorkflows] = useState<ReminderWorkflowRecord[]>([]);
@@ -438,8 +440,8 @@ export function RemindersView({
           <p>Select text in a note and use the bell button in the editor toolbar to set one.</p>
         </div>
       ) : null}
-      {pending.length ? <ReminderList title="Upcoming" reminders={pending} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onWorkflowChanged={load} /> : null}
-      {history.length ? <ReminderHistory reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onDelete={remove} onClear={clearReminders} onWorkflowChanged={load} /> : null}
+      {pending.length ? <ReminderList title="Upcoming" reminders={pending} workflows={workflowsByReminder} now={now} onOpen={onOpen} onOpenNote={onOpenNote} onDelete={remove} onWorkflowChanged={load} /> : null}
+      {history.length ? <ReminderHistory reminders={history} workflows={workflowsByReminder} now={now} onOpen={onOpen} onOpenNote={onOpenNote} onDelete={remove} onClear={clearReminders} onWorkflowChanged={load} /> : null}
     </section>
   );
 }
@@ -449,6 +451,7 @@ function ReminderCard({
   workflow,
   now,
   onOpen,
+  onOpenNote,
   onDelete,
   onWorkflowChanged,
 }: {
@@ -456,6 +459,7 @@ function ReminderCard({
   workflow: ReminderWorkflowRecord | undefined;
   now: number;
   onOpen: (reminder: ReminderRecord) => void;
+  onOpenNote: (noteId: string) => void;
   onDelete: (id: string) => Promise<void>;
   onWorkflowChanged: () => void | Promise<void>;
 }) {
@@ -497,7 +501,7 @@ function ReminderCard({
           {reminder.comment ? <p>{reminder.comment}</p> : null}
         </button>
         {workflow ? (
-          <ReminderWorkflowPanel workflow={workflow} onChanged={onWorkflowChanged} />
+          <ReminderWorkflowPanel workflow={workflow} onChanged={onWorkflowChanged} onOpenResultNote={onOpenNote} />
         ) : reminder.status === "pending" ? (
           <ReminderWorkflowAssignment reminderId={reminder.id} onChanged={onWorkflowChanged} />
         ) : null}
@@ -534,6 +538,7 @@ function ReminderList({
   workflows,
   now,
   onOpen,
+  onOpenNote,
   onDelete,
   onWorkflowChanged,
 }: {
@@ -542,6 +547,7 @@ function ReminderList({
   workflows: Map<string, ReminderWorkflowRecord>;
   now: number;
   onOpen: (reminder: ReminderRecord) => void;
+  onOpenNote: (noteId: string) => void;
   onDelete: (id: string) => Promise<void>;
   onWorkflowChanged: () => void | Promise<void>;
 }) {
@@ -556,6 +562,7 @@ function ReminderList({
             workflow={workflows.get(reminder.id)}
             now={now}
             onOpen={onOpen}
+            onOpenNote={onOpenNote}
             onDelete={onDelete}
             onWorkflowChanged={onWorkflowChanged}
           />
@@ -599,6 +606,7 @@ function ReminderHistory({
   workflows,
   now,
   onOpen,
+  onOpenNote,
   onDelete,
   onClear,
   onWorkflowChanged,
@@ -607,6 +615,7 @@ function ReminderHistory({
   workflows: Map<string, ReminderWorkflowRecord>;
   now: number;
   onOpen: (reminder: ReminderRecord) => void;
+  onOpenNote: (noteId: string) => void;
   onDelete: (id: string) => Promise<void>;
   onClear: (ids: string[]) => Promise<void>;
   onWorkflowChanged: () => void | Promise<void>;
@@ -759,6 +768,7 @@ function ReminderHistory({
                       workflow={workflows.get(reminder.id)}
                       now={now}
                       onOpen={onOpen}
+                      onOpenNote={onOpenNote}
                       onDelete={onDelete}
                       onWorkflowChanged={onWorkflowChanged}
                     />

@@ -3264,6 +3264,7 @@ function App() {
             <RemindersView
               onClose={() => setView("notes")}
               onOpen={(reminder) => void openReminder(reminder)}
+              onOpenNote={(noteId) => void openNote(noteId)}
             />
           ) : (
             <div

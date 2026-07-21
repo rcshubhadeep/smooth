@@ -12,6 +12,7 @@
 //! - `tools`    — built-in tool implementations + registration.
 //! - `worker`   — background worker scaffold (not spawned yet).
 
+pub mod catalog;
 pub mod context;
 pub mod flow;
 pub mod follow_up;
@@ -102,6 +103,11 @@ pub(crate) fn agent_list_definitions(
     app: AppHandle,
 ) -> Result<Vec<persistence::AgentDefinitionRecord>, String> {
     persistence::list_definitions(app)
+}
+
+#[tauri::command]
+pub(crate) fn agent_list_tasks(app: AppHandle) -> Result<Vec<catalog::TaskDefinition>, String> {
+    catalog::list_tasks(app)
 }
 
 #[tauri::command]

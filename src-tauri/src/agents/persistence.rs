@@ -424,13 +424,27 @@ pub(crate) struct AgentDefinitionInput {
     pub(crate) instructions: String,
     #[serde(default)]
     pub(crate) max_steps: Option<i64>,
+    #[serde(default)]
+    pub(crate) scope: Option<String>,
+    #[serde(default)]
+    pub(crate) icon: Option<String>,
 }
 
 /// Validate + normalize user input. Keeping this in one place means both create
 /// and update enforce the same rules.
 fn clean_definition(
     input: &AgentDefinitionInput,
-) -> Result<(String, String, String, Option<i64>), String> {
+) -> Result<
+    (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    ),
+    String,
+> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err("Agent name is required".to_string());
@@ -440,11 +454,25 @@ fn clean_definition(
         return Err("Agent instructions are required".to_string());
     }
     let max_steps = input.max_steps.map(|value| value.clamp(1, 6));
+    let scope = match input.scope.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some("note") => Some("note".to_string()),
+        Some("global") => Some("global".to_string()),
+        Some(_) => return Err("Agent scope must be 'note' or 'global'".to_string()),
+    };
+    let icon = input
+        .icon
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     Ok((
         name.to_string(),
         input.description.trim().to_string(),
         instructions.to_string(),
         max_steps,
+        scope,
+        icon,
     ))
 }
 
@@ -483,7 +511,7 @@ pub(crate) fn create_definition(
     app: AppHandle,
     input: AgentDefinitionInput,
 ) -> Result<AgentDefinitionRecord, String> {
-    let (name, description, instructions, max_steps) = clean_definition(&input)?;
+    let (name, description, instructions, max_steps, scope, icon) = clean_definition(&input)?;
     let id = new_id("agent");
     let now = now_string();
 
@@ -492,8 +520,17 @@ pub(crate) fn create_definition(
         .execute(
             "INSERT INTO agent_definitions
                 (id, name, description, instructions, scope, icon, max_steps, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'global', 'overview', ?5, ?6, ?6)",
-            params![id, name, description, instructions, max_steps, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![
+                id,
+                name,
+                description,
+                instructions,
+                scope.as_deref().unwrap_or("global"),
+                icon.as_deref().unwrap_or("overview"),
+                max_steps,
+                now
+            ],
         )
         .map_err(db_error)?;
 
@@ -505,16 +542,26 @@ pub(crate) fn update_definition(
     id: String,
     input: AgentDefinitionInput,
 ) -> Result<AgentDefinitionRecord, String> {
-    let (name, description, instructions, max_steps) = clean_definition(&input)?;
+    let (name, description, instructions, max_steps, scope, icon) = clean_definition(&input)?;
     let now = now_string();
 
     let connection = open_database(&app)?;
     let changed = connection
         .execute(
             "UPDATE agent_definitions
-             SET name = ?2, description = ?3, instructions = ?4, max_steps = ?5, updated_at = ?6
+             SET name = ?2, description = ?3, instructions = ?4, max_steps = ?5,
+                 scope = COALESCE(?6, scope), icon = COALESCE(?7, icon), updated_at = ?8
              WHERE id = ?1",
-            params![id, name, description, instructions, max_steps, now],
+            params![
+                id,
+                name,
+                description,
+                instructions,
+                max_steps,
+                scope,
+                icon,
+                now
+            ],
         )
         .map_err(db_error)?;
     if changed == 0 {
@@ -545,6 +592,24 @@ fn read_definition(connection: &Connection, id: &str) -> Result<AgentDefinitionR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_note_scoped_task_definitions() {
+        let input = AgentDefinitionInput {
+            name: "Find objections".to_string(),
+            description: "Created from chat".to_string(),
+            instructions: "Were any objections raised?".to_string(),
+            max_steps: Some(3),
+            scope: Some("note".to_string()),
+            icon: Some("overview".to_string()),
+        };
+
+        let (_, _, _, max_steps, scope, icon) =
+            clean_definition(&input).expect("valid task definition");
+        assert_eq!(max_steps, Some(3));
+        assert_eq!(scope.as_deref(), Some("note"));
+        assert_eq!(icon.as_deref(), Some("overview"));
+    }
 
     #[test]
     fn init_schema_creates_agent_tables() {

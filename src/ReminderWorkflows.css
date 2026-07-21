@@ -505,6 +505,13 @@
   white-space: pre-wrap;
 }
 
+.reminder-workflow-output button {
+  align-items: center;
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
 .reminder-card:has(.reminder-workflow-panel) .reminder-row-actions {
   align-self: flex-start;
   padding-top: 12px;
