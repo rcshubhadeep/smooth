@@ -1529,10 +1529,15 @@ select:hover {
 .settings-field > select,
 .settings-input-row input {
   height: var(--control-h-lg);
+  /* Center the value in the fixed-height control: padding is 0 top/bottom, so
+     without this the glyphs sit by an inherited line-height and drift high. */
+  line-height: var(--control-h-lg);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   color: var(--text);
   background: var(--panel);
+  font-size: 13.5px;
+  font-weight: 500;
   outline: 0;
   transition:
     border-color var(--t) var(--ease),
@@ -5726,7 +5731,6 @@ body.resizing {
 .slack-share-dialog > .settings-field,
 .slack-share-ai,
 .slack-share-mode,
-.slack-share-hint,
 .slack-share-error {
   margin-right: 18px;
   margin-left: 18px;
@@ -5736,9 +5740,10 @@ body.resizing {
   margin-top: 16px;
 }
 
-.slack-share-hint {
-  margin-top: 6px;
-  margin-bottom: 0;
+/* Scoped with the dialog class so its inset beats `.slack-share-dialog p`,
+   which otherwise resets margins to 0 and shoves the hint to the far left. */
+.slack-share-dialog .slack-share-hint {
+  margin: 6px 18px 0;
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.45;
