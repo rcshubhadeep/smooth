@@ -240,6 +240,8 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     #[serde(default)]
+    context_length: Option<u64>,
+    #[serde(default)]
     meta: Option<ModelMeta>,
 }
 
@@ -304,6 +306,7 @@ async fn resolve_model(
             .find(|entry| entry.id == model)
             .unwrap_or(ModelEntry {
                 id: model,
+                context_length: None,
                 meta: None,
             })
     } else {
@@ -314,8 +317,8 @@ async fn resolve_model(
     };
 
     let context_tokens = entry
-        .meta
-        .and_then(|meta| meta.n_ctx.or(meta.n_ctx_train))
+        .context_length
+        .or_else(|| entry.meta.and_then(|meta| meta.n_ctx.or(meta.n_ctx_train)))
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value > 0);
 
@@ -1395,6 +1398,20 @@ mod tests {
 
         assert_eq!(budget.answer_max_tokens, 4096);
         assert_eq!(payload["reasoning_effort"], "low");
+        assert!(payload.get("reasoning_format").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn openrouter_kimi_chat_uses_standard_streaming_fields() {
+        let model = "moonshotai/kimi-k2.6";
+        let messages = [json!({ "role": "user", "content": "Summarize this note" })];
+        let payload = chat_stream_payload(model, &messages, 1024);
+
+        assert_eq!(payload["model"], model);
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["max_tokens"], 1024);
+        assert!(payload.get("reasoning_effort").is_none());
         assert!(payload.get("reasoning_format").is_none());
         assert!(payload.get("chat_template_kwargs").is_none());
     }

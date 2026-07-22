@@ -210,6 +210,19 @@ type ExtractionQueueStatus = {
   not_indexed: number;
 };
 
+type ExtractionJobView = {
+  id: number;
+  note_id: string;
+  note_title: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  updated_at: string;
+  last_error: string | null;
+  provider: string | null;
+  model: string | null;
+};
+
 type AgentToolDescriptor = {
   name: string;
   description: string;
@@ -3811,10 +3824,7 @@ const SETTINGS_NAV: {
   {
     group: "Knowledge",
     icon: Database,
-    items: [
-      { id: "entity-interests", label: "Entity interests" },
-      { id: "extraction-queue", label: "Extraction queue" },
-    ],
+    items: [{ id: "entity-interests", label: "Entity interests" }],
   },
   {
     group: "Integrations",
@@ -3828,7 +3838,10 @@ const SETTINGS_NAV: {
   {
     group: "Developer",
     icon: Wrench,
-    items: [{ id: "agent-tools", label: "Agent tools" }],
+    items: [
+      { id: "extraction-queue", label: "Extraction queue" },
+      { id: "agent-tools", label: "Agent tools" },
+    ],
   },
 ];
 
@@ -3864,6 +3877,7 @@ function SettingsView({
   const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(
     null,
   );
+  const [extractionJobs, setExtractionJobs] = useState<ExtractionJobView[]>([]);
   const [audioStatus, setAudioStatus] = useState<AudioCaptureStatus | null>(
     null,
   );
@@ -3965,10 +3979,14 @@ function SettingsView({
   }, []);
 
   const refreshQueueStatus = useCallback(async () => {
-    const nextQueueStatus = await invoke<ExtractionQueueStatus>(
-      "get_extraction_queue_status",
-    );
+    const [nextQueueStatus, nextJobs] = await Promise.all([
+      invoke<ExtractionQueueStatus>("get_extraction_queue_status"),
+      IS_DEV
+        ? invoke<ExtractionJobView[]>("list_extraction_jobs")
+        : Promise.resolve([]),
+    ]);
     setQueueStatus(nextQueueStatus);
+    setExtractionJobs(nextJobs);
     return nextQueueStatus;
   }, []);
 
@@ -4071,6 +4089,25 @@ function SettingsView({
       setQueueStatus(nextQueueStatus);
     } catch (queueError) {
       setSettingsError(String(queueError));
+    } finally {
+      setIsQueueBusy(false);
+    }
+  }
+
+  async function cancelExtractionJob(jobId: number) {
+    setIsQueueBusy(true);
+    setSettingsError(null);
+    try {
+      const nextQueueStatus = await invoke<ExtractionQueueStatus>(
+        "cancel_extraction_job",
+        { jobId },
+      );
+      setQueueStatus(nextQueueStatus);
+      setExtractionJobs((current) => current.filter((job) => job.id !== jobId));
+      toast.success("Extraction job cancelled");
+    } catch (queueError) {
+      setSettingsError(String(queueError));
+      await refreshQueueStatus().catch(() => undefined);
     } finally {
       setIsQueueBusy(false);
     }
@@ -4456,20 +4493,13 @@ function SettingsView({
             className="icon-button"
             type="button"
             onClick={() => {
-              if (!IS_DEV) {
-                // Re-read every Settings panel without reloading the webview
-                // or invoking action commands such as starting local AI.
-                setIsLoading(true);
-                setSettingsRefreshKey((current) => current + 1);
-                void refreshAllSettings()
-                  .catch((loadError) => setSettingsError(String(loadError)))
-                  .finally(() => setIsLoading(false));
-                return;
-              }
-              void refreshQueueStatus();
-              void refreshAudioStatus();
-              void refreshSystemCaptureStatus();
-              void refreshSttStatus();
+              // Re-read every Settings panel without invoking action commands
+              // such as starting the managed local model server.
+              setIsLoading(true);
+              setSettingsRefreshKey((current) => current + 1);
+              void refreshAllSettings()
+                .catch((loadError) => setSettingsError(String(loadError)))
+                .finally(() => setIsLoading(false));
             }}
             disabled={isLoading}
             title="Refresh connection status"
@@ -4506,7 +4536,7 @@ function SettingsView({
 
         <div
           className="settings-panes"
-          key={IS_DEV ? "development" : settingsRefreshKey}
+          key={settingsRefreshKey}
         >
           {settingsSection === "mcp" ? <McpSettings /> : null}
 
@@ -4943,6 +4973,7 @@ function SettingsView({
             {isEntityInterestBusy ? "Saving" : "Save interests"}
           </button>
         </div>
+
       </section>
 
       <section
@@ -5306,6 +5337,34 @@ function SettingsView({
           >
             Retry Failed
           </button>
+        </div>
+
+        <div className="extraction-job-list">
+          {extractionJobs.length ? (
+            extractionJobs.map((job) => (
+              <div className="extraction-job-row" key={job.id}>
+                <div>
+                  <strong>{job.note_title || job.note_id}</strong>
+                  <span>
+                    {job.status} · attempt {job.attempts}/{job.max_attempts}
+                    {job.provider ? ` · ${job.provider}` : " · default provider"}
+                    {job.model ? ` · ${job.model}` : ""}
+                  </span>
+                  {job.last_error ? <small>{job.last_error}</small> : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void cancelExtractionJob(job.id)}
+                  disabled={isQueueBusy}
+                  title={`Cancel extraction for ${job.note_title || job.note_id}`}
+                >
+                  <X size={14} /> Cancel
+                </button>
+              </div>
+            ))
+          ) : (
+            <p className="settings-help">No extraction jobs</p>
+          )}
         </div>
       </section>
         </div>
@@ -6140,7 +6199,7 @@ function EntityStrip({
           {extraction.status === "processing"
             ? "Extracting important entities..."
             : extraction.status === "queued"
-              ? "Waiting for the local model..."
+              ? "Waiting for the configured AI model..."
               : "No extracted entities"}
         </p>
       )}

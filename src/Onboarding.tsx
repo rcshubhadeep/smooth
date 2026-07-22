@@ -293,7 +293,7 @@ function AiStep() {
               type="password"
               value={apiKey}
               autoComplete="off"
-              placeholder="Paste your API key"
+              placeholder="Paste the provider API key"
               onChange={(event) => setApiKey(event.target.value)}
             />
           </label>
@@ -301,7 +301,7 @@ function AiStep() {
             <span>API URL</span>
             <input
               value={apiUrl}
-              placeholder="https://api.inceptionlabs.ai"
+              placeholder="https://openrouter.ai/api/v1"
               onChange={(event) => setApiUrl(event.target.value)}
             />
           </label>
@@ -310,7 +310,7 @@ function AiStep() {
               <span>Model</span>
               <input
                 value={model}
-                placeholder="mercury-2"
+                placeholder="provider/model-name"
                 onChange={(event) => setModel(event.target.value)}
               />
             </label>

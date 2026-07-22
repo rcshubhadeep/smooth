@@ -1012,6 +1012,28 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_kimi_agent_uses_openai_tool_shape() {
+        let model = "moonshotai/kimi-k2.6";
+        let messages = [json!({ "role": "user", "content": "Find the action items" })];
+        let tools = [json!({
+            "type": "function",
+            "function": {
+                "name": "search_notes",
+                "description": "Search notes",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        })];
+        let payload = agent_completion_payload(model, &messages, Some(&tools));
+
+        assert_eq!(payload["model"], model);
+        assert_eq!(payload["tool_choice"], "auto");
+        assert_eq!(payload["tools"][0]["type"], "function");
+        assert!(payload.get("reasoning_effort").is_none());
+        assert!(payload.get("reasoning_format").is_none());
+        assert!(payload.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
     fn parses_gemma_tool_call_arguments() {
         let text = r#"<|tool_call>call:search_notes{query:<|"|>Big note<|"|>,limit:5}<tool_call|><|tool_response>"#;
 

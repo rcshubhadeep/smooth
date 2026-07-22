@@ -2103,6 +2103,69 @@ select:hover {
   color: var(--danger);
 }
 
+.extraction-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.extraction-job-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.extraction-job-row > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.extraction-job-row strong,
+.extraction-job-row span,
+.extraction-job-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extraction-job-row span,
+.extraction-job-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.extraction-job-row button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.extraction-job-row button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
+.extraction-job-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .settings-actions {
   display: flex;
   align-items: center;

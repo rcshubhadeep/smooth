@@ -22,6 +22,7 @@ use audio_capture::{
     flush_audio_capture_chunk, get_audio_capture_status, start_audio_capture, stop_audio_capture,
     AudioCaptureState,
 };
+use futures_util::future::{AbortHandle, Abortable};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -210,6 +211,8 @@ struct LlamaModelsResponse {
 struct LlamaModelResponse {
     id: String,
     owned_by: Option<String>,
+    #[serde(default)]
+    context_length: Option<u64>,
     meta: Option<LlamaModelMeta>,
 }
 
@@ -228,6 +231,47 @@ struct ExtractionQueueStatus {
     failed: u64,
     indexed: u64,
     not_indexed: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ExtractionJobView {
+    id: i64,
+    note_id: String,
+    note_title: String,
+    status: String,
+    attempts: u32,
+    max_attempts: u32,
+    updated_at: String,
+    last_error: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Default)]
+struct ExtractionCancellationState {
+    active: Mutex<HashMap<i64, AbortHandle>>,
+}
+
+impl ExtractionCancellationState {
+    fn register(&self, job_id: i64, handle: AbortHandle) {
+        if let Ok(mut active) = self.active.lock() {
+            active.insert(job_id, handle);
+        }
+    }
+
+    fn abort(&self, job_id: i64) {
+        if let Ok(mut active) = self.active.lock() {
+            if let Some(handle) = active.remove(&job_id) {
+                handle.abort();
+            }
+        }
+    }
+
+    fn finish(&self, job_id: i64) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&job_id);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1235,6 +1279,46 @@ fn clear_extraction_job(
     Ok(())
 }
 
+fn cancel_extraction_job_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    job_id: i64,
+) -> Result<bool, String> {
+    let job = transaction
+        .query_row(
+            "SELECT note_id, content_hash FROM extraction_jobs WHERE id = ?1",
+            params![job_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some((note_id, job_hash)) = job else {
+        return Ok(false);
+    };
+
+    transaction
+        .execute("DELETE FROM extraction_jobs WHERE id = ?1", params![job_id])
+        .map_err(db_error)?;
+    transaction
+        .execute(
+            "
+            UPDATE notes
+            SET content_hash = CASE
+                    WHEN indexed_content_hash = ?1 THEN indexed_content_hash
+                    ELSE NULL
+                END,
+                extraction_status = CASE
+                    WHEN indexed_content_hash = ?1 THEN 'indexed'
+                    ELSE 'not_indexed'
+                END,
+                extraction_error = NULL
+            WHERE id = ?2
+            ",
+            params![job_hash, note_id],
+        )
+        .map_err(db_error)?;
+    Ok(true)
+}
+
 fn extraction_budget(context_tokens: Option<usize>, model: &str) -> ExtractionBudget {
     let context_tokens = context_tokens.unwrap_or(DEFAULT_EXTRACTION_CONTEXT_TOKENS);
     let reserve_tokens = EXTRACTION_CONTEXT_RESERVE_TOKENS.min(context_tokens / 8);
@@ -1269,9 +1353,13 @@ fn extraction_budget(context_tokens: Option<usize>, model: &str) -> ExtractionBu
 
 fn model_context_tokens(model: &LlamaModelResponse) -> Option<usize> {
     model
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.n_ctx.or(meta.n_ctx_train))
+        .context_length
+        .or_else(|| {
+            model
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.n_ctx.or(meta.n_ctx_train))
+        })
         .and_then(|value| usize::try_from(value).ok())
 }
 
@@ -2780,7 +2868,19 @@ async fn extraction_worker(app: AppHandle) {
             }
         };
 
-        if let Err(error) = process_extraction_job(&app, &client, &config, &model, &job).await {
+        if !extraction_job_is_current(&app, &job).unwrap_or(false) {
+            continue;
+        }
+        let cancellations = app.state::<ExtractionCancellationState>();
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        cancellations.register(job.id, abort_handle);
+        let result = Abortable::new(
+            process_extraction_job(&app, &client, &config, &model, &job),
+            abort_registration,
+        )
+        .await;
+        cancellations.finish(job.id);
+        if let Ok(Err(error)) = result {
             let _ = fail_extraction_job(&app, &job, &error);
         }
     }
@@ -3407,6 +3507,66 @@ fn get_extraction_queue_status(app: AppHandle) -> Result<ExtractionQueueStatus, 
         indexed: note_count("indexed")?,
         not_indexed: note_count("not_indexed")?,
     })
+}
+
+#[tauri::command]
+fn list_extraction_jobs(app: AppHandle) -> Result<Vec<ExtractionJobView>, String> {
+    let connection = open_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT j.id, j.note_id, n.title, j.status, j.attempts,
+                   j.max_attempts, j.updated_at, j.last_error,
+                   j.llm_provider, j.llm_model
+            FROM extraction_jobs j
+            JOIN notes n ON n.id = j.note_id
+            ORDER BY
+                CASE j.status
+                    WHEN 'processing' THEN 0
+                    WHEN 'pending' THEN 1
+                    ELSE 2
+                END,
+                CAST(j.updated_at AS INTEGER) DESC,
+                j.id DESC
+            ",
+        )
+        .map_err(db_error)?;
+    let jobs = statement
+        .query_map([], |row| {
+            Ok(ExtractionJobView {
+                id: row.get(0)?,
+                note_id: row.get(1)?,
+                note_title: row.get(2)?,
+                status: row.get(3)?,
+                attempts: row.get(4)?,
+                max_attempts: row.get(5)?,
+                updated_at: row.get(6)?,
+                last_error: row.get(7)?,
+                provider: row.get(8)?,
+                model: row.get(9)?,
+            })
+        })
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    Ok(jobs)
+}
+
+#[tauri::command]
+fn cancel_extraction_job(
+    app: AppHandle,
+    job_id: i64,
+) -> Result<ExtractionQueueStatus, String> {
+    let mut connection = open_database(&app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    if !cancel_extraction_job_in_transaction(&transaction, job_id)? {
+        return Err("Extraction job no longer exists".to_string());
+    }
+    transaction.commit().map_err(db_error)?;
+    app.state::<ExtractionCancellationState>().abort(job_id);
+    get_extraction_queue_status(app)
 }
 
 #[tauri::command]
@@ -4777,11 +4937,14 @@ async fn suggest_chat_created_link_label(
         "max_tokens": 32,
         "stream": false
     });
-    if llm::is_mercury_model(&model) {
-        payload["reasoning_effort"] = json!("instant");
-    } else {
-        payload["reasoning_format"] = json!("none");
-        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    // Remote gateways only receive fields from the OpenAI-compatible API.
+    if target.provider != llm::LlmProvider::Remote {
+        if llm::is_mercury_model(&model) {
+            payload["reasoning_effort"] = json!("instant");
+        } else {
+            payload["reasoning_format"] = json!("none");
+            payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        }
     }
     let response = client
         .post(llama_endpoint(&config.base_url, "/v1/chat/completions"))
@@ -4939,6 +5102,7 @@ pub fn run() {
         .manage(AudioCaptureState::default())
         .manage(SystemAudioCaptureState::default())
         .manage(SttRuntime::default())
+        .manage(ExtractionCancellationState::default())
         .manage(llama_runtime::LlamaRuntimeState::default())
         .manage(diarization::DiarizationState::default())
         .manage(slack::SlackState::default())
@@ -4987,6 +5151,8 @@ pub fn run() {
             start_llama_server,
             stop_llama_server,
             get_extraction_queue_status,
+            list_extraction_jobs,
+            cancel_extraction_job,
             get_note_extraction,
             rename_entity,
             get_entity_interests,
@@ -5234,6 +5400,41 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_an_extraction_job_invalidates_it_and_resets_the_note() {
+        let mut connection = queue_test_database();
+        let transaction = connection.transaction().expect("enqueue transaction");
+        force_enqueue_extraction(&transaction, "note-1", "current-hash").expect("enqueue");
+        transaction.commit().expect("commit enqueue");
+        let job_id = connection
+            .query_row("SELECT id FROM extraction_jobs", [], |row| row.get::<_, i64>(0))
+            .expect("job id");
+
+        let transaction = connection.transaction().expect("cancel transaction");
+        assert!(cancel_extraction_job_in_transaction(&transaction, job_id).expect("cancel"));
+        transaction.commit().expect("commit cancel");
+
+        let job_count = connection
+            .query_row("SELECT COUNT(*) FROM extraction_jobs", [], |row| row.get::<_, u64>(0))
+            .expect("job count");
+        let note_state = connection
+            .query_row(
+                "SELECT content_hash, extraction_status, extraction_error FROM notes WHERE id = 'note-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .expect("note state");
+
+        assert_eq!(job_count, 0);
+        assert_eq!(note_state, (None, "not_indexed".to_string(), None));
+    }
+
+    #[test]
     fn parses_schema_json_after_model_channel_prefix() {
         let content = r#"<|channel>thought
 <channel|>{"entities":[{"name":"Google","entity_type":"ORGANIZATION","surface_text":"Google","context":"Google announced","confidence":0.98,"aliases":[]}]}"#;
@@ -5345,8 +5546,8 @@ Generation prompt:
 
     #[test]
     fn remote_extraction_uses_only_openai_compatible_fields() {
-        let model = "mercury-2";
-        let budget = extraction_budget(Some(128_000), model);
+        let model = "moonshotai/kimi-k2.6";
+        let budget = extraction_budget(Some(262_144), model);
         let payload = extraction_request_payload(
             model,
             true,
@@ -5357,7 +5558,7 @@ Generation prompt:
             ExtractionResponseMode::StrictSchema,
         );
 
-        assert_eq!(budget.max_entities, 32);
+        assert_eq!(budget.max_entities, 64);
         assert_eq!(payload["response_format"]["type"], "json_schema");
         assert!(payload.get("reasoning_effort").is_none());
         assert!(payload.get("reasoning_format").is_none());
@@ -5422,6 +5623,24 @@ Generation prompt:
             llama_endpoint("https://api.example.com/openai/v1", "/v1/models"),
             "https://api.example.com/openai/v1/models"
         );
+        assert_eq!(
+            llama_endpoint("https://openrouter.ai/api/v1", "/v1/chat/completions"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn reads_openrouter_context_length_metadata() {
+        let response = serde_json::from_value::<LlamaModelsResponse>(json!({
+            "data": [{
+                "id": "moonshotai/kimi-k2.6",
+                "owned_by": "moonshotai",
+                "context_length": 262144
+            }]
+        }))
+        .expect("OpenRouter models response");
+
+        assert_eq!(model_context_tokens(&response.data[0]), Some(262_144));
     }
 
     #[test]
