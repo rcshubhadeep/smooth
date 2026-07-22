@@ -192,19 +192,6 @@ struct SmoothSystemAudio {
     private static func visualSources(from content: SCShareableContent) -> [[String: Any]] {
         var sources: [[String: Any]] = []
 
-        for (index, display) in content.displays.enumerated() {
-            sources.append([
-                "id": "display:\(display.displayID)",
-                "kind": "display",
-                "name": "Display \(index + 1)",
-                "display_id": Int(display.displayID),
-                "window_id": NSNull(),
-                "app_name": NSNull(),
-                "width": display.width,
-                "height": display.height
-            ])
-        }
-
         for window in content.windows {
             let title = (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let appName = (window.owningApplication?.applicationName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -220,6 +207,10 @@ struct SmoothSystemAudio {
             }
 
             guard !title.isEmpty || !appName.isEmpty else {
+                continue
+            }
+
+            guard shouldOfferVisualWindow(appName: appName, title: title) else {
                 continue
             }
 
@@ -245,6 +236,102 @@ struct SmoothSystemAudio {
         }
 
         return sources
+    }
+
+    private static func shouldOfferVisualWindow(appName: String, title: String) -> Bool {
+        let normalizedApp = appName.lowercased()
+
+        if isBrowser(normalizedApp) {
+            return isLikelyMeetingBrowserWindow(title.lowercased())
+        }
+
+        // Dedicated communication and meeting applications are useful capture
+        // targets even when macOS gives their call window a generic title.
+        let communicationApps = [
+            "slack",
+            "zoom",
+            "zoom.us",
+            "zoom workplace",
+            "microsoft teams",
+            "teams",
+            "webex",
+            "cisco webex",
+            "facetime",
+            "discord",
+            "skype",
+            "google meet",
+            "whereby",
+            "jitsi meet",
+            "around",
+            "riverside",
+            "dialpad",
+            "ringcentral",
+            "amazon chime",
+            "gotomeeting"
+        ]
+
+        return communicationApps.contains { appNameMatches(normalizedApp, candidate: $0) }
+    }
+
+    private static func isBrowser(_ normalizedApp: String) -> Bool {
+        let browsers = [
+            "safari",
+            "safari technology preview",
+            "google chrome",
+            "chromium",
+            "firefox",
+            "arc",
+            "brave browser",
+            "microsoft edge",
+            "opera",
+            "vivaldi",
+            "orion",
+            "dia"
+        ]
+
+        return browsers.contains { appNameMatches(normalizedApp, candidate: $0) }
+    }
+
+    private static func appNameMatches(_ appName: String, candidate: String) -> Bool {
+        appName == candidate
+            || appName.hasPrefix("\(candidate) ")
+            || appName.hasPrefix("\(candidate)-")
+    }
+
+    private static func isLikelyMeetingBrowserWindow(_ normalizedTitle: String) -> Bool {
+        guard !normalizedTitle.isEmpty else {
+            return false
+        }
+
+        let meetingTitleMarkers = [
+            "google meet",
+            "meet -",
+            "- meet",
+            "zoom meeting",
+            "zoom webinar",
+            "microsoft teams",
+            "teams meeting",
+            "slack huddle",
+            "huddle",
+            "webex",
+            "whereby",
+            "jitsi",
+            "around meeting",
+            "riverside studio",
+            "dialpad meeting",
+            "ringcentral video",
+            "amazon chime",
+            "gotomeeting",
+            "livestorm",
+            "demodesk",
+            "meet.google.com",
+            "teams.microsoft.com",
+            "zoom.us",
+            "app.slack.com"
+        ]
+
+        return normalizedTitle == "meet"
+            || meetingTitleMarkers.contains(where: normalizedTitle.contains)
     }
 
     fileprivate static func writeJSON(_ object: [String: Any]) {
