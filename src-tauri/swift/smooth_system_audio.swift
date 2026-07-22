@@ -77,7 +77,13 @@ struct SmoothSystemAudio {
     private static func listVisualSources() async {
         if #available(macOS 12.3, *) {
             do {
-                let content = try await SCShareableContent.current
+                // Ask ScreenCaptureKit for windows from every Space. Browsers
+                // are commonly kept full-screen, behind another app, or in a
+                // Stage Manager set, all of which can make `isOnScreen` false.
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    true,
+                    onScreenWindowsOnly: false
+                )
                 writeJSON([
                     "type": "sources",
                     "sources": visualSources(from: content)
@@ -205,7 +211,11 @@ struct SmoothSystemAudio {
             let width = Int(window.frame.width.rounded())
             let height = Int(window.frame.height.rounded())
 
-            guard window.isOnScreen, window.windowLayer == 0, width >= 80, height >= 60 else {
+            // SCShareableContent has already limited this collection to
+            // capturable windows. Keep normal application windows of a useful
+            // size, but do not discard windows solely because they are on a
+            // different Space or currently occluded.
+            guard window.windowLayer == 0, width >= 80, height >= 60 else {
                 continue
             }
 
@@ -287,7 +297,10 @@ private enum SnapshotCapture {
     }
 
     static func capture(sourceID: String, outputPath: String) async throws -> Result {
-        let content = try await SCShareableContent.current
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            true,
+            onScreenWindowsOnly: false
+        )
         let target = try captureTarget(sourceID: sourceID, content: content)
         let image = try await captureImage(using: target.captures, fallbackRect: target.fallbackRect)
 
@@ -420,7 +433,13 @@ private enum SnapshotCapture {
             }
 
             var captures: [FilterCapture] = []
-            if let display = displayContaining(window: window, displays: content.displays) {
+            // Preserve the display-crop path for visible windows because it is
+            // the most reliable way to include their exact on-screen pixels.
+            // Off-screen windows must use a desktop-independent filter; a crop
+            // would otherwise capture whatever occupies that rectangle on the
+            // current Space.
+            if window.isOnScreen,
+               let display = displayContaining(window: window, displays: content.displays) {
                 if let cropRect = sourceRect(for: window, on: display) {
                     captures.append(FilterCapture(
                         label: "display-crop",
@@ -433,7 +452,12 @@ private enum SnapshotCapture {
                     ))
                 }
             }
-            return (captures, window.frame)
+            captures.append(FilterCapture(
+                label: "desktop-independent-window",
+                filter: SCContentFilter(desktopIndependentWindow: window),
+                sourceRect: nil
+            ))
+            return (captures, window.isOnScreen ? window.frame : nil)
         }
 
         throw SnapshotError.invalidSourceID(sourceID)
