@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import type { TokenResponse } from "@choochmeque/tauri-plugin-google-auth-api";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
@@ -482,7 +484,33 @@ const CALENDAR_READONLY_SCOPE =
   "https://www.googleapis.com/auth/calendar.readonly";
 
 function markdownToHtml(markdown: string) {
-  return marked.parse(markdown || "", { async: false }) as string;
+  const html = marked.parse(markdown || "", { async: false }) as string;
+  if (!html.includes('type="checkbox"')) {
+    return html;
+  }
+
+  // Marked emits ordinary list items containing disabled checkbox inputs.
+  // TipTap's task-list extension expects semantic data attributes instead and
+  // renders the interactive checkbox itself.
+  const document = new DOMParser().parseFromString(html, "text/html");
+  document.body.querySelectorAll("li").forEach((item) => {
+    const checkbox = Array.from(item.children).find(
+      (child) =>
+        child instanceof HTMLInputElement && child.type === "checkbox",
+    );
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return;
+    }
+
+    item.dataset.type = "taskItem";
+    item.dataset.checked = checkbox.checked ? "true" : "false";
+    checkbox.remove();
+    if (item.parentElement?.tagName === "UL") {
+      item.parentElement.dataset.type = "taskList";
+    }
+  });
+
+  return document.body.innerHTML;
 }
 
 function markdownToExcerpt(markdown: string) {
@@ -1579,19 +1607,22 @@ function App() {
   async function createNoteFromContent(
     content: string,
     sourcePrompt: string | null = null,
+    title: string | null = null,
   ) {
     const parentId = activeNote?.id ?? null;
+    const folderId = activeNote?.folder_id ?? null;
+    const cleanTitle = title?.trim() || null;
     try {
       setError(null);
       const note = await invoke<NoteWithContent>("create_note", {
-        title: null,
-        folderId: null,
+        title: cleanTitle,
+        folderId,
       });
       const saved = await invoke<NoteWithContent>("save_note", {
         id: note.id,
-        title: "",
+        title: cleanTitle ?? "",
         content,
-        folderId: null,
+        folderId,
       });
       if (parentId) {
         const bank = await invoke<BankSnapshot>("link_chat_created_note", {
@@ -6274,14 +6305,21 @@ function NoteEditor({
   const dictationSessionIdRef = useRef<string | null>(null);
   const dictationSequenceRef = useRef(0);
   const insertedDictationRef = useRef(false);
-  const turndown = useMemo(
-    () =>
-      new TurndownService({
-        headingStyle: "atx",
-        bulletListMarker: "-",
-      }),
-    [],
-  );
+  const turndown = useMemo(() => {
+    const service = new TurndownService({
+      headingStyle: "atx",
+      bulletListMarker: "-",
+    });
+    service.addRule("taskItem", {
+      filter: (node) =>
+        node.nodeName === "LI" && node.getAttribute("data-type") === "taskItem",
+      replacement: (content, node) => {
+        const checked = node.getAttribute("data-checked") === "true";
+        return `\n- [${checked ? "x" : " "}] ${content.trim()}\n`;
+      },
+    });
+    return service;
+  }, []);
 
   useEffect(() => {
     if (!folderMenuOpen) {
@@ -6295,6 +6333,8 @@ function NoteEditor({
   const editor = useEditor({
     extensions: [
       StarterKit,
+      TaskList,
+      TaskItem.configure({ nested: true }),
       Image.configure({
         allowBase64: false,
         inline: false,
@@ -7228,6 +7268,7 @@ type ContextPanelProps = {
   onCreateNoteFromContent: (
     content: string,
     sourcePrompt: string | null,
+    title?: string | null,
   ) => void;
   onRenameSpeaker: (oldName: string, newName: string) => void;
   onRenameLink: (

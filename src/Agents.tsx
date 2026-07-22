@@ -1284,7 +1284,11 @@ export function NoteAgentsPanel({
   onCreateNote,
 }: {
   note: AgentNoteRef;
-  onCreateNote: (content: string, sourcePrompt: string | null) => void;
+  onCreateNote: (
+    content: string,
+    sourcePrompt: string | null,
+    title?: string | null,
+  ) => void;
 }) {
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [run, setRun] = useState<NoteRunState>({ status: "idle" });
@@ -1442,7 +1446,15 @@ export function NoteAgentsPanel({
                 type="button"
                 className="ghost-icon"
                 title="Create a note from this"
-                onClick={() => onCreateNote(run.result.answer, null)}
+                onClick={() =>
+                  onCreateNote(
+                    run.result.answer,
+                    null,
+                    run.agent.id === "create-todo"
+                      ? `TO-DO — ${note.title}`
+                      : `${run.agent.name} — ${note.title}`,
+                  )
+                }
               >
                 <FilePlus size={14} />
               </button>

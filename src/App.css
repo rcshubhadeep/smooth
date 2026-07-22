@@ -3962,6 +3962,45 @@ select:hover {
   margin-bottom: 0.25em;
 }
 
+.editor-surface ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.editor-surface li[data-type="taskItem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65em;
+  margin-bottom: 0.45em;
+}
+
+.editor-surface li[data-type="taskItem"] > label {
+  flex: 0 0 auto;
+  margin-top: 0.16em;
+  user-select: none;
+}
+
+.editor-surface li[data-type="taskItem"] > label input {
+  width: 1em;
+  height: 1em;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.editor-surface li[data-type="taskItem"] > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-surface li[data-type="taskItem"] > div > p {
+  margin: 0;
+}
+
+.editor-surface li[data-type="taskItem"] ul[data-type="taskList"] {
+  margin-top: 0.45em;
+  padding-left: 1.4em;
+}
+
 .editor-surface blockquote {
   margin: 1em 0;
   padding-left: 1em;
