@@ -59,12 +59,8 @@ import {
 } from "lucide-react";
 import { Bot } from "lucide-react";
 import {
-  AgentRunResultView,
   AgentsView,
   NoteAgentsPanel,
-  listTasks,
-  runAgent,
-  type AgentDefinition,
   type AgentRunResult,
 } from "./Agents";
 import LlmRunChoiceDialog from "./LlmRunChoice";
@@ -3570,7 +3566,6 @@ function App() {
 
       {meetingTasksOpen && meetingState !== "idle" && meetingNoteId ? (
         <MeetingTasksPanel
-          note={{ id: meetingNoteId, title: meetingNoteTitle }}
           endWorkflowSteps={meetingEndWorkflowSteps}
           onEndWorkflowStepsChange={setMeetingEndWorkflowSteps}
           onClose={() => setMeetingTasksOpen(false)}
@@ -3682,151 +3677,29 @@ function MeetingQuickNotesPanel({
   );
 }
 
-type MeetingLiveTaskState =
-  | { status: "idle" }
-  | { status: "running"; task: AgentDefinition }
-  | { status: "done"; task: AgentDefinition; result: AgentRunResult }
-  | { status: "error"; task: AgentDefinition; message: string };
-
 function MeetingTasksPanel({
-  note,
   endWorkflowSteps,
   onEndWorkflowStepsChange,
   onClose,
 }: {
-  note: { id: string; title: string };
   endWorkflowSteps: ReminderWorkflowStepDraft[];
   onEndWorkflowStepsChange: (steps: ReminderWorkflowStepDraft[]) => void;
   onClose: () => void;
 }) {
-  const [tasks, setTasks] = useState<AgentDefinition[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [liveRun, setLiveRun] = useState<MeetingLiveTaskState>({ status: "idle" });
-  const [mode, setMode] = useState<"live" | "after">("live");
-
-  useEffect(() => {
-    let active = true;
-    const refresh = () => {
-      void listTasks()
-        .then((available) => {
-          if (!active) return;
-          setTasks(
-            available.filter(
-              ({ scope, resultKind }) => scope === "note" && resultKind === "text",
-            ),
-          );
-          setLoadError(null);
-        })
-        .catch((reason) => {
-          if (active) setLoadError(String(reason));
-        });
-    };
-    refresh();
-    window.addEventListener("smooth-agent-definitions-changed", refresh);
-    return () => {
-      active = false;
-      window.removeEventListener("smooth-agent-definitions-changed", refresh);
-    };
-  }, []);
-
-  async function execute(task: AgentDefinition) {
-    setLiveRun({ status: "running", task });
-    try {
-      const preferences = await loadLlmPreferences().catch(() => ({
-        defaultProvider: "local" as const,
-        alwaysObeyGlobal: false,
-      }));
-      const result = await runAgent(task, note, preferences.defaultProvider);
-      setLiveRun({ status: "done", task, result });
-    } catch (reason) {
-      setLiveRun({ status: "error", task, message: String(reason) });
-    }
-  }
-
   return (
-    <section className="meeting-tasks-panel" aria-label="On-call tasks">
+    <section className="meeting-tasks-panel" aria-label="After-call tasks">
       <header>
         <div>
           <Wrench size={15} />
-          <strong>On-call tasks</strong>
+          <strong>After-call tasks</strong>
         </div>
-        <button type="button" onClick={onClose} title="Close on-call tasks">
+        <button type="button" onClick={onClose} title="Close after-call tasks">
           <X size={15} />
         </button>
       </header>
 
-      <div className="meeting-task-modes" role="tablist" aria-label="Task timing">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "live"}
-          className={mode === "live" ? "active" : ""}
-          onClick={() => setMode("live")}
-        >
-          Live now
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "after"}
-          className={mode === "after" ? "active" : ""}
-          onClick={() => setMode("after")}
-        >
-          After call
-          {endWorkflowSteps.length > 0 ? <span>{endWorkflowSteps.length}</span> : null}
-        </button>
-      </div>
-
       <div className="meeting-tasks-content">
-        {mode === "live" ? <section className="meeting-live-tasks">
-          <div className="meeting-tasks-heading">
-            <div>
-              <strong>Live tasks run immediately</strong>
-              <p>Each click uses the transcript captured so far.</p>
-            </div>
-            {liveRun.status !== "idle" ? (
-              <button type="button" onClick={() => setLiveRun({ status: "idle" })}>
-                Clear
-              </button>
-            ) : null}
-          </div>
-
-          {loadError ? <p className="meeting-task-error">{loadError}</p> : null}
-          <div className="meeting-live-task-list">
-            {tasks.map((task) => (
-              <button
-                type="button"
-                key={task.id}
-                disabled={liveRun.status === "running"}
-                onClick={() => void execute(task)}
-              >
-                <span>{task.name}</span>
-                <small>Run now</small>
-              </button>
-            ))}
-          </div>
-
-          {liveRun.status === "running" ? (
-            <div className="meeting-task-running">
-              <Loader2 size={14} className="spin" />
-              <span>{liveRun.task.name} is working</span>
-            </div>
-          ) : null}
-          {liveRun.status === "error" ? (
-            <div className="meeting-task-error">
-              <strong>{liveRun.task.name}</strong>
-              <span>{liveRun.message}</span>
-            </div>
-          ) : null}
-          {liveRun.status === "done" ? (
-            <div className="meeting-task-result">
-              <strong>{liveRun.task.name}</strong>
-              <AgentRunResultView result={liveRun.result} />
-            </div>
-          ) : null}
-        </section> : null}
-
-        {mode === "after" ? <section className="meeting-end-tasks">
+        <section className="meeting-end-tasks">
           <ReminderWorkflowBuilder
             steps={endWorkflowSteps}
             onChange={onEndWorkflowStepsChange}
@@ -3837,10 +3710,10 @@ function MeetingTasksPanel({
             automaticLabel="Runs after the call"
           />
           <p className="meeting-end-task-note">
-            Nothing in this tab runs during the call. Text results become linked notes;
+            These tasks do not run during the call. Text results become linked notes;
             Gmail and Slack drafts wait for approval.
           </p>
-        </section> : null}
+        </section>
       </div>
     </section>
   );
@@ -3933,7 +3806,7 @@ function MeetingCapsule({
             className={tasksOpen ? "active" : ""}
             type="button"
             onClick={onToggleTasks}
-            title="On-call tasks"
+            title="Assign tasks for after the call"
           >
             <Wrench size={15} />
             Tasks
