@@ -1310,6 +1310,8 @@ export function NoteAgentsPanel({
   const [llmPreferences, setLlmPreferences] = useState<LlmPreferences | null>(null);
   const [pendingAgent, setPendingAgent] = useState<AgentDefinition | null>(null);
   const [copied, setCopied] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const busy = run.status === "running";
 
   useEffect(() => {
@@ -1338,6 +1340,23 @@ export function NoteAgentsPanel({
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       /* clipboard unavailable — ignore */
+    }
+  }
+
+  async function removeTask(agent: AgentDefinition) {
+    if (agent.source !== "user") return;
+    setDeleteError(null);
+    try {
+      await deleteUserAgent(agent.id);
+      setAgents((current) => current.filter(({ id }) => id !== agent.id));
+      setConfirmDeleteId(null);
+      setRun((current) =>
+        current.status !== "idle" && current.agent.id === agent.id
+          ? { status: "idle" }
+          : current,
+      );
+    } catch (reason) {
+      setDeleteError(String(reason));
     }
   }
 
@@ -1406,23 +1425,59 @@ export function NoteAgentsPanel({
                 <strong>{agent.name}</strong>
                 <span>{agent.description}</span>
               </div>
-              <button
-                type="button"
-                className="agent-run-btn sm"
-                disabled={busy}
-                onClick={() => void start(agent)}
-              >
-                {isRunning ? (
-                  <Loader2 size={13} className="spin" />
-                ) : (
-                  <Play size={13} />
-                )}
-                Run
-              </button>
+              {confirmDeleteId === agent.id ? (
+                <div className="note-agent-delete-confirm">
+                  <span>Delete?</span>
+                  <button type="button" onClick={() => setConfirmDeleteId(null)}>
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void removeTask(agent)}
+                  >
+                    Yes
+                  </button>
+                </div>
+              ) : (
+                <div className="note-agent-actions">
+                  {agent.source === "user" ? (
+                    <button
+                      type="button"
+                      className="ghost-icon danger"
+                      title={`Delete task “${agent.name}”`}
+                      aria-label={`Delete task ${agent.name}`}
+                      onClick={() => setConfirmDeleteId(agent.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="agent-run-btn sm"
+                    disabled={busy}
+                    onClick={() => void start(agent)}
+                  >
+                    {isRunning ? (
+                      <Loader2 size={13} className="spin" />
+                    ) : (
+                      <Play size={13} />
+                    )}
+                    Run
+                  </button>
+                </div>
+              )}
             </li>
           );
         })}
       </ul>
+
+      {deleteError ? (
+        <div className="agent-run-state error sm">
+          <AlertTriangle size={15} />
+          <span>{deleteError}</span>
+        </div>
+      ) : null}
 
       {run.status === "running" ? (
         <div className="agent-run-state busy sm">

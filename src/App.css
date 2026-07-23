@@ -5949,6 +5949,48 @@ body.resizing {
   flex-shrink: 0;
 }
 
+.note-agent-actions,
+.note-agent-delete-confirm {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.note-agent-actions .ghost-icon {
+  width: 28px;
+  height: 28px;
+}
+
+.note-agent-delete-confirm {
+  padding: 3px 4px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-radius: 7px;
+  background: var(--danger-soft);
+}
+
+.note-agent-delete-confirm span {
+  color: var(--danger);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.note-agent-delete-confirm button {
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.note-agent-delete-confirm button.danger {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+
 .agent-run-state.sm {
   padding: 10px 12px;
   font-size: 12.5px;
