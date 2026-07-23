@@ -6905,11 +6905,23 @@ body.resizing {
 
 .reminder-dialog {
   width: min(520px, 100%);
-  padding: 20px;
+  padding: 22px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r);
+  border-radius: var(--r-lg);
   background: var(--panel-strong);
   box-shadow: var(--shadow-lg);
+  animation: reminder-in 200ms var(--ease);
+}
+
+@keyframes reminder-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .reminder-dialog header,
@@ -6947,22 +6959,28 @@ body.resizing {
 
 .section-icon {
   display: inline-grid;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
   place-items: center;
-  color: var(--accent-strong);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .reminder-dialog blockquote {
-  max-height: 110px;
-  margin: 18px 0;
-  padding: 11px 13px;
+  max-height: 120px;
+  margin: 18px 0 4px;
+  padding: 12px 14px;
   overflow: auto;
-  border-left: 3px solid var(--accent);
-  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Accent bar sits inside the rounded corners, so no square-corner clash. */
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
   color: var(--text-soft);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .reminder-dialog label {
@@ -7017,6 +7035,24 @@ body.resizing {
   margin-top: 8px;
 }
 
+/* Quick-time presets read as chips, distinct from the rectangular footer
+   actions, with an accent hover. */
+.reminder-presets button {
+  min-height: 30px;
+  border-radius: 999px;
+  padding: 0 13px;
+  transition:
+    border-color var(--t) var(--ease),
+    color var(--t) var(--ease),
+    background var(--t) var(--ease);
+}
+
+.reminder-presets button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .reminder-presets button,
 .reminder-dialog footer button,
 .reminder-focus-card footer button {
@@ -7041,7 +7077,14 @@ body.resizing {
   gap: 7px;
   border-color: var(--accent);
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
+  transition: background var(--t) var(--ease), border-color var(--t) var(--ease);
+}
+
+.reminder-dialog footer .primary-action:hover,
+.reminder-focus-card footer button:last-child:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .form-error {
@@ -7058,11 +7101,25 @@ body.resizing {
   width: min(520px, calc(100vw - 44px));
   min-height: 72px;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
-  border-radius: var(--r);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: var(--r-lg);
   background: var(--panel-strong);
-  box-shadow: var(--shadow-lg);
+  /* Layered shadow with a faint accent tint reads as a floating notification. */
+  box-shadow: var(--shadow-lg),
+    0 8px 30px color-mix(in srgb, var(--accent) 16%, transparent);
+  animation: reminder-pop 260ms var(--ease);
+}
+
+@keyframes reminder-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .due-reminder-icon {
@@ -7118,6 +7175,22 @@ body.resizing {
 .reminder-focus-card > div button:hover {
   background: color-mix(in srgb, var(--panel) 86%, var(--accent));
   color: var(--text);
+}
+
+/* The notification pill's actions get a resting chip look (the inline row
+   actions elsewhere stay ghost/hover-reveal). */
+.due-reminder-actions button {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  transition:
+    background var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.due-reminder-actions button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent-strong);
 }
 
 /* Inline "restore to upcoming" chooser on history cards. */
