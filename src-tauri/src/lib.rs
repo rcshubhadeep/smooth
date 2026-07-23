@@ -2714,6 +2714,7 @@ fn fail_extraction_job(app: &AppHandle, job: &ExtractionJob, error: &str) -> Res
     let exhausted = job.attempts >= job.max_attempts;
     let status = if exhausted { "failed" } else { "pending" };
     let note_status = if exhausted { "failed" } else { "queued" };
+    let note_error = exhausted.then_some(error.as_str());
     transaction
         .execute(
             "
@@ -2736,7 +2737,7 @@ fn fail_extraction_job(app: &AppHandle, job: &ExtractionJob, error: &str) -> Res
             SET extraction_status = ?1, extraction_error = ?2
             WHERE id = ?3
             ",
-            params![note_status, error, job.note_id],
+            params![note_status, note_error, job.note_id],
         )
         .map_err(db_error)?;
     transaction.commit().map_err(db_error)

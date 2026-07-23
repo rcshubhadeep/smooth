@@ -6379,6 +6379,22 @@ function EntityStrip({
     return () => window.clearInterval(interval);
   }, [extraction.status, refreshExtraction]);
 
+  useEffect(() => {
+    let active = true;
+    void loadLlmPreferences()
+      .then((preferences) => {
+        if (active) {
+          setLlmPreferences(preferences);
+        }
+      })
+      .catch(() => {
+        // The extraction error remains useful even if preferences cannot be read.
+      });
+    return () => {
+      active = false;
+    };
+  }, [note.id]);
+
   // Ask which provider to use — same flow as chat/tasks: skip straight to the
   // default when "always obey" is set, otherwise pop the choice dialog.
   async function requestExtract() {
@@ -6487,6 +6503,12 @@ function EntityStrip({
     0,
     extraction.entities.length - ENTITY_PREVIEW_LIMIT,
   );
+  const extractionFailureMessage =
+    llmPreferences?.defaultProvider === "remote"
+      ? "Remote AI could not complete the extraction. Please set Local AI as the default in Settings and try again."
+      : llmPreferences?.defaultProvider === "local"
+        ? "Local AI could not complete the extraction. Please set Remote AI as the default in Settings and try again."
+        : "AI could not complete the extraction. Please choose another default AI provider in Settings and try again.";
 
   return (
     <section className="entity-strip">
@@ -6526,8 +6548,10 @@ function EntityStrip({
           }}
         />
       ) : null}
-      {extraction.error ? (
-        <p className="entity-error">{extraction.error}</p>
+      {extraction.status === "failed" && extraction.error ? (
+        <p className="entity-error" title={extraction.error}>
+          {extractionFailureMessage}
+        </p>
       ) : null}
       {extraction.entities.length > 0 ? (
         <div className="entity-chips">
