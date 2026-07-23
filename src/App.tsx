@@ -58,7 +58,15 @@ import {
   X,
 } from "lucide-react";
 import { Bot } from "lucide-react";
-import { AgentsView, NoteAgentsPanel, type AgentRunResult } from "./Agents";
+import {
+  AgentRunResultView,
+  AgentsView,
+  NoteAgentsPanel,
+  listTasks,
+  runAgent,
+  type AgentDefinition,
+  type AgentRunResult,
+} from "./Agents";
 import LlmRunChoiceDialog from "./LlmRunChoice";
 import OnboardingWizard from "./Onboarding";
 import {
@@ -93,6 +101,10 @@ import {
   type ReminderRecord,
   type ReminderSelection,
 } from "./Reminders";
+import {
+  ReminderWorkflowBuilder,
+  type ReminderWorkflowStepDraft,
+} from "./ReminderWorkflows";
 import { startSemanticIndexer } from "./semantic";
 import "./App.css";
 
@@ -1119,6 +1131,10 @@ function App() {
   const [meetingContentRevision, setMeetingContentRevision] = useState(0);
   const [meetingNoteId, setMeetingNoteId] = useState<string | null>(null);
   const [meetingNotesOpen, setMeetingNotesOpen] = useState(false);
+  const [meetingTasksOpen, setMeetingTasksOpen] = useState(false);
+  const [meetingEndWorkflowSteps, setMeetingEndWorkflowSteps] = useState<
+    ReminderWorkflowStepDraft[]
+  >([]);
   const [meetingQuickNotes, setMeetingQuickNotes] = useState("");
   const [meetingQuickNoteId, setMeetingQuickNoteId] = useState<string | null>(
     null,
@@ -2200,6 +2216,8 @@ function App() {
       setMeetingQuickNoteId(null);
       setMeetingQuickNoteSaveState("idle");
       setMeetingNotesOpen(false);
+      setMeetingTasksOpen(false);
+      setMeetingEndWorkflowSteps([]);
       meetingAppendQueueRef.current = Promise.resolve();
       meetingSttSequenceRef.current = 0;
       meetingPendingSttJobsRef.current = 0;
@@ -2341,6 +2359,36 @@ function App() {
       }
     }
 
+    if (meetingNoteToExtract && meetingEndWorkflowSteps.length > 0) {
+      const workflowInput =
+        "The meeting has ended and its transcript is finalized. Read the linked meeting note before performing the assigned tasks.";
+      try {
+        await invoke("create_reminder", {
+          input: {
+            noteId: meetingNoteToExtract,
+            scheduledAt: Date.now(),
+            comment: "End-of-call task workflow",
+            selectedText: workflowInput,
+            startOffset: 0,
+            endOffset: workflowInput.length,
+            contextBefore: "",
+            contextAfter: "",
+            workflowSteps: meetingEndWorkflowSteps,
+          },
+        });
+        announceReminderChange();
+        toast.info(
+          `${meetingEndWorkflowSteps.length} end-of-call task${meetingEndWorkflowSteps.length === 1 ? "" : "s"} queued`,
+        );
+        setMeetingEndWorkflowSteps([]);
+      } catch (workflowError) {
+        setMeetingState("paused");
+        setMeetingDetail("End-of-call tasks were not queued — press Stop to retry");
+        toast.error(workflowError);
+        return;
+      }
+    }
+
     meetingLoopRef.current = null;
     meetingChunkRef.current = null;
     meetingNoteIdRef.current = null;
@@ -2351,6 +2399,7 @@ function App() {
     resetMeetingDiarization();
     setMeetingNoteId(null);
     setMeetingNotesOpen(false);
+    setMeetingTasksOpen(false);
     setMeetingQuickNotes("");
     setMeetingQuickNoteId(null);
     setMeetingQuickNoteSaveState("idle");
@@ -3422,6 +3471,15 @@ function App() {
         />
       ) : null}
 
+      {meetingTasksOpen && meetingState !== "idle" && meetingNoteId ? (
+        <MeetingTasksPanel
+          note={{ id: meetingNoteId, title: meetingNoteTitle }}
+          endWorkflowSteps={meetingEndWorkflowSteps}
+          onEndWorkflowStepsChange={setMeetingEndWorkflowSteps}
+          onClose={() => setMeetingTasksOpen(false)}
+        />
+      ) : null}
+
       <ReminderCenter onOpenReminders={() => setView("reminders")} />
 
       <MeetingCapsule
@@ -3433,9 +3491,17 @@ function App() {
         micLabel={meetingMicLabel}
         systemLabel={meetingSystemLabel}
         notesOpen={meetingNotesOpen}
+        tasksOpen={meetingTasksOpen}
         onMicLabelChange={setMeetingMicLabel}
         onSystemLabelChange={setMeetingSystemLabel}
-        onToggleNotes={() => setMeetingNotesOpen((open) => !open)}
+        onToggleNotes={() => {
+          setMeetingTasksOpen(false);
+          setMeetingNotesOpen((open) => !open);
+        }}
+        onToggleTasks={() => {
+          setMeetingNotesOpen(false);
+          setMeetingTasksOpen((open) => !open);
+        }}
         onPause={() => void pauseMeetingMode()}
         onResume={() => void resumeMeetingMode()}
         onStart={() => void startMeetingMode()}
@@ -3519,6 +3585,170 @@ function MeetingQuickNotesPanel({
   );
 }
 
+type MeetingLiveTaskState =
+  | { status: "idle" }
+  | { status: "running"; task: AgentDefinition }
+  | { status: "done"; task: AgentDefinition; result: AgentRunResult }
+  | { status: "error"; task: AgentDefinition; message: string };
+
+function MeetingTasksPanel({
+  note,
+  endWorkflowSteps,
+  onEndWorkflowStepsChange,
+  onClose,
+}: {
+  note: { id: string; title: string };
+  endWorkflowSteps: ReminderWorkflowStepDraft[];
+  onEndWorkflowStepsChange: (steps: ReminderWorkflowStepDraft[]) => void;
+  onClose: () => void;
+}) {
+  const [tasks, setTasks] = useState<AgentDefinition[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [liveRun, setLiveRun] = useState<MeetingLiveTaskState>({ status: "idle" });
+  const [mode, setMode] = useState<"live" | "after">("live");
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void listTasks()
+        .then((available) => {
+          if (!active) return;
+          setTasks(
+            available.filter(
+              ({ scope, resultKind }) => scope === "note" && resultKind === "text",
+            ),
+          );
+          setLoadError(null);
+        })
+        .catch((reason) => {
+          if (active) setLoadError(String(reason));
+        });
+    };
+    refresh();
+    window.addEventListener("smooth-agent-definitions-changed", refresh);
+    return () => {
+      active = false;
+      window.removeEventListener("smooth-agent-definitions-changed", refresh);
+    };
+  }, []);
+
+  async function execute(task: AgentDefinition) {
+    setLiveRun({ status: "running", task });
+    try {
+      const preferences = await loadLlmPreferences().catch(() => ({
+        defaultProvider: "local" as const,
+        alwaysObeyGlobal: false,
+      }));
+      const result = await runAgent(task, note, preferences.defaultProvider);
+      setLiveRun({ status: "done", task, result });
+    } catch (reason) {
+      setLiveRun({ status: "error", task, message: String(reason) });
+    }
+  }
+
+  return (
+    <section className="meeting-tasks-panel" aria-label="On-call tasks">
+      <header>
+        <div>
+          <Wrench size={15} />
+          <strong>On-call tasks</strong>
+        </div>
+        <button type="button" onClick={onClose} title="Close on-call tasks">
+          <X size={15} />
+        </button>
+      </header>
+
+      <div className="meeting-task-modes" role="tablist" aria-label="Task timing">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "live"}
+          className={mode === "live" ? "active" : ""}
+          onClick={() => setMode("live")}
+        >
+          Live now
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "after"}
+          className={mode === "after" ? "active" : ""}
+          onClick={() => setMode("after")}
+        >
+          After call
+          {endWorkflowSteps.length > 0 ? <span>{endWorkflowSteps.length}</span> : null}
+        </button>
+      </div>
+
+      <div className="meeting-tasks-content">
+        {mode === "live" ? <section className="meeting-live-tasks">
+          <div className="meeting-tasks-heading">
+            <div>
+              <strong>Live tasks run immediately</strong>
+              <p>Each click uses the transcript captured so far.</p>
+            </div>
+            {liveRun.status !== "idle" ? (
+              <button type="button" onClick={() => setLiveRun({ status: "idle" })}>
+                Clear
+              </button>
+            ) : null}
+          </div>
+
+          {loadError ? <p className="meeting-task-error">{loadError}</p> : null}
+          <div className="meeting-live-task-list">
+            {tasks.map((task) => (
+              <button
+                type="button"
+                key={task.id}
+                disabled={liveRun.status === "running"}
+                onClick={() => void execute(task)}
+              >
+                <span>{task.name}</span>
+                <small>Run now</small>
+              </button>
+            ))}
+          </div>
+
+          {liveRun.status === "running" ? (
+            <div className="meeting-task-running">
+              <Loader2 size={14} className="spin" />
+              <span>{liveRun.task.name} is working</span>
+            </div>
+          ) : null}
+          {liveRun.status === "error" ? (
+            <div className="meeting-task-error">
+              <strong>{liveRun.task.name}</strong>
+              <span>{liveRun.message}</span>
+            </div>
+          ) : null}
+          {liveRun.status === "done" ? (
+            <div className="meeting-task-result">
+              <strong>{liveRun.task.name}</strong>
+              <AgentRunResultView result={liveRun.result} />
+            </div>
+          ) : null}
+        </section> : null}
+
+        {mode === "after" ? <section className="meeting-end-tasks">
+          <ReminderWorkflowBuilder
+            steps={endWorkflowSteps}
+            onChange={onEndWorkflowStepsChange}
+            title="When the call ends"
+            description="These tasks are queued after the final transcript is saved."
+            optional={false}
+            addLabel="Schedule a task after the call..."
+            automaticLabel="Runs after the call"
+          />
+          <p className="meeting-end-task-note">
+            Nothing in this tab runs during the call. Text results become linked notes;
+            Gmail and Slack drafts wait for approval.
+          </p>
+        </section> : null}
+      </div>
+    </section>
+  );
+}
+
 type MeetingCapsuleProps = {
   detail: string;
   noteTitle: string;
@@ -3528,9 +3758,11 @@ type MeetingCapsuleProps = {
   micLabel: string;
   systemLabel: string;
   notesOpen: boolean;
+  tasksOpen: boolean;
   onMicLabelChange: (value: string) => void;
   onSystemLabelChange: (value: string) => void;
   onToggleNotes: () => void;
+  onToggleTasks: () => void;
   onPause: () => void;
   onResume: () => void;
   onStart: () => void;
@@ -3546,9 +3778,11 @@ function MeetingCapsule({
   micLabel,
   systemLabel,
   notesOpen,
+  tasksOpen,
   onMicLabelChange,
   onSystemLabelChange,
   onToggleNotes,
+  onToggleTasks,
   onPause,
   onResume,
   onStart,
@@ -3597,6 +3831,17 @@ function MeetingCapsule({
         </div>
       ) : null}
       <div className="meeting-capsule-actions">
+        {state !== "idle" ? (
+          <button
+            className={tasksOpen ? "active" : ""}
+            type="button"
+            onClick={onToggleTasks}
+            title="On-call tasks"
+          >
+            <Wrench size={15} />
+            Tasks
+          </button>
+        ) : null}
         {state !== "idle" ? (
           <button
             className={notesOpen ? "active" : ""}

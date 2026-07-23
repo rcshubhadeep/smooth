@@ -799,6 +799,7 @@ function AgentEditor({
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [instructions, setInstructions] = useState(initial?.instructions ?? "");
+  const [scope, setScope] = useState<AgentScope>(initial?.scope ?? "note");
   const [maxSteps, setMaxSteps] = useState<string>(
     initial?.maxSteps ? String(initial.maxSteps) : "",
   );
@@ -817,6 +818,7 @@ function AgentEditor({
       name: name.trim(),
       description: description.trim(),
       instructions: instructions.trim(),
+      scope,
       max_steps:
         parsedSteps !== null && Number.isFinite(parsedSteps)
           ? parsedSteps
@@ -850,8 +852,8 @@ function AgentEditor({
       <div className="agent-editor">
         <h2>{initial ? "Edit agent" : "New agent"}</h2>
         <p className="agent-editor-note">
-          Custom agents run across your whole knowledge bank using the available
-          tools.
+          Custom tasks use the same runner everywhere: from notes, live calls,
+          and scheduled workflows.
         </p>
 
         <label className="agent-field">
@@ -882,6 +884,17 @@ function AgentEditor({
             placeholder="Tell the agent what to do. It can read, search and link your notes."
             onChange={(event) => setInstructions(event.target.value)}
           />
+        </label>
+
+        <label className="agent-field narrow">
+          <span>Works on</span>
+          <select
+            value={scope}
+            onChange={(event) => setScope(event.currentTarget.value as AgentScope)}
+          >
+            <option value="note">A note or live call</option>
+            <option value="global">The whole knowledge bank</option>
+          </select>
         </label>
 
         <label className="agent-field narrow">

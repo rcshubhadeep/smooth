@@ -83,9 +83,19 @@ function reminderIcon(agent: AgentDefinition) {
 export function ReminderWorkflowBuilder({
   steps,
   onChange,
+  title = "Task workflow",
+  description = "Runs in order when the reminder is due.",
+  optional = true,
+  addLabel = "Add a task...",
+  automaticLabel = "Runs automatically",
 }: {
   steps: ReminderWorkflowStepDraft[];
   onChange: (steps: ReminderWorkflowStepDraft[]) => void;
+  title?: string;
+  description?: string;
+  optional?: boolean;
+  addLabel?: string;
+  automaticLabel?: string;
 }) {
   const [options, setOptions] = useState<ReminderAgentOption[]>([]);
   useEffect(() => {
@@ -136,8 +146,8 @@ export function ReminderWorkflowBuilder({
     <section className="reminder-workflow-builder">
       <div className="reminder-workflow-heading">
         <div>
-          <span>Task workflow <small>optional</small></span>
-          <p>Runs in order when the reminder is due.</p>
+          <span>{title} {optional ? <small>optional</small> : null}</span>
+          <p>{description}</p>
         </div>
         {steps.length ? <span className="reminder-workflow-count">{steps.length}</span> : null}
       </div>
@@ -153,7 +163,7 @@ export function ReminderWorkflowBuilder({
                 <span className="workflow-step-icon"><Icon size={15} /></span>
                 <span className="workflow-step-copy">
                   <strong>{agent.name}</strong>
-                  <small>{agent.external ? "Approval required" : "Runs automatically"}</small>
+                  <small>{agent.external ? "Approval required" : automaticLabel}</small>
                 </span>
                 {index + 1 < steps.length ? <ChevronRight className="workflow-connector" size={14} /> : null}
                 <button
@@ -176,7 +186,7 @@ export function ReminderWorkflowBuilder({
             onChange={(event) => add(event.currentTarget.value)}
             aria-label="Task to add"
           >
-            <option value="">Add a task...</option>
+            <option value="">{addLabel}</option>
             {available.map((agent) => (
               <option key={agent.id} value={agent.id}>{agent.name}</option>
             ))}

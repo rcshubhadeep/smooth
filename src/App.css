@@ -3320,8 +3320,245 @@ select:hover {
   color: var(--faint);
 }
 
+.meeting-tasks-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 82px;
+  z-index: 39;
+  display: flex;
+  width: min(460px, calc(100vw - 36px));
+  max-height: min(650px, calc(100vh - 130px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-strong) 97%, transparent);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(18px);
+}
+
+.meeting-tasks-panel > header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 0 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meeting-tasks-panel > header > div {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+}
+
+.meeting-tasks-panel > header svg {
+  color: var(--accent);
+}
+
+.meeting-tasks-panel > header strong {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.meeting-tasks-panel > header > button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.meeting-tasks-content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.meeting-task-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+
+.meeting-task-modes button {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.meeting-task-modes button:hover,
+.meeting-task-modes button.active {
+  border-color: var(--border);
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.meeting-task-modes button.active {
+  box-shadow: var(--shadow-sm);
+}
+
+.meeting-task-modes button span {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 9px;
+}
+
+.meeting-live-tasks,
+.meeting-end-tasks {
+  padding: 14px;
+}
+
+.meeting-tasks-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.meeting-tasks-heading strong,
+.meeting-tasks-heading p {
+  display: block;
+  margin: 0;
+}
+
+.meeting-tasks-heading strong {
+  font-size: 12px;
+}
+
+.meeting-tasks-heading p,
+.meeting-end-task-note {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.meeting-tasks-heading > button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.meeting-live-task-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.meeting-live-task-list button {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.meeting-live-task-list button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
+}
+
+.meeting-live-task-list button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.meeting-live-task-list button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-live-task-list button small {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.meeting-task-running,
+.meeting-task-error,
+.meeting-task-result {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 11.5px;
+}
+
+.meeting-task-running {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.meeting-task-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--danger);
+}
+
+.meeting-task-result > strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 11px;
+}
+
+.meeting-task-result .agent-answer {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meeting-end-tasks .reminder-workflow-builder {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 @media (max-width: 720px) {
-  .meeting-quick-notes {
+  .meeting-quick-notes,
+  .meeting-tasks-panel {
     right: 16px;
     left: 16px;
     width: auto;
@@ -6201,6 +6438,7 @@ body.resizing {
 }
 
 .agent-field input,
+.agent-field select,
 .agent-field textarea {
   width: 100%;
   padding: 9px 11px;
@@ -6218,13 +6456,15 @@ body.resizing {
 }
 
 .agent-field input:focus,
+.agent-field select:focus,
 .agent-field textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--ring);
 }
 
-.agent-field.narrow input {
+.agent-field.narrow input,
+.agent-field.narrow select {
   max-width: 140px;
 }
 

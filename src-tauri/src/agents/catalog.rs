@@ -35,6 +35,16 @@ struct BuiltinTask {
 
 const BUILTIN_TASKS: &[BuiltinTask] = &[
     BuiltinTask {
+        id: "what-have-i-missed",
+        name: "What have I missed?",
+        description: "Gives someone joining late a concise briefing from the call so far.",
+        instructions: "Read the current meeting note and brief a participant who has just joined. Summarize the discussion so far, emphasizing decisions, unresolved questions, objections, commitments, and current topic. Be concise, distinguish facts from uncertainty, and do not invent anything.",
+        scope: "note",
+        icon: "summary",
+        max_steps: Some(3),
+        result_kind: "text",
+    },
+    BuiltinTask {
         id: "create-gmail-draft",
         name: "Write follow-up email",
         description: "Turns a meeting transcript into a short, action-oriented Gmail draft.",
@@ -147,5 +157,13 @@ mod tests {
         assert_eq!(task.scope, "note");
         assert_eq!(task.result_kind, "text");
         assert!(task.instructions.contains("- [ ]"));
+    }
+
+    #[test]
+    fn what_have_i_missed_uses_the_normal_note_task_flow() {
+        let task = resolve_builtin("what-have-i-missed").expect("live meeting task");
+        assert_eq!(task.scope, "note");
+        assert_eq!(task.result_kind, "text");
+        assert!(task.instructions.contains("current meeting note"));
     }
 }
