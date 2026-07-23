@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -12,6 +12,7 @@ struct DirectoryLock {
 
 impl Drop for DirectoryLock {
     fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.path.join("owner-pid"));
         let _ = std::fs::remove_dir(&self.path);
     }
 }
@@ -77,22 +78,40 @@ fn stage_llama_server() {
 fn acquire_directory_lock(path: &Path) -> DirectoryLock {
     const STALE_AFTER: Duration = Duration::from_secs(15 * 60);
     const WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
+    const OWNER_WRITE_GRACE: Duration = Duration::from_secs(5);
     let started = Instant::now();
+    let mut last_reported_wait = 0;
 
     loop {
         match std::fs::create_dir(path) {
             Ok(()) => {
+                if let Err(error) =
+                    std::fs::write(path.join("owner-pid"), std::process::id().to_string())
+                {
+                    let _ = std::fs::remove_dir(path);
+                    panic!(
+                        "Failed to record ownership of llama.cpp staging lock at {}: {error}",
+                        path.display()
+                    );
+                }
                 return DirectoryLock {
                     path: path.to_path_buf(),
                 };
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let is_stale = std::fs::metadata(path)
+                let age = std::fs::metadata(path)
                     .and_then(|metadata| metadata.modified())
                     .ok()
-                    .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-                    .is_some_and(|age| age > STALE_AFTER);
-                if is_stale {
+                    .and_then(|modified| SystemTime::now().duration_since(modified).ok());
+                let owner_pid = std::fs::read_to_string(path.join("owner-pid"))
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok());
+                let abandoned = owner_pid.is_some_and(|pid| !process_is_running(pid))
+                    || (owner_pid.is_none()
+                        && age.is_some_and(|age| age > OWNER_WRITE_GRACE))
+                    || age.is_some_and(|age| age > STALE_AFTER);
+                if abandoned {
+                    let _ = std::fs::remove_file(path.join("owner-pid"));
                     let _ = std::fs::remove_dir(path);
                     continue;
                 }
@@ -100,6 +119,17 @@ fn acquire_directory_lock(path: &Path) -> DirectoryLock {
                     panic!(
                         "Timed out waiting for llama.cpp staging lock at {}",
                         path.display()
+                    );
+                }
+                let waited = started.elapsed().as_secs();
+                if waited >= last_reported_wait + 5 {
+                    last_reported_wait = waited;
+                    eprintln!(
+                        "Waiting for llama.cpp staging lock at {} (owner PID: {})",
+                        path.display(),
+                        owner_pid
+                            .map(|pid| pid.to_string())
+                            .unwrap_or_else(|| "being recorded".to_string())
                     );
                 }
                 thread::sleep(Duration::from_millis(100));
@@ -110,6 +140,21 @@ fn acquire_directory_lock(path: &Path) -> DirectoryLock {
             ),
         }
     }
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(unix))]
+fn process_is_running(_pid: u32) -> bool {
+    true
 }
 
 fn llama_server_source() -> Option<PathBuf> {
