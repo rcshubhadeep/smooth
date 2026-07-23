@@ -3368,8 +3368,8 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
 
     // Restart only when the managed launch command changed. Unrelated settings
     // saves should not interrupt a warm local model.
-    let managed_launch_changed = managed_llama_launch_config(&previous_config)
-        != managed_llama_launch_config(&saved_config);
+    let managed_launch_changed =
+        managed_llama_launch_config(&previous_config) != managed_llama_launch_config(&saved_config);
     if should_run_managed_llama(&saved_config)
         && (!should_run_managed_llama(&previous_config) || managed_launch_changed)
     {
@@ -5261,10 +5261,37 @@ pub fn run() {
             imports::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             agents::reminder_workflows::recover(&connection).map_err(std::io::Error::other)?;
             let llama_config = load_llama_config(&connection).map_err(std::io::Error::other)?;
+            let _ = app
+                .state::<llama_runtime::LlamaRuntimeState>()
+                .cleanup_stale(app.handle());
             if should_run_managed_llama(&llama_config) {
                 // A local runtime failure must not prevent the rest of Smooth
                 // from opening; jobs retain their normal retry/error behavior.
                 let _ = apply_default_provider_runtime_policy(app.handle(), &llama_config);
+            }
+            #[cfg(unix)]
+            {
+                let signal_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+
+                    let mut terminate = match signal(SignalKind::terminate()) {
+                        Ok(signal) => signal,
+                        Err(_) => return,
+                    };
+                    let mut interrupt = match signal(SignalKind::interrupt()) {
+                        Ok(signal) => signal,
+                        Err(_) => return,
+                    };
+                    tokio::select! {
+                        _ = terminate.recv() => {}
+                        _ = interrupt.recv() => {}
+                    }
+                    signal_app
+                        .state::<llama_runtime::LlamaRuntimeState>()
+                        .shutdown();
+                    signal_app.exit(0);
+                });
             }
             mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(slack::worker(app.handle().clone()));
@@ -5394,7 +5421,10 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
             app_handle.state::<SttRuntime>().shutdown();
             app_handle
                 .state::<llama_runtime::LlamaRuntimeState>()
