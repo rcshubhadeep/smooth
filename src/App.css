@@ -5929,6 +5929,59 @@ body.resizing {
   padding: 4px 2px;
 }
 
+.note-agent-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.note-agent-group-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  text-align: left;
+}
+
+.note-agent-group-toggle:hover {
+  color: var(--text);
+}
+
+.note-agent-group-toggle span {
+  flex: 1;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.note-agent-group-toggle small {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.note-agent-group-empty {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
 .note-agent-list {
   list-style: none;
   margin: 0;

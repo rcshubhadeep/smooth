@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FilePlus,
   FileText,
@@ -1292,6 +1293,25 @@ type NoteRunState =
   | { status: "done"; agent: AgentDefinition; result: AgentRunResult }
   | { status: "error"; agent: AgentDefinition; message: string };
 
+const DEFAULT_TASKS_OPEN_KEY = "smooth-default-tasks-open";
+const USER_TASKS_OPEN_KEY = "smooth-user-tasks-open";
+
+function taskGroupInitiallyOpen(key: string) {
+  try {
+    return window.localStorage.getItem(key) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function rememberTaskGroup(key: string, open: boolean) {
+  try {
+    window.localStorage.setItem(key, String(open));
+  } catch {
+    // Storage may be unavailable; the in-memory fold state still works.
+  }
+}
+
 export function NoteAgentsPanel({
   note,
   onCreateNote,
@@ -1312,7 +1332,15 @@ export function NoteAgentsPanel({
   const [copied, setCopied] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [defaultTasksOpen, setDefaultTasksOpen] = useState(() =>
+    taskGroupInitiallyOpen(DEFAULT_TASKS_OPEN_KEY),
+  );
+  const [userTasksOpen, setUserTasksOpen] = useState(() =>
+    taskGroupInitiallyOpen(USER_TASKS_OPEN_KEY),
+  );
   const busy = run.status === "running";
+  const defaultTasks = agents.filter(({ source }) => source === "builtin");
+  const userTasks = agents.filter(({ source }) => source === "user");
 
   useEffect(() => {
     let active = true;
@@ -1410,67 +1438,127 @@ export function NoteAgentsPanel({
     }
   }
 
+  function renderTask(agent: AgentDefinition) {
+    const Icon = AGENT_ICONS[agent.icon];
+    const isRunning = busy && run.agent.id === agent.id;
+    return (
+      <li key={agent.id} className="note-agent-row">
+        <div className="agent-card-icon sm">
+          <Icon size={15} />
+        </div>
+        <div className="note-agent-meta">
+          <strong>{agent.name}</strong>
+          <span>{agent.description}</span>
+        </div>
+        {confirmDeleteId === agent.id ? (
+          <div className="note-agent-delete-confirm">
+            <span>Delete?</span>
+            <button type="button" onClick={() => setConfirmDeleteId(null)}>
+              No
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => void removeTask(agent)}
+            >
+              Yes
+            </button>
+          </div>
+        ) : (
+          <div className="note-agent-actions">
+            {agent.source === "user" ? (
+              <button
+                type="button"
+                className="ghost-icon danger"
+                title={`Delete task “${agent.name}”`}
+                aria-label={`Delete task ${agent.name}`}
+                onClick={() => setConfirmDeleteId(agent.id)}
+              >
+                <Trash2 size={14} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="agent-run-btn sm"
+              disabled={busy}
+              onClick={() => void start(agent)}
+            >
+              {isRunning ? (
+                <Loader2 size={13} className="spin" />
+              ) : (
+                <Play size={13} />
+              )}
+              Run
+            </button>
+          </div>
+        )}
+      </li>
+    );
+  }
+
   return (
     <div className="note-agents">
-      <ul className="note-agent-list">
-        {agents.map((agent) => {
-          const Icon = AGENT_ICONS[agent.icon];
-          const isRunning = busy && run.agent.id === agent.id;
-          return (
-            <li key={agent.id} className="note-agent-row">
-              <div className="agent-card-icon sm">
-                <Icon size={15} />
-              </div>
-              <div className="note-agent-meta">
-                <strong>{agent.name}</strong>
-                <span>{agent.description}</span>
-              </div>
-              {confirmDeleteId === agent.id ? (
-                <div className="note-agent-delete-confirm">
-                  <span>Delete?</span>
-                  <button type="button" onClick={() => setConfirmDeleteId(null)}>
-                    No
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => void removeTask(agent)}
-                  >
-                    Yes
-                  </button>
-                </div>
-              ) : (
-                <div className="note-agent-actions">
-                  {agent.source === "user" ? (
-                    <button
-                      type="button"
-                      className="ghost-icon danger"
-                      title={`Delete task “${agent.name}”`}
-                      aria-label={`Delete task ${agent.name}`}
-                      onClick={() => setConfirmDeleteId(agent.id)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="agent-run-btn sm"
-                    disabled={busy}
-                    onClick={() => void start(agent)}
-                  >
-                    {isRunning ? (
-                      <Loader2 size={13} className="spin" />
-                    ) : (
-                      <Play size={13} />
-                    )}
-                    Run
-                  </button>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <section className="note-agent-group">
+        <button
+          type="button"
+          className="note-agent-group-toggle"
+          aria-expanded={defaultTasksOpen}
+          aria-controls="default-note-tasks"
+          onClick={() =>
+            setDefaultTasksOpen((open) => {
+              rememberTaskGroup(DEFAULT_TASKS_OPEN_KEY, !open);
+              return !open;
+            })
+          }
+        >
+          {defaultTasksOpen ? (
+            <ChevronDown size={14} />
+          ) : (
+            <ChevronRight size={14} />
+          )}
+          <span>Default Tasks</span>
+          <small>{defaultTasks.length}</small>
+        </button>
+        {defaultTasksOpen ? (
+          <ul className="note-agent-list" id="default-note-tasks">
+            {defaultTasks.map(renderTask)}
+          </ul>
+        ) : null}
+      </section>
+
+      <section className="note-agent-group">
+        <button
+          type="button"
+          className="note-agent-group-toggle"
+          aria-expanded={userTasksOpen}
+          aria-controls="user-note-tasks"
+          onClick={() =>
+            setUserTasksOpen((open) => {
+              rememberTaskGroup(USER_TASKS_OPEN_KEY, !open);
+              return !open;
+            })
+          }
+        >
+          {userTasksOpen ? (
+            <ChevronDown size={14} />
+          ) : (
+            <ChevronRight size={14} />
+          )}
+          <span>User Tasks</span>
+          <small>{userTasks.length}</small>
+        </button>
+        {userTasksOpen ? (
+          userTasks.length > 0 ? (
+            <ul className="note-agent-list" id="user-note-tasks">
+              {userTasks.map(renderTask)}
+            </ul>
+          ) : (
+            <p className="note-agent-group-empty" id="user-note-tasks">
+              No user-created tasks yet.
+            </p>
+          )
+        ) : null}
+      </section>
 
       {deleteError ? (
         <div className="agent-run-state error sm">
