@@ -1117,6 +1117,12 @@ function App() {
     x: number;
     y: number;
   } | null>(null);
+  const [folderMenuTarget, setFolderMenuTarget] = useState<{
+    folderId: string | null;
+    title: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(
@@ -1229,6 +1235,9 @@ function App() {
   }
 
   const activeNotes = snapshot.notes.filter((note) => !note.deleted_at);
+  const allActiveNotesSelected =
+    activeNotes.length > 0 &&
+    activeNotes.every(({ id }) => selectedIds.includes(id));
   const trashedNotes = useMemo(
     () =>
       sortNotes(
@@ -1602,16 +1611,17 @@ function App() {
     await openNote(reminder.noteId);
   }
 
-  async function createNote() {
+  async function createNote(folderId: string | null = null) {
     try {
       setError(null);
       const note = await invoke<NoteWithContent>("create_note", {
         title: null,
-        folderId: null,
+        folderId,
       });
       await loadBank();
       setActiveNote(note);
       setSelectedIds([note.id]);
+      revealNoteInTree(note);
       setView("notes");
     } catch (createError) {
       setError(String(createError));
@@ -2707,7 +2717,10 @@ function App() {
         onDragStart={beginNoteDrag}
         onOpen={openNote}
         onToggleSelected={toggleSelected}
-        onContextMenu={(target, x, y) => setMenuTarget({ note: target, x, y })}
+        onContextMenu={(target, x, y) => {
+          setFolderMenuTarget(null);
+          setMenuTarget({ note: target, x, y });
+        }}
         draggable
         selectedIds={selectedIds}
         action={
@@ -2936,6 +2949,17 @@ function App() {
     );
   }
 
+  function selectAllNotes(notes: NoteListItem[]) {
+    setSelectedIds(notes.map(({ id }) => id));
+  }
+
+  function toggleSelectAllActiveNotes() {
+    const activeIds = activeNotes.map(({ id }) => id);
+    const allSelected =
+      activeIds.length > 0 && activeIds.every((id) => selectedIds.includes(id));
+    setSelectedIds(allSelected ? [] : activeIds);
+  }
+
   const updateNoteExtractionStatus = useCallback(
     (id: string, status: string) => {
       setActiveNote((current) =>
@@ -3071,6 +3095,21 @@ function App() {
                   <option value="created-asc">Created oldest</option>
                 </select>
               </label>
+              {activeNotes.length > 0 ? (
+                <button
+                  className="select-all-notes"
+                  type="button"
+                  onClick={toggleSelectAllActiveNotes}
+                  title={
+                    allActiveNotesSelected
+                      ? "Clear note selection"
+                      : "Select every note except Trash"
+                  }
+                >
+                  <CheckCircle2 size={14} />
+                  {allActiveNotesSelected ? "Clear all" : "Select all"}
+                </button>
+              ) : null}
             </div>
 
             {selectedIds.length > 0 ? (
@@ -3153,6 +3192,10 @@ function App() {
               title="Inbox"
               droppable
               onDropNote={(id) => void moveNoteToFolder(id, null)}
+              onContextMenu={(x, y) => {
+                setMenuTarget(null);
+                setFolderMenuTarget({ folderId: null, title: "Inbox", x, y });
+              }}
             >
               {renderNoteRows(inboxNotes, null)}
             </TreeSection>
@@ -3177,6 +3220,15 @@ function App() {
                 title={folder.name}
                 droppable
                 onDropNote={(id) => void moveNoteToFolder(id, folder.id)}
+                onContextMenu={(x, y) => {
+                  setMenuTarget(null);
+                  setFolderMenuTarget({
+                    folderId: folder.id,
+                    title: folder.name,
+                    x,
+                    y,
+                  });
+                }}
                 renamable={!folder.system_key}
                 startRenaming={renamingFolderId === folder.id}
                 onRename={(name) => void renameFolder(folder.id, name)}
@@ -3205,9 +3257,10 @@ function App() {
                     muted
                     note={note}
                     onOpen={openNote}
-                    onContextMenu={(target, x, y) =>
-                      setMenuTarget({ note: target, x, y })
-                    }
+                    onContextMenu={(target, x, y) => {
+                      setFolderMenuTarget(null);
+                      setMenuTarget({ note: target, x, y });
+                    }}
                     selectable={false}
                     action={
                       <div className="row-actions">
@@ -3458,6 +3511,28 @@ function App() {
           onTrash={(id) => void trashNote(id)}
           onRestore={(id) => void restoreNote(id)}
           onDelete={(id) => void permanentDeleteNote(id)}
+        />
+      ) : null}
+
+      {folderMenuTarget ? (
+        <FolderContextMenu
+          target={folderMenuTarget}
+          noteCount={
+            folderMenuTarget.folderId === null
+              ? inboxNotes.length
+              : (folderGroups.find(
+                  ({ folder }) => folder.id === folderMenuTarget.folderId,
+                )?.notes.length ?? 0)
+          }
+          onClose={() => setFolderMenuTarget(null)}
+          onCreateNote={(folderId) => void createNote(folderId)}
+          onSelectAll={(folderId) => {
+            const notes =
+              folderId === null
+                ? inboxNotes
+                : (folderGroups.find(({ folder }) => folder.id === folderId)?.notes ?? []);
+            selectAllNotes(notes);
+          }}
         />
       ) : null}
 
@@ -5665,6 +5740,7 @@ type TreeSectionProps = {
   renamable?: boolean;
   startRenaming?: boolean;
   onRename?: (name: string) => void;
+  onContextMenu?: (x: number, y: number) => void;
   /** Shown as a hover trash icon; only passed for empty, non-system folders. */
   onDelete?: () => void;
 };
@@ -5685,6 +5761,7 @@ function TreeSection({
   renamable = false,
   startRenaming = false,
   onRename,
+  onContextMenu,
   onDelete,
 }: TreeSectionProps) {
   const [isDragOver, setIsDragOver] = useState(false);
@@ -5802,6 +5879,15 @@ function TreeSection({
           className={isDragOver ? "tree-header drag-over" : "tree-header"}
           type="button"
           onClick={onToggle}
+          onContextMenu={
+            onContextMenu
+              ? (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onContextMenu(event.clientX, event.clientY);
+                }
+              : undefined
+          }
           onDoubleClick={
             renamable
               ? (event) => {
@@ -6172,6 +6258,65 @@ function NoteContextMenu({
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+type FolderContextMenuProps = {
+  target: { folderId: string | null; title: string; x: number; y: number };
+  noteCount: number;
+  onClose: () => void;
+  onCreateNote: (folderId: string | null) => void;
+  onSelectAll: (folderId: string | null) => void;
+};
+
+function FolderContextMenu({
+  target,
+  noteCount,
+  onClose,
+  onCreateNote,
+  onSelectAll,
+}: FolderContextMenuProps) {
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("pointerdown", onClose);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("pointerdown", onClose);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+
+  const run = (action: () => void) => () => {
+    action();
+    onClose();
+  };
+  const left = Math.min(target.x, window.innerWidth - 220);
+  const top = Math.min(target.y, window.innerHeight - 120);
+
+  return (
+    <div
+      className="context-menu"
+      style={{ left, top }}
+      onPointerDown={(event) => event.stopPropagation()}
+      role="menu"
+    >
+      <button type="button" onClick={run(() => onCreateNote(target.folderId))}>
+        <FileText size={15} />
+        New note in {target.title}
+      </button>
+      <button
+        type="button"
+        disabled={noteCount === 0}
+        onClick={run(() => onSelectAll(target.folderId))}
+      >
+        <CheckCircle2 size={15} />
+        Select all in {target.title}
+      </button>
     </div>
   );
 }

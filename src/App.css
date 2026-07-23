@@ -611,6 +611,27 @@ h1 {
   gap: 8px;
 }
 
+.select-all-notes {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.select-all-notes:hover {
+  border-color: var(--border);
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
 .folder-form input {
   height: 36px;
   padding: 0 11px;
@@ -4676,6 +4697,16 @@ select:hover {
 .context-menu button:hover {
   background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+.context-menu button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.context-menu button:disabled:hover {
+  background: transparent;
+  color: var(--text);
 }
 
 .context-menu button:hover > svg {
