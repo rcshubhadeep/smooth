@@ -9,7 +9,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedLlamaLaunchConfig {
     pub(crate) model: String,
     pub(crate) context_size: u32,

@@ -1050,6 +1050,18 @@ function SystemStatusPill() {
   return null;
 }
 
+// Tested-good bounds for the resizable panes — panes can't be dragged (or
+// restored from a stored width) outside this band, so the layout never breaks.
+const SIDEBAR_MIN = 248;
+const SIDEBAR_MAX = 360;
+const PANEL_MIN = 288;
+const PANEL_MAX = 420;
+
+function clampWidth(value: number, min: number, max: number) {
+  if (!Number.isFinite(value) || value <= 0) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<BankSnapshot>(emptySnapshot);
   const [activeNote, setActiveNote] = useState<NoteWithContent | null>(null);
@@ -1125,11 +1137,19 @@ function App() {
   } | null>(null);
   const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(
-    () => Number(localStorage.getItem("smooth-sidebar-width")) || 340,
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    clampWidth(
+      Number(localStorage.getItem("smooth-sidebar-width")) || 320,
+      SIDEBAR_MIN,
+      SIDEBAR_MAX,
+    ),
   );
-  const [panelWidth, setPanelWidth] = useState(
-    () => Number(localStorage.getItem("smooth-panel-width")) || 308,
+  const [panelWidth, setPanelWidth] = useState(() =>
+    clampWidth(
+      Number(localStorage.getItem("smooth-panel-width")) || 320,
+      PANEL_MIN,
+      PANEL_MAX,
+    ),
   );
   const [meetingState, setMeetingState] = useState<MeetingState>("idle");
   const [meetingNoteTitle, setMeetingNoteTitle] = useState("");
@@ -1216,22 +1236,24 @@ function App() {
 
   function resizeSidebar(clientX: number) {
     if (clientX < 0) {
-      setSidebarWidth(340);
+      setSidebarWidth(300);
       return;
     }
     const reserved = shouldShowContextPanel ? panelWidth : 0;
-    const max = Math.max(240, window.innerWidth - reserved - MIN_EDITOR);
-    setSidebarWidth(Math.min(Math.max(clientX, 240), max));
+    const windowMax = window.innerWidth - reserved - MIN_EDITOR;
+    const max = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, windowMax));
+    setSidebarWidth(Math.min(Math.max(clientX, SIDEBAR_MIN), max));
   }
 
   function resizePanel(clientX: number) {
     if (clientX < 0) {
-      setPanelWidth(308);
+      setPanelWidth(320);
       return;
     }
     const next = window.innerWidth - clientX;
-    const max = Math.max(240, window.innerWidth - sidebarWidth - MIN_EDITOR);
-    setPanelWidth(Math.min(Math.max(next, 240), max));
+    const windowMax = window.innerWidth - sidebarWidth - MIN_EDITOR;
+    const max = Math.max(PANEL_MIN, Math.min(PANEL_MAX, windowMax));
+    setPanelWidth(Math.min(Math.max(next, PANEL_MIN), max));
   }
 
   const activeNotes = snapshot.notes.filter((note) => !note.deleted_at);

@@ -181,6 +181,7 @@ export default function LlamaSettings({
         config: { ...config, default_provider: provider },
       });
       setConfig(saved);
+      await refresh();
     } catch (error) {
       setConfig((current) => ({ ...current, default_provider: previous }));
       onError(String(error));

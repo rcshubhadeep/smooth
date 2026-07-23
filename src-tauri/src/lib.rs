@@ -1112,6 +1112,41 @@ fn recover_interrupted_extraction_jobs(connection: &Connection) -> Result<(), St
     Ok(())
 }
 
+fn recover_retryable_extraction_jobs(connection: &Connection) -> Result<(), String> {
+    let now = now_string();
+    connection
+        .execute(
+            "
+            UPDATE extraction_jobs
+            SET status = 'pending',
+                attempts = 0,
+                available_at = ?1,
+                updated_at = ?1,
+                started_at = NULL,
+                lease_token = NULL,
+                last_error = NULL
+            WHERE status = 'failed'
+              AND last_error = 'local model server is unavailable'
+            ",
+            params![now],
+        )
+        .map_err(db_error)?;
+    connection
+        .execute(
+            "
+            UPDATE notes
+            SET extraction_status = 'queued',
+                extraction_error = NULL
+            WHERE id IN (
+                SELECT note_id FROM extraction_jobs WHERE status = 'pending'
+            )
+            ",
+            [],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
 fn enqueue_extraction(
     transaction: &rusqlite::Transaction<'_>,
     note_id: &str,
@@ -2139,6 +2174,24 @@ fn managed_llama_launch_config(config: &LlamaConfig) -> llama_runtime::ManagedLl
     }
 }
 
+fn should_run_managed_llama(config: &LlamaConfig) -> bool {
+    config.default_provider == llm::LlmProvider::Local && config.mode == LlamaMode::Managed
+}
+
+fn apply_default_provider_runtime_policy(
+    app: &AppHandle,
+    config: &LlamaConfig,
+) -> Result<(), String> {
+    let runtime = app.state::<llama_runtime::LlamaRuntimeState>();
+    if should_run_managed_llama(config) {
+        runtime
+            .ensure_running(app, &managed_llama_launch_config(config))
+            .map(|_| ())
+    } else {
+        runtime.stop()
+    }
+}
+
 fn validate_llama_base_url(value: &str) -> Result<String, String> {
     let mut url = reqwest::Url::parse(value.trim())
         .map_err(|_| "Enter a valid llama.cpp server URL".to_string())?;
@@ -2743,6 +2796,52 @@ fn fail_extraction_job(app: &AppHandle, job: &ExtractionJob, error: &str) -> Res
     transaction.commit().map_err(db_error)
 }
 
+fn defer_extraction_job(
+    app: &AppHandle,
+    job: &ExtractionJob,
+    delay_seconds: u128,
+    reason: &str,
+) -> Result<(), String> {
+    let mut connection = open_database(app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error)?;
+    if !extraction_job_matches(&transaction, job)? {
+        transaction.commit().map_err(db_error)?;
+        return Ok(());
+    }
+
+    let now_ms = now_string().parse::<u128>().unwrap_or_default();
+    let available_at = (now_ms + delay_seconds * 1000).to_string();
+    transaction
+        .execute(
+            "
+            UPDATE extraction_jobs
+            SET status = 'pending',
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                available_at = ?1,
+                updated_at = ?2,
+                started_at = NULL,
+                lease_token = NULL,
+                last_error = ?3
+            WHERE id = ?4
+            ",
+            params![available_at, now_string(), reason, job.id],
+        )
+        .map_err(db_error)?;
+    transaction
+        .execute(
+            "
+            UPDATE notes
+            SET extraction_status = 'queued', extraction_error = NULL
+            WHERE id = ?1
+            ",
+            params![job.note_id],
+        )
+        .map_err(db_error)?;
+    transaction.commit().map_err(db_error)
+}
+
 async fn process_extraction_job(
     app: &AppHandle,
     client: &reqwest::Client,
@@ -2851,11 +2950,26 @@ async fn extraction_worker(app: AppHandle) {
             }
         };
         if !llama_server_ready(&client, &config).await {
-            let _ = fail_extraction_job(
-                &app,
-                &job,
-                &format!("{} is unavailable", target.provider_name()),
-            );
+            let managed_local_is_starting = target.provider == llm::LlmProvider::Local
+                && config.mode == LlamaMode::Managed
+                && app
+                    .state::<llama_runtime::LlamaRuntimeState>()
+                    .snapshot(&app)
+                    .running;
+            if managed_local_is_starting {
+                let _ = defer_extraction_job(
+                    &app,
+                    &job,
+                    3,
+                    "Waiting for the local model server to become ready",
+                );
+            } else {
+                let _ = fail_extraction_job(
+                    &app,
+                    &job,
+                    &format!("{} is unavailable", target.provider_name()),
+                );
+            }
             continue;
         }
         let model = match resolve_extraction_model(&client, &config).await {
@@ -3129,6 +3243,7 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
         return Err("Parallel slots must be between 1 and 32".to_string());
     }
     let mut connection = open_database(&app)?;
+    let previous_config = load_llama_config(&connection)?;
     let transaction = connection.transaction().map_err(db_error)?;
     let values = [
         (
@@ -3213,9 +3328,7 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
     }
     transaction.commit().map_err(db_error)?;
 
-    app.state::<llama_runtime::LlamaRuntimeState>().stop()?;
-
-    Ok(LlamaConfig {
+    let saved_config = LlamaConfig {
         default_provider: config.default_provider,
         always_obey_global_llm: config.always_obey_global_llm,
         mode: config.mode,
@@ -3251,7 +3364,20 @@ fn save_llama_config(app: AppHandle, config: LlamaConfig) -> Result<LlamaConfig,
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false)),
         remote_context_tokens: config.remote_context_tokens,
-    })
+    };
+
+    // Restart only when the managed launch command changed. Unrelated settings
+    // saves should not interrupt a warm local model.
+    let managed_launch_changed = managed_llama_launch_config(&previous_config)
+        != managed_llama_launch_config(&saved_config);
+    if should_run_managed_llama(&saved_config)
+        && (!should_run_managed_llama(&previous_config) || managed_launch_changed)
+    {
+        app.state::<llama_runtime::LlamaRuntimeState>().stop()?;
+    }
+    apply_default_provider_runtime_policy(&app, &saved_config)?;
+
+    Ok(saved_config)
 }
 
 #[tauri::command]
@@ -5127,12 +5253,19 @@ pub fn run() {
 
             let connection = open_database(app.handle()).map_err(std::io::Error::other)?;
             recover_interrupted_extraction_jobs(&connection).map_err(std::io::Error::other)?;
+            recover_retryable_extraction_jobs(&connection).map_err(std::io::Error::other)?;
             recover_interrupted_stt_jobs(&connection).map_err(std::io::Error::other)?;
             meeting_notes::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             semantic_search::recover(&connection).map_err(std::io::Error::other)?;
             semantic_search::enqueue_missing(app.handle()).map_err(std::io::Error::other)?;
             imports::recover_interrupted_jobs(&connection).map_err(std::io::Error::other)?;
             agents::reminder_workflows::recover(&connection).map_err(std::io::Error::other)?;
+            let llama_config = load_llama_config(&connection).map_err(std::io::Error::other)?;
+            if should_run_managed_llama(&llama_config) {
+                // A local runtime failure must not prevent the rest of Smooth
+                // from opening; jobs retain their normal retry/error behavior.
+                let _ = apply_default_provider_runtime_policy(app.handle(), &llama_config);
+            }
             mcp::start(app.handle().clone()).map_err(std::io::Error::other)?;
             tauri::async_runtime::spawn(slack::worker(app.handle().clone()));
             tauri::async_runtime::spawn(extraction_worker(app.handle().clone()));
@@ -5363,6 +5496,76 @@ mod tests {
             job,
             (1, "hash-two".to_string(), "pending".to_string(), 0, None)
         );
+    }
+
+    #[test]
+    fn unavailable_local_model_jobs_resume_after_restart() {
+        let mut connection = queue_test_database();
+        let transaction = connection.transaction().expect("enqueue transaction");
+        enqueue_extraction(&transaction, "note-1", "current-hash").expect("enqueue");
+        transaction.commit().expect("commit enqueue");
+        connection
+            .execute(
+                "
+                UPDATE extraction_jobs
+                SET status = 'failed',
+                    attempts = max_attempts,
+                    last_error = 'local model server is unavailable'
+                WHERE note_id = 'note-1'
+                ",
+                [],
+            )
+            .expect("fail job");
+        connection
+            .execute(
+                "
+                UPDATE notes
+                SET extraction_status = 'failed',
+                    extraction_error = 'local model server is unavailable'
+                WHERE id = 'note-1'
+                ",
+                [],
+            )
+            .expect("fail note");
+
+        recover_retryable_extraction_jobs(&connection).expect("recover local job");
+
+        let job = connection
+            .query_row(
+                "
+                SELECT status, attempts, last_error
+                FROM extraction_jobs
+                WHERE note_id = 'note-1'
+                ",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .expect("load recovered job");
+        let note = connection
+            .query_row(
+                "
+                SELECT extraction_status, extraction_error
+                FROM notes
+                WHERE id = 'note-1'
+                ",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .expect("load recovered note");
+
+        assert_eq!(job, ("pending".to_string(), 0, None));
+        assert_eq!(note, ("queued".to_string(), None));
     }
 
     #[test]

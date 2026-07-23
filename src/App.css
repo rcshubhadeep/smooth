@@ -357,10 +357,22 @@ select:focus-visible,
 
 .sidebar-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 2px 4px 0;
+}
+
+/* Heading takes the remaining width (wrapping if the sidebar is narrow); the
+   action buttons never shrink and stay pinned to the top-right corner, so
+   they're never crushed against the edge or pushed onto their own row. */
+.sidebar-header h1 {
+  min-width: 0;
+}
+
+.sidebar-header-actions {
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .sidebar-header .icon-button.primary {
@@ -579,6 +591,7 @@ h1 {
 .sort-control {
   align-self: flex-start;
   width: auto;
+  min-width: 0;
   height: 28px;
   padding: 0 4px;
   border: 1px solid transparent;
@@ -614,6 +627,7 @@ h1 {
 .select-all-notes {
   display: inline-flex;
   height: 28px;
+  flex-shrink: 0;
   align-items: center;
   gap: 5px;
   padding: 0 7px;
@@ -624,6 +638,7 @@ h1 {
   cursor: pointer;
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .select-all-notes:hover {
@@ -2930,6 +2945,22 @@ select:hover {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+}
+
+/* The tabs sit on the panel's own `--panel` fill, where the default segmented
+   track (a faint muted tint) is nearly invisible — making the active tab read
+   as a lone floating button. Use the darker canvas colour so the track is
+   clearly a segmented control. */
+.panel-tabs .segmented {
+  background: var(--bg);
+  /* minmax(0,1fr) lets the four columns shrink to share the width evenly, so
+     the grid can't grow past the track and push the active pill out. */
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.panel-tabs .segmented button {
+  min-width: 0;
+  padding: 0 6px;
 }
 
 .segmented {
