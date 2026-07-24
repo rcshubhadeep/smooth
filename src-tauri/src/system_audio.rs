@@ -811,12 +811,14 @@ fn parse_helper_status(output: &[u8]) -> Option<SystemAudioPermissionStatus> {
 
 #[cfg(target_os = "macos")]
 fn system_audio_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let name = helper_binary_name();
+    let development_name = helper_binary_name();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         for candidate in [
-            resource_dir.join(&name),
-            resource_dir.join("binaries").join(&name),
+            resource_dir.join(HELPER_BASE_NAME),
+            resource_dir.join(&development_name),
+            resource_dir.join("binaries").join(HELPER_BASE_NAME),
+            resource_dir.join("binaries").join(&development_name),
         ] {
             if candidate.exists() {
                 return Ok(candidate);
@@ -824,9 +826,26 @@ fn system_audio_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    // Tauri installs external binaries in Contents/MacOS on macOS and strips
+    // the target triple from the bundled filename. Resolve the helper beside
+    // the running executable before considering a source-tree development
+    // fallback.
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(executable_dir) = current_exe.parent() {
+            for candidate in [
+                executable_dir.join(HELPER_BASE_NAME),
+                executable_dir.join(&development_name),
+            ] {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("binaries")
-        .join(&name);
+        .join(&development_name);
     if dev_path.exists() {
         return Ok(dev_path);
     }

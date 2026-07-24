@@ -286,25 +286,6 @@ type SystemAudioCaptureStatus = {
   last_error: string | null;
 };
 
-type MeetingVisualSource = {
-  id: string;
-  kind: "display" | "window" | string;
-  name: string;
-  display_id: number | null;
-  window_id: number | null;
-  app_name: string | null;
-  width: number | null;
-  height: number | null;
-};
-
-type MeetingSnapshot = {
-  path: string;
-  source_id: string;
-  width: number | null;
-  height: number | null;
-  captured_at_ms: number;
-};
-
 type DiarizationTurn = {
   speaker_id: string;
   start_ms: number;
@@ -485,7 +466,6 @@ const emptySnapshot: BankSnapshot = {
 const ENTITY_PREVIEW_LIMIT = 12;
 const DICTATION_CHUNK_MS = 5_000;
 const MEETING_CHUNK_MS = 10_000;
-const MEETING_SNAPSHOT_MS = 30_000;
 const CALENDAR_CUE_WINDOW_MS = 10 * 60 * 1000;
 const GMAIL_DRAFT_SCOPE = "https://www.googleapis.com/auth/gmail.drafts.create";
 const CALENDAR_READONLY_SCOPE =
@@ -686,11 +666,6 @@ function appendMeetingTranscript(
   return `${trimmed}\n${meetingTranscriptLine(speaker, cleanText)}\n`;
 }
 
-function appendMeetingSnapshot(content: string, snapshotLine: string) {
-  const trimmed = content.trimEnd();
-  return `${trimmed}\n${snapshotLine}\n`;
-}
-
 function diarizedSpeakerForSegment(
   segment: SttSegment,
   turns: DiarizationTurn[],
@@ -763,11 +738,6 @@ function renameSpeakerInContent(
       return line;
     })
     .join("\n");
-}
-
-function meetingSnapshotLine(snapshot: MeetingSnapshot) {
-  const label = new Date(Number(snapshot.captured_at_ms)).toLocaleTimeString();
-  return `![Meeting snapshot ${label}](${convertFileSrc(snapshot.path)})`;
 }
 
 function wait(ms: number) {
@@ -1169,13 +1139,6 @@ function App() {
   } | null>(null);
   const [reminderJumpTarget, setReminderJumpTarget] =
     useState<ReminderJumpTarget | null>(null);
-  const [meetingVisualSources, setMeetingVisualSources] = useState<
-    MeetingVisualSource[]
-  >([]);
-  const [meetingSourcePickerOpen, setMeetingSourcePickerOpen] = useState(false);
-  const [meetingVisualSourceName, setMeetingVisualSourceName] = useState<
-    string | null
-  >(null);
   const [calendarConfig, setCalendarConfig] = useState<CalendarConfig | null>(
     null,
   );
@@ -1215,8 +1178,6 @@ function App() {
   const meetingPendingSttJobsRef = useRef(0);
   const meetingPendingSttResolversRef = useRef<Array<() => void>>([]);
   const lastSystemCapturePathRef = useRef<string | null>(null);
-  const meetingVisualSourceIdRef = useRef<string | null>(null);
-  const lastMeetingSnapshotAtRef = useRef(0);
   const diarizationSessionIdRef = useRef<string | null>(null);
   const diarizationSpeakerNamesRef = useRef<Record<string, string>>({});
   const diarizationSpeakerOrderRef = useRef<string[]>([]);
@@ -2193,33 +2154,14 @@ function App() {
       return;
     }
 
-    setMeetingState("starting");
-    setMeetingDetail("Finding screens");
-    try {
-      const sources = await invoke<MeetingVisualSource[]>(
-        "list_meeting_visual_sources",
-      );
-      setMeetingVisualSources(sources);
-      setMeetingSourcePickerOpen(true);
-      setMeetingState("idle");
-      setMeetingDetail(
-        sources.length > 0 ? "Choose capture target" : "No visual sources",
-      );
-    } catch (sourceError) {
-      toast.error(`Visual source list failed: ${String(sourceError)}`);
-      await beginMeetingMode(null, null);
-    }
+    await beginMeetingMode();
   }
 
-  async function beginMeetingMode(
-    visualSourceId: string | null,
-    visualSourceName: string | null,
-  ) {
+  async function beginMeetingMode() {
     if (meetingState !== "idle" && meetingState !== "starting") {
       return;
     }
 
-    setMeetingSourcePickerOpen(false);
     setMeetingState("starting");
     setMeetingDetail("Creating note");
     try {
@@ -2251,8 +2193,6 @@ function App() {
       meetingPendingSttJobsRef.current = 0;
       meetingPendingSttResolversRef.current = [];
       lastSystemCapturePathRef.current = null;
-      meetingVisualSourceIdRef.current = visualSourceId;
-      lastMeetingSnapshotAtRef.current = 0;
       resetMeetingDiarization();
       const diarizationSession = await invoke<DiarizationSessionStarted>(
         "start_diarization_session",
@@ -2262,7 +2202,6 @@ function App() {
       });
       diarizationSessionIdRef.current =
         diarizationSession?.session_id ?? null;
-      setMeetingVisualSourceName(visualSourceName);
       setMeetingNoteTitle(title);
       await saveMeetingNote(note.id, title, content, note.folder_id);
 
@@ -2276,18 +2215,10 @@ function App() {
       meetingLoopActiveRef.current = false;
       await stopDiarizationSession();
       await stopMeetingSources();
-      meetingVisualSourceIdRef.current = null;
-      setMeetingVisualSourceName(null);
       setMeetingState("idle");
       setMeetingDetail("Ready");
       toast.error(meetingError);
     }
-  }
-
-  function cancelMeetingSourcePicker() {
-    setMeetingSourcePickerOpen(false);
-    setMeetingState("idle");
-    setMeetingDetail("Ready");
   }
 
   async function pauseMeetingMode() {
@@ -2423,7 +2354,6 @@ function App() {
     meetingQuickNotesRef.current = "";
     meetingQuickNoteIdRef.current = null;
     meetingQuickNoteFolderIdRef.current = null;
-    meetingVisualSourceIdRef.current = null;
     resetMeetingDiarization();
     setMeetingNoteId(null);
     setMeetingNotesOpen(false);
@@ -2431,7 +2361,6 @@ function App() {
     setMeetingQuickNotes("");
     setMeetingQuickNoteId(null);
     setMeetingQuickNoteSaveState("idle");
-    setMeetingVisualSourceName(null);
     setMeetingState("idle");
     setMeetingDetail("Ready");
   }
@@ -2564,50 +2493,7 @@ function App() {
       );
     }
 
-    let nextContent = meetingContentRef.current;
-    let hasNoteChanges = false;
-    const snapshotLine = await maybeCaptureMeetingSnapshot();
-    if (snapshotLine) {
-      nextContent = appendMeetingSnapshot(nextContent, snapshotLine);
-      hasNoteChanges = true;
-    }
-
-    if (!hasNoteChanges) {
-      setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
-      return;
-    }
-
-    meetingContentRef.current = nextContent;
-    const saved = await saveMeetingNote(
-      noteId,
-      meetingTitleRef.current,
-      nextContent,
-      meetingFolderIdRef.current,
-    );
-    meetingFolderIdRef.current = saved.folder_id;
     setMeetingDetail(meetingLoopActiveRef.current ? "Listening" : "Stopped");
-  }
-
-  async function maybeCaptureMeetingSnapshot() {
-    const sourceId = meetingVisualSourceIdRef.current;
-    if (!sourceId) {
-      return null;
-    }
-
-    const now = Date.now();
-    if (now - lastMeetingSnapshotAtRef.current < MEETING_SNAPSHOT_MS) {
-      return null;
-    }
-
-    lastMeetingSnapshotAtRef.current = now;
-    const snapshot = await invoke<MeetingSnapshot>("capture_meeting_snapshot", {
-      sourceId,
-    }).catch((snapshotError) => {
-      setMeetingDetail(`Snapshot skipped: ${String(snapshotError)}`);
-      return null;
-    });
-
-    return snapshot ? meetingSnapshotLine(snapshot) : null;
   }
 
   // Create a folder with a placeholder name, then drop straight into inline rename.
@@ -3577,7 +3463,6 @@ function App() {
       <MeetingCapsule
         detail={meetingDetail}
         noteTitle={meetingNoteTitle}
-        visualSourceName={meetingVisualSourceName}
         state={meetingState}
         calendarCueTitle={actionableCalendarEvent?.title ?? null}
         micLabel={meetingMicLabel}
@@ -3610,15 +3495,6 @@ function App() {
           onRename={(speakerId, name) =>
             void renameDiarizedSpeaker(speakerId, name)
           }
-        />
-      ) : null}
-
-      {meetingSourcePickerOpen ? (
-        <MeetingSourcePicker
-          sources={meetingVisualSources}
-          onCancel={cancelMeetingSourcePicker}
-          onSelect={(source) => void beginMeetingMode(source.id, source.name)}
-          onTranscriptOnly={() => void beginMeetingMode(null, null)}
         />
       ) : null}
 
@@ -3722,7 +3598,6 @@ function MeetingTasksPanel({
 type MeetingCapsuleProps = {
   detail: string;
   noteTitle: string;
-  visualSourceName: string | null;
   state: MeetingState;
   calendarCueTitle: string | null;
   micLabel: string;
@@ -3742,7 +3617,6 @@ type MeetingCapsuleProps = {
 function MeetingCapsule({
   detail,
   noteTitle,
-  visualSourceName,
   state,
   calendarCueTitle,
   micLabel,
@@ -3777,7 +3651,6 @@ function MeetingCapsule({
           </strong>
           <small>
             {isCalendarReady ? "Ready to start" : isBusy ? state : detail}
-            {visualSourceName ? ` · ${visualSourceName}` : ""}
           </small>
         </div>
       </div>
@@ -3940,91 +3813,6 @@ function DiarizationSpeakerPromptBox({
         Later
       </button>
     </section>
-  );
-}
-
-type MeetingSourcePickerProps = {
-  sources: MeetingVisualSource[];
-  onCancel: () => void;
-  onSelect: (source: MeetingVisualSource) => void;
-  onTranscriptOnly: () => void;
-};
-
-function MeetingSourcePicker({
-  sources,
-  onCancel,
-  onSelect,
-  onTranscriptOnly,
-}: MeetingSourcePickerProps) {
-  return (
-    <div
-      className="meeting-source-backdrop"
-      role="presentation"
-      onMouseDown={onCancel}
-    >
-      <section
-        className="meeting-source-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="meeting-source-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header>
-          <div>
-            <h2 id="meeting-source-title">Meeting capture</h2>
-            <p>Choose what should be captured as periodic visual snapshots.</p>
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={onCancel}
-            title="Close"
-          >
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="meeting-source-list">
-          {sources.length === 0 ? (
-            <p className="meeting-source-empty">
-              No visual sources are available right now.
-            </p>
-          ) : (
-            sources.map((source) => (
-              <button
-                type="button"
-                key={source.id}
-                onClick={() => onSelect(source)}
-              >
-                <span className="meeting-source-icon">
-                  <Monitor size={18} />
-                </span>
-                <span>
-                  <strong>{source.name}</strong>
-                  <small>
-                    {source.kind === "display"
-                      ? "Display"
-                      : (source.app_name ?? "Window")}
-                    {source.width && source.height
-                      ? ` · ${source.width}x${source.height}`
-                      : ""}
-                  </small>
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-
-        <footer>
-          <button type="button" onClick={onTranscriptOnly}>
-            Transcript only
-          </button>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-        </footer>
-      </section>
-    </div>
   );
 }
 

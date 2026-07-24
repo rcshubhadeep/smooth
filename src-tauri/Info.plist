@@ -4,5 +4,9 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Smooth needs microphone access to capture audio notes for transcription.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Smooth needs system audio access to transcribe the other participants in a meeting.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Smooth uses macOS screen and system audio recording access only to capture meeting audio.</string>
 </dict>
 </plist>
