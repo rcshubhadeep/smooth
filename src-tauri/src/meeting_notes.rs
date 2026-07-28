@@ -6,8 +6,9 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    chat, create_note_with_extraction_status, db_error, disabled_extraction_status, load_note_meta,
-    now_string, open_database, read_note_content, save_note_internal, NoteWithContent,
+    agents::reminder_workflows::WorkflowStepInput, chat, create_note_with_extraction_status,
+    db_error, disabled_extraction_status, load_note_meta, now_string, open_database,
+    read_note_content, reminders, save_note_internal, NoteWithContent,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -18,6 +19,7 @@ struct MeetingNoteJob {
     transcript_note_id: String,
     user_note_id: String,
     content_hash: String,
+    workflow_steps_json: String,
     attempts: u32,
     max_attempts: u32,
 }
@@ -51,7 +53,7 @@ struct GeneratedSection {
 struct EmptyHeading {
     title: String,
     line_index: usize,
-    next_heading_index: usize,
+    fill_end_index: usize,
 }
 
 pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
@@ -71,14 +73,37 @@ pub(crate) fn init_schema(connection: &Connection) -> Result<(), String> {
                 updated_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT,
-                last_error TEXT
+                last_error TEXT,
+                workflow_steps_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE INDEX IF NOT EXISTS meeting_note_jobs_claim_idx
                 ON meeting_note_jobs(status, created_at, id);
             ",
         )
-        .map_err(db_error)
+        .map_err(db_error)?;
+    migrate_workflow_steps_column(connection)
+}
+
+fn migrate_workflow_steps_column(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(meeting_note_jobs)")
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(db_error)?;
+    if !columns.contains("workflow_steps_json") {
+        connection
+            .execute(
+                "ALTER TABLE meeting_note_jobs
+                 ADD COLUMN workflow_steps_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn recover_interrupted_jobs(connection: &Connection) -> Result<(), String> {
@@ -162,10 +187,11 @@ pub(crate) fn enqueue_meeting_note_completion(
     app: AppHandle,
     transcript_note_id: String,
     user_note_id: String,
+    workflow_steps: Vec<WorkflowStepInput>,
 ) -> Result<MeetingNoteCompletionStatus, String> {
     let content = read_note_content(&app, &user_note_id)?;
     let headings = empty_headings(&content);
-    if headings.is_empty() {
+    if headings.is_empty() && workflow_steps.is_empty() {
         enable_note_extraction(&app, &user_note_id, &content)?;
         return Ok(MeetingNoteCompletionStatus {
             status: "not_needed".to_string(),
@@ -176,18 +202,22 @@ pub(crate) fn enqueue_meeting_note_completion(
 
     let now = now_string();
     let content_hash = hash_text(&content);
+    let workflow_steps_json =
+        serde_json::to_string(&workflow_steps).map_err(|error| error.to_string())?;
     let connection = open_database(&app)?;
     connection
         .execute(
             "
             INSERT INTO meeting_note_jobs (
                 transcript_note_id, user_note_id, content_hash, status,
-                attempts, max_attempts, created_at, updated_at
+                attempts, max_attempts, created_at, updated_at,
+                workflow_steps_json
             )
-            VALUES (?1, ?2, ?3, 'pending', 0, 3, ?4, ?4)
+            VALUES (?1, ?2, ?3, 'pending', 0, 3, ?4, ?4, ?5)
             ON CONFLICT(user_note_id) DO UPDATE SET
                 transcript_note_id = excluded.transcript_note_id,
                 content_hash = excluded.content_hash,
+                workflow_steps_json = excluded.workflow_steps_json,
                 status = 'pending',
                 attempts = 0,
                 updated_at = excluded.updated_at,
@@ -195,7 +225,13 @@ pub(crate) fn enqueue_meeting_note_completion(
                 completed_at = NULL,
                 last_error = NULL
             ",
-            params![transcript_note_id, user_note_id, content_hash, now],
+            params![
+                transcript_note_id,
+                user_note_id,
+                content_hash,
+                now,
+                workflow_steps_json
+            ],
         )
         .map_err(db_error)?;
     Ok(MeetingNoteCompletionStatus {
@@ -226,7 +262,8 @@ fn claim_job(app: &AppHandle) -> Result<Option<MeetingNoteJob>, String> {
     let job = transaction
         .query_row(
             "
-            SELECT id, transcript_note_id, user_note_id, content_hash, attempts, max_attempts
+            SELECT id, transcript_note_id, user_note_id, content_hash,
+                   workflow_steps_json, attempts, max_attempts
             FROM meeting_note_jobs
             WHERE status = 'pending'
             ORDER BY created_at, id
@@ -239,8 +276,9 @@ fn claim_job(app: &AppHandle) -> Result<Option<MeetingNoteJob>, String> {
                     transcript_note_id: row.get(1)?,
                     user_note_id: row.get(2)?,
                     content_hash: row.get(3)?,
-                    attempts: row.get::<_, u32>(4)? + 1,
-                    max_attempts: row.get(5)?,
+                    workflow_steps_json: row.get(4)?,
+                    attempts: row.get::<_, u32>(5)? + 1,
+                    max_attempts: row.get(6)?,
                 })
             },
         )
@@ -284,6 +322,7 @@ async fn process_job_inner(app: &AppHandle, job: &MeetingNoteJob) -> Result<(), 
     let headings = empty_headings(&user_note);
     if headings.is_empty() {
         enable_note_extraction(app, &job.user_note_id, &user_note)?;
+        schedule_mentioned_tasks(app, job)?;
         return complete_job(app, job, "done");
     }
     let heading_titles = headings
@@ -300,6 +339,17 @@ async fn process_job_inner(app: &AppHandle, job: &MeetingNoteJob) -> Result<(), 
     )
     .await?;
     let generated = parse_generated_sections(&raw)?;
+    let missing_headings = heading_titles
+        .iter()
+        .filter(|heading| !generated.contains_key(&normalize_heading(heading)))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_headings.is_empty() {
+        return Err(format!(
+            "Model omitted requested meeting note sections: {}",
+            missing_headings.join(", ")
+        ));
+    }
 
     let latest = read_note_content(app, &job.user_note_id)?;
     if hash_text(&latest) != job.content_hash {
@@ -307,7 +357,19 @@ async fn process_job_inner(app: &AppHandle, job: &MeetingNoteJob) -> Result<(), 
     }
     let filled = fill_empty_sections(&latest, &generated);
     enable_note_extraction(app, &job.user_note_id, &filled)?;
+    schedule_mentioned_tasks(app, job)?;
     complete_job(app, job, "done")
+}
+
+fn schedule_mentioned_tasks(app: &AppHandle, job: &MeetingNoteJob) -> Result<(), String> {
+    let workflow_steps = serde_json::from_str::<Vec<WorkflowStepInput>>(&job.workflow_steps_json)
+        .map_err(|error| format!("Invalid mentioned task workflow: {error}"))?;
+    reminders::create_meeting_note_task_workflow(
+        app.clone(),
+        job.id,
+        &job.user_note_id,
+        workflow_steps,
+    )
 }
 
 fn enable_note_extraction(app: &AppHandle, note_id: &str, content: &str) -> Result<(), String> {
@@ -425,20 +487,41 @@ fn empty_headings(content: &str) -> Vec<EmptyHeading> {
         .iter()
         .enumerate()
         .filter_map(|(position, (line_index, title))| {
-            let next = headings
+            let next_heading = headings
                 .get(position + 1)
                 .map(|(index, _)| *index)
                 .unwrap_or(lines.len());
-            lines[*line_index + 1..next]
+            let fill_end = lines[*line_index + 1..next_heading]
+                .iter()
+                .position(|line| is_task_directive_line(line))
+                .map(|offset| *line_index + 1 + offset)
+                .unwrap_or(next_heading);
+            lines[*line_index + 1..fill_end]
                 .iter()
                 .all(|line| line.trim().is_empty())
                 .then(|| EmptyHeading {
                     title: title.clone(),
                     line_index: *line_index,
-                    next_heading_index: next,
+                    fill_end_index: fill_end,
                 })
         })
         .collect()
+}
+
+fn is_task_directive_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.split(',').all(|part| {
+        let Some(handle) = part.trim().strip_prefix('@') else {
+            return false;
+        };
+        !handle.is_empty()
+            && handle.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+    })
 }
 
 fn parse_generated_sections(raw: &str) -> Result<HashMap<String, String>, String> {
@@ -468,10 +551,7 @@ fn fill_empty_sections(content: &str, generated: &HashMap<String, String>) -> St
             continue;
         };
         let replacement = body.lines().map(str::to_string).collect::<Vec<_>>();
-        lines.splice(
-            heading.line_index + 1..heading.next_heading_index,
-            replacement,
-        );
+        lines.splice(heading.line_index + 1..heading.fill_end_index, replacement);
     }
     let mut result = lines.join("\n");
     if content.ends_with('\n') {
@@ -494,7 +574,7 @@ mod tests {
 
     #[test]
     fn finds_and_fills_only_empty_heading_sections() {
-        let content = "Opening note\n\n# To do\n\n# Decisions\nAlready agreed\n\n# Next steps\n";
+        let content = "Opening note\n\n@summary, @draft\n\n# To do\n\n# Decisions\nAlready agreed\n\n# Next steps\n";
         let headings = empty_headings(content);
         assert_eq!(
             headings
@@ -510,7 +590,60 @@ mod tests {
         ]);
         let filled = fill_empty_sections(content, &generated);
         assert!(filled.contains("# To do\n- Send proposal"));
+        assert!(filled.contains("@summary, @draft"));
         assert!(filled.contains("# Decisions\nAlready agreed"));
         assert!(filled.contains("# Next steps\nMeet on Friday"));
+    }
+
+    #[test]
+    fn task_directives_end_the_generated_part_without_removing_rough_notes() {
+        let content = "# To do\n\n# Main talking point\n\n@summary, @draft\n\nrandom text\n\nmore random text\n";
+        let headings = empty_headings(content);
+        assert_eq!(
+            headings
+                .iter()
+                .map(|heading| heading.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["To do", "Main talking point"]
+        );
+
+        let generated = HashMap::from([
+            ("to do".to_string(), "- Finish the application".to_string()),
+            (
+                "main talking point".to_string(),
+                "The release plan and user testing.".to_string(),
+            ),
+        ]);
+        let filled = fill_empty_sections(content, &generated);
+        assert!(filled.contains(
+            "# Main talking point\nThe release plan and user testing.\n@summary, @draft"
+        ));
+        assert!(filled.contains("random text\n\nmore random text"));
+    }
+
+    #[test]
+    fn ordinary_text_still_makes_a_heading_non_empty() {
+        let content = "# Decisions\nAlready agreed\n\n@summary\n";
+        assert!(empty_headings(content).is_empty());
+    }
+
+    #[test]
+    fn meeting_job_schema_stores_ordered_task_mentions() {
+        let connection = Connection::open_in_memory().expect("open database");
+        connection
+            .execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY);")
+            .expect("notes schema");
+        init_schema(&connection).expect("meeting note schema");
+
+        let has_workflow_steps = connection
+            .prepare("PRAGMA table_info(meeting_note_jobs)")
+            .expect("table info")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("column names")
+            .iter()
+            .any(|column| column == "workflow_steps_json");
+        assert!(has_workflow_steps);
     }
 }

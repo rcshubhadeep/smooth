@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -148,8 +148,15 @@ pub(crate) fn create_reminder(
     app: AppHandle,
     input: CreateReminderInput,
 ) -> Result<ReminderRecord, String> {
+    create_reminder_with_id(app, new_id("reminder"), input)
+}
+
+fn create_reminder_with_id(
+    app: AppHandle,
+    id: String,
+    input: CreateReminderInput,
+) -> Result<ReminderRecord, String> {
     validate_input(&input)?;
-    let id = new_id("reminder");
     let now = now_string();
     let comment = input
         .comment
@@ -183,6 +190,54 @@ pub(crate) fn create_reminder(
     reminder_workflows::insert_workflow(&transaction, &id, &input.workflow_steps)?;
     transaction.commit().map_err(db_error)?;
     load_one(&connection, &id)
+}
+
+pub(crate) fn create_meeting_note_task_workflow(
+    app: AppHandle,
+    job_id: i64,
+    note_id: &str,
+    workflow_steps: Vec<reminder_workflows::WorkflowStepInput>,
+) -> Result<(), String> {
+    if workflow_steps.is_empty() {
+        return Ok(());
+    }
+
+    let reminder_id = format!("meeting-note-workflow-{job_id}");
+    let existing = {
+        let connection = open_database(&app)?;
+        connection
+            .query_row(
+                "SELECT 1 FROM reminders WHERE id = ?1",
+                params![reminder_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(db_error)?
+            .is_some()
+    };
+    if existing {
+        return Ok(());
+    }
+
+    let selected_text =
+        "The meeting note is finalized. Run the mentioned tasks in their written order."
+            .to_string();
+    create_reminder_with_id(
+        app,
+        reminder_id,
+        CreateReminderInput {
+            note_id: note_id.to_string(),
+            scheduled_at: current_time_ms(),
+            comment: Some("Tasks mentioned in meeting notes".to_string()),
+            start_offset: 0,
+            end_offset: selected_text.len() as i64,
+            selected_text,
+            context_before: String::new(),
+            context_after: String::new(),
+            workflow_steps,
+        },
+    )?;
+    Ok(())
 }
 
 #[tauri::command]

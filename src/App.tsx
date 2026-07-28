@@ -60,7 +60,9 @@ import {
 import { Bot } from "lucide-react";
 import {
   AgentsView,
+  listTasks,
   NoteAgentsPanel,
+  type AgentDefinition,
   type AgentRunResult,
 } from "./Agents";
 import LlmRunChoiceDialog from "./LlmRunChoice";
@@ -746,6 +748,58 @@ function wait(ms: number) {
   });
 }
 
+const BUILTIN_TASK_MENTION_HANDLES: Record<string, string> = {
+  "create-gmail-draft": "draft",
+  "create-todo": "todo",
+  "share-note-slack": "slack",
+  "suggest-links": "links",
+  "summarize-note": "summary",
+  "what-have-i-missed": "what-have-i-missed",
+};
+
+function taskMentionHandle(task: AgentDefinition) {
+  const builtin = BUILTIN_TASK_MENTION_HANDLES[task.id];
+  if (builtin) {
+    return builtin;
+  }
+  const slug = task.name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || task.id.toLowerCase();
+}
+
+function parseTaskMentionSteps(
+  content: string,
+  tasks: AgentDefinition[],
+): ReminderWorkflowStepDraft[] {
+  const byHandle = new Map<string, AgentDefinition>();
+  for (const task of tasks) {
+    const aliases = [
+      taskMentionHandle(task),
+      task.id,
+      task.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    ];
+    for (const alias of aliases) {
+      if (alias && !byHandle.has(alias)) {
+        byHandle.set(alias, task);
+      }
+    }
+  }
+
+  const steps: ReminderWorkflowStepDraft[] = [];
+  const mentionPattern = /(?:^|[\s,(])@([a-z0-9][a-z0-9_-]*)/gi;
+  for (const match of content.matchAll(mentionPattern)) {
+    const task = byHandle.get(match[1].toLowerCase());
+    if (task) {
+      steps.push({ agentId: task.id });
+    }
+  }
+  return steps;
+}
+
 function sortNotes(notes: NoteListItem[], mode: SortMode) {
   return [...notes].sort((first, second) => {
     const [field, direction] = mode.split("-") as [
@@ -1127,6 +1181,9 @@ function App() {
   const [meetingEndWorkflowSteps, setMeetingEndWorkflowSteps] = useState<
     ReminderWorkflowStepDraft[]
   >([]);
+  const [meetingMentionTasks, setMeetingMentionTasks] = useState<
+    AgentDefinition[]
+  >([]);
   const [meetingQuickNotes, setMeetingQuickNotes] = useState("");
   const [meetingQuickNoteId, setMeetingQuickNoteId] = useState<string | null>(
     null,
@@ -1483,6 +1540,7 @@ function App() {
           }
         });
       }
+      announceReminderChange();
       toast.success("Meeting note completed");
     })
       .then((nextUnlisten) => {
@@ -2185,9 +2243,16 @@ function App() {
       setMeetingQuickNotes("");
       setMeetingQuickNoteId(null);
       setMeetingQuickNoteSaveState("idle");
-      setMeetingNotesOpen(false);
+      setMeetingNotesOpen(true);
       setMeetingTasksOpen(false);
       setMeetingEndWorkflowSteps([]);
+      void listTasks()
+        .then((tasks) =>
+          setMeetingMentionTasks(
+            tasks.filter(({ scope }) => scope === "note").slice(0, 50),
+          ),
+        )
+        .catch(() => setMeetingMentionTasks([]));
       meetingAppendQueueRef.current = Promise.resolve();
       meetingSttSequenceRef.current = 0;
       meetingPendingSttJobsRef.current = 0;
@@ -2277,6 +2342,12 @@ function App() {
         return null;
       },
     );
+    const mentionedWorkflowSteps = quickNoteToComplete
+      ? parseTaskMentionSteps(
+          meetingQuickNotesRef.current,
+          meetingMentionTasks,
+        ).slice(0, 8)
+      : [];
     setMeetingDetail("Finishing meeting processing");
     await waitForMeetingSttJobs();
     await meetingAppendQueueRef.current.catch(() => undefined);
@@ -2306,11 +2377,22 @@ function App() {
           {
             transcriptNoteId: meetingNoteToExtract,
             userNoteId: quickNoteToComplete,
+            workflowSteps: mentionedWorkflowSteps,
           },
         );
         if (completion.status === "queued") {
+          const activities = [
+            completion.empty_headings > 0
+              ? `completing ${completion.empty_headings} meeting note section${completion.empty_headings === 1 ? "" : "s"}`
+              : null,
+            mentionedWorkflowSteps.length > 0
+              ? `running ${mentionedWorkflowSteps.length} mentioned task${mentionedWorkflowSteps.length === 1 ? "" : "s"} afterward`
+              : null,
+          ].filter(Boolean);
           toast.info(
-            `Completing ${completion.empty_headings} meeting note section${completion.empty_headings === 1 ? "" : "s"}`,
+            activities.length > 0
+              ? `${activities.join(" and ")}`
+              : "Meeting note queued",
           );
         }
       } catch (completionError) {
@@ -2361,6 +2443,7 @@ function App() {
     setMeetingQuickNotes("");
     setMeetingQuickNoteId(null);
     setMeetingQuickNoteSaveState("idle");
+    setMeetingMentionTasks([]);
     setMeetingState("idle");
     setMeetingDetail("Ready");
   }
@@ -3336,6 +3419,10 @@ function App() {
                 panelOpen={shouldShowContextPanel}
                 externalRevision={meetingContentRevision}
                 externalNoteId={meetingNoteId}
+                readOnly={
+                  meetingState !== "idle" &&
+                  activeNote?.id === meetingNoteId
+                }
                 entityJumpTarget={entityJumpTarget}
                 reminderJumpTarget={reminderJumpTarget}
                 onDismissReminderTarget={() => setReminderJumpTarget(null)}
@@ -3444,6 +3531,7 @@ function App() {
         <MeetingQuickNotesPanel
           noteCreated={Boolean(meetingQuickNoteId)}
           saveState={meetingQuickNoteSaveState}
+          tasks={meetingMentionTasks}
           value={meetingQuickNotes}
           onChange={updateMeetingQuickNotes}
           onClose={() => setMeetingNotesOpen(false)}
@@ -3513,16 +3601,25 @@ function App() {
 function MeetingQuickNotesPanel({
   noteCreated,
   saveState,
+  tasks,
   value,
   onChange,
   onClose,
 }: {
   noteCreated: boolean;
   saveState: SaveState;
+  tasks: AgentDefinition[];
   value: string;
   onChange: (value: string) => void;
   onClose: () => void;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<{
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const status = !noteCreated
     ? "Draft"
     : saveState === "saving"
@@ -3530,6 +3627,55 @@ function MeetingQuickNotesPanel({
       : saveState === "error"
         ? "Save failed"
         : "Saved";
+  const mentionOptions = useMemo(() => {
+    if (!mentionQuery) {
+      return [];
+    }
+    const query = mentionQuery.query.toLowerCase();
+    return tasks
+      .filter((task) => {
+        const handle = taskMentionHandle(task);
+        return (
+          !query ||
+          handle.includes(query) ||
+          task.name.toLowerCase().includes(query)
+        );
+      })
+      .slice(0, 7);
+  }, [mentionQuery, tasks]);
+
+  function updateMentionQuery(nextValue: string, caret: number) {
+    const beforeCaret = nextValue.slice(0, caret);
+    const match = beforeCaret.match(/(?:^|[\s,(])@([a-z0-9_-]*)$/i);
+    if (!match) {
+      setMentionQuery(null);
+      return;
+    }
+    setMentionQuery({
+      start: beforeCaret.lastIndexOf("@"),
+      end: caret,
+      query: match[1],
+    });
+    setActiveMentionIndex(0);
+  }
+
+  function chooseMention(task: AgentDefinition) {
+    if (!mentionQuery) {
+      return;
+    }
+    const handle = `@${taskMentionHandle(task)}`;
+    const nextValue =
+      value.slice(0, mentionQuery.start) +
+      handle +
+      value.slice(mentionQuery.end);
+    const caret = mentionQuery.start + handle.length;
+    onChange(nextValue);
+    setMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(caret, caret);
+    });
+  }
 
   return (
     <section className="meeting-quick-notes" aria-label="Meeting notes">
@@ -3543,12 +3689,74 @@ function MeetingQuickNotesPanel({
           <X size={15} />
         </button>
       </header>
-      <textarea
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        placeholder={"# To do\n\n# Agreed next steps"}
-        autoFocus
-      />
+      <div className="meeting-quick-notes-editor">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(event) => {
+            const nextValue = event.currentTarget.value;
+            const caret = event.currentTarget.selectionStart;
+            onChange(nextValue);
+            updateMentionQuery(nextValue, caret);
+          }}
+          onClick={(event) =>
+            updateMentionQuery(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+            )
+          }
+          onKeyDown={(event) => {
+            if (!mentionQuery || mentionOptions.length === 0) {
+              return;
+            }
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setActiveMentionIndex(
+                (index) => (index + 1) % mentionOptions.length,
+              );
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveMentionIndex(
+                (index) =>
+                  (index - 1 + mentionOptions.length) % mentionOptions.length,
+              );
+            } else if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              chooseMention(
+                mentionOptions[
+                  Math.min(activeMentionIndex, mentionOptions.length - 1)
+                ],
+              );
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setMentionQuery(null);
+            }
+          }}
+          placeholder={
+            "# To do\n\n# Agreed next steps\n\n@summary, @draft"
+          }
+          autoFocus
+        />
+        {mentionQuery && mentionOptions.length > 0 ? (
+          <div className="meeting-task-mentions" role="listbox">
+            {mentionOptions.map((task, index) => (
+              <button
+                key={task.id}
+                className={index === activeMentionIndex ? "active" : ""}
+                type="button"
+                role="option"
+                aria-selected={index === activeMentionIndex}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveMentionIndex(index)}
+                onClick={() => chooseMention(task)}
+              >
+                <span>@{taskMentionHandle(task)}</span>
+                <small>{task.name}</small>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -6341,6 +6549,7 @@ type NoteEditorProps = {
   panelOpen: boolean;
   externalRevision: number;
   externalNoteId: string | null;
+  readOnly: boolean;
   entityJumpTarget: { nonce: number; surfaceText: string } | null;
   reminderJumpTarget: ReminderJumpTarget | null;
   onDismissReminderTarget: () => void;
@@ -6371,6 +6580,7 @@ function NoteEditor({
   panelOpen,
   externalRevision,
   externalNoteId,
+  readOnly,
   entityJumpTarget,
   reminderJumpTarget,
   onDismissReminderTarget,
@@ -6467,13 +6677,13 @@ function NoteEditor({
     setSaveState("idle");
     if (editor && !editor.isDestroyed) {
       editor.commands.setContent(markdownToHtml(note?.content ?? ""));
-      editor.setEditable(!note?.deleted_at);
+      editor.setEditable(!note?.deleted_at && !readOnly);
     }
 
     window.queueMicrotask(() => {
       isLoadingNoteRef.current = false;
     });
-  }, [editor, note?.deleted_at, note?.id]);
+  }, [editor, note?.deleted_at, note?.id, readOnly]);
 
   useEffect(() => {
     if (
@@ -6930,6 +7140,7 @@ function NoteEditor({
               <div className="pop-wrap" onPointerDown={(event) => event.stopPropagation()}>
                 <button
                   type="button"
+                  disabled={readOnly}
                   className="folder-select-trigger"
                   onClick={() => setFolderMenuOpen((open) => !open)}
                   aria-haspopup="menu"
@@ -6985,6 +7196,7 @@ function NoteEditor({
               <button
                 className="icon-button danger"
                 type="button"
+                disabled={readOnly}
                 onClick={() => void onTrash(note.id)}
                 title="Move to trash"
               >
@@ -7019,7 +7231,7 @@ function NoteEditor({
         </div>
         <input
           className="title-input"
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           value={draftTitle}
           onChange={(event) => {
             hasUnsavedChangesRef.current = true;
@@ -7031,9 +7243,14 @@ function NoteEditor({
 
       <div
         className={
-          note.deleted_at ? "editor-toolbar disabled" : "editor-toolbar"
+          note.deleted_at || readOnly
+            ? "editor-toolbar disabled"
+            : "editor-toolbar"
         }
       >
+        {readOnly ? (
+          <span className="live-transcript-readonly">Live transcript · read only</span>
+        ) : null}
         <button
           disabled={
             Boolean(note.deleted_at) || !editor || editor.state.selection.empty
@@ -7048,7 +7265,9 @@ function NoteEditor({
         <button
           className={dictationState === "recording" ? "active" : ""}
           disabled={
-            Boolean(note.deleted_at) || dictationState === "transcribing"
+            Boolean(note.deleted_at) ||
+            readOnly ||
+            dictationState === "transcribing"
           }
           type="button"
           onClick={() => void toggleDictation()}
@@ -7081,7 +7300,7 @@ function NoteEditor({
         ) : null}
         <button
           className={editor?.isActive("bold") ? "active" : ""}
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           type="button"
           onClick={() => editor?.chain().focus().toggleBold().run()}
           title="Bold"
@@ -7090,7 +7309,7 @@ function NoteEditor({
         </button>
         <button
           className={editor?.isActive("italic") ? "active" : ""}
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           type="button"
           onClick={() => editor?.chain().focus().toggleItalic().run()}
           title="Italic"
@@ -7099,7 +7318,7 @@ function NoteEditor({
         </button>
         <button
           className={editor?.isActive("strike") ? "active" : ""}
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           type="button"
           onClick={() => editor?.chain().focus().toggleStrike().run()}
           title="Strikethrough"
@@ -7109,7 +7328,7 @@ function NoteEditor({
         <span className="toolbar-divider" aria-hidden="true" />
         <button
           className={editor?.isActive("heading", { level: 2 }) ? "active" : ""}
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           type="button"
           onClick={() =>
             editor?.chain().focus().toggleHeading({ level: 2 }).run()
@@ -7120,7 +7339,7 @@ function NoteEditor({
         </button>
         <button
           className={editor?.isActive("bulletList") ? "active" : ""}
-          disabled={Boolean(note.deleted_at)}
+          disabled={Boolean(note.deleted_at) || readOnly}
           type="button"
           onClick={() => editor?.chain().focus().toggleBulletList().run()}
           title="Bullet list"

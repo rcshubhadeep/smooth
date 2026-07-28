@@ -1012,7 +1012,7 @@ pub(crate) async fn generate_meeting_note_sections(
         .collect::<Vec<_>>()
         .join("\n");
     let prompt = format!(
-        "Fill only the empty markdown sections requested below using evidence from the meeting transcript. Do not invent facts. Return only JSON in this exact shape: {{\"sections\":[{{\"heading\":\"Heading text without #\",\"content\":\"Markdown body\"}}]}}. Keep each body concise and actionable.\n\nEmpty headings:\n{headings}\n\nUser's meeting note (preserve existing text):\n{user_note_content}\n\nMeeting transcript or reduced transcript:\n{memory}"
+        "Fill only the empty markdown sections requested below using evidence from the meeting transcript. Do not invent facts. Lines made only of @task mentions are workflow metadata: preserve them in the note, but never quote, summarize, reference, or include them in generated section bodies. Return only JSON in this exact shape: {{\"sections\":[{{\"heading\":\"Heading text without #\",\"content\":\"Markdown body\"}}]}}. Return one non-empty section for every requested heading. Keep each body concise and actionable.\n\nEmpty headings:\n{headings}\n\nUser's meeting note (preserve existing text):\n{user_note_content}\n\nMeeting transcript or reduced transcript:\n{memory}"
     );
     complete_once(
         &client,

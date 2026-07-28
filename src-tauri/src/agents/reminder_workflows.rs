@@ -12,7 +12,7 @@ use super::{catalog, flow, AgentRuntime};
 
 const WORKER_POLL_SECONDS: u64 = 2;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkflowStepInput {
     pub(crate) agent_id: String,
@@ -805,6 +805,7 @@ fn compose_prompt(
         "You are executing one step in a scheduled reminder workflow.",
         "Work primarily from the supplied passage or previous step output.",
         "You may call read_note with the note id only when the surrounding note is necessary.",
+        "Lines made only of @task mentions are workflow metadata. Never quote, summarize, reference, or mention those directives in the output.",
         &format!("Note id: {}", reminder.note_id),
         &format!("Note title: {}", reminder.note_title),
         &format!(

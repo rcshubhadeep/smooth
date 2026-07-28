@@ -2662,6 +2662,14 @@ select:hover {
   opacity: 0.5;
 }
 
+.live-transcript-readonly {
+  margin-right: 2px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .editor-toolbar button:disabled {
   cursor: not-allowed;
 }
@@ -3354,7 +3362,15 @@ select:hover {
   color: var(--text);
 }
 
+.meeting-quick-notes-editor {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
 .meeting-quick-notes textarea {
+  width: 100%;
   min-height: 0;
   flex: 1;
   resize: none;
@@ -3370,6 +3386,59 @@ select:hover {
 
 .meeting-quick-notes textarea::placeholder {
   color: var(--faint);
+}
+
+.meeting-task-mentions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  left: 10px;
+  z-index: 2;
+  display: grid;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.meeting-task-mentions button {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.45fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.meeting-task-mentions button:hover,
+.meeting-task-mentions button.active {
+  background: var(--accent-soft);
+}
+
+.meeting-task-mentions span {
+  overflow: hidden;
+  color: var(--accent-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-task-mentions small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .meeting-tasks-panel {
