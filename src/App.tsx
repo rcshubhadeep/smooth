@@ -62,6 +62,7 @@ import {
   AgentsView,
   listTasks,
   NoteAgentsPanel,
+  taskMentionHandle,
   type AgentDefinition,
   type AgentRunResult,
 } from "./Agents";
@@ -89,6 +90,13 @@ import CommandPalette from "./CommandPalette";
 import ImportDocuments from "./ImportDocuments";
 import LlamaSettings from "./LlamaSettings";
 import McpSettings from "./McpSettings";
+import NoteTemplateSettings, {
+  combineTemplateWithNotes,
+  listNoteTemplates,
+  removeTemplateScaffolding,
+  type MeetingTemplateAssignment,
+  type NoteTemplate,
+} from "./NoteTemplates";
 import SlackSettings from "./SlackSettings";
 import {
   announceReminderChange,
@@ -212,6 +220,27 @@ type CalendarEvent = {
   html_link: string | null;
   video_link: string | null;
   attendee_count: number;
+  participants: string[];
+  recurring_event_id: string | null;
+};
+
+type MeetingGroupSuggestion = {
+  candidateKey: string;
+  suggestedName: string;
+  cadenceLabel: string;
+  meetingCount: number;
+  participants: string[];
+  meetings: Array<{
+    noteId: string;
+    title: string;
+    startedAtMs: number;
+  }>;
+};
+
+type MeetingGroupAcceptance = {
+  folderId: string;
+  folderName: string;
+  meetingCount: number;
 };
 
 type ExtractionQueueStatus = {
@@ -748,29 +777,6 @@ function wait(ms: number) {
   });
 }
 
-const BUILTIN_TASK_MENTION_HANDLES: Record<string, string> = {
-  "create-gmail-draft": "draft",
-  "create-todo": "todo",
-  "share-note-slack": "slack",
-  "suggest-links": "links",
-  "summarize-note": "summary",
-  "what-have-i-missed": "what-have-i-missed",
-};
-
-function taskMentionHandle(task: AgentDefinition) {
-  const builtin = BUILTIN_TASK_MENTION_HANDLES[task.id];
-  if (builtin) {
-    return builtin;
-  }
-  const slug = task.name
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || task.id.toLowerCase();
-}
-
 function parseTaskMentionSteps(
   content: string,
   tasks: AgentDefinition[],
@@ -1184,6 +1190,12 @@ function App() {
   const [meetingMentionTasks, setMeetingMentionTasks] = useState<
     AgentDefinition[]
   >([]);
+  const [noteTemplates, setNoteTemplates] = useState<NoteTemplate[]>([]);
+  const [meetingTemplateAssignment, setMeetingTemplateAssignment] =
+    useState<MeetingTemplateAssignment | null>(null);
+  const [meetingGroupSuggestions, setMeetingGroupSuggestions] = useState<
+    MeetingGroupSuggestion[]
+  >([]);
   const [meetingQuickNotes, setMeetingQuickNotes] = useState("");
   const [meetingQuickNoteId, setMeetingQuickNoteId] = useState<string | null>(
     null,
@@ -1402,6 +1414,20 @@ function App() {
     return bank;
   }, []);
 
+  const refreshMeetingGroupSuggestions = useCallback(async () => {
+    const suggestions = await invoke<MeetingGroupSuggestion[]>(
+      "list_meeting_group_suggestions",
+    );
+    setMeetingGroupSuggestions(suggestions);
+    return suggestions;
+  }, []);
+
+  const refreshNoteTemplates = useCallback(async () => {
+    const templates = await listNoteTemplates();
+    setNoteTemplates(templates);
+    return templates;
+  }, []);
+
   async function refreshNotes() {
     setIsNotesRefreshing(true);
     try {
@@ -1467,7 +1493,16 @@ function App() {
   useEffect(() => {
     loadBank().catch((loadError: unknown) => setError(String(loadError)));
     void refreshCalendarEvents({ silent: true });
-  }, [loadBank]);
+    void refreshMeetingGroupSuggestions().catch(() => undefined);
+    void refreshNoteTemplates().catch(() => undefined);
+  }, [loadBank, refreshMeetingGroupSuggestions, refreshNoteTemplates]);
+
+  useEffect(() => {
+    const refresh = () => void refreshNoteTemplates().catch(() => undefined);
+    window.addEventListener("smooth-note-templates-changed", refresh);
+    return () =>
+      window.removeEventListener("smooth-note-templates-changed", refresh);
+  }, [refreshNoteTemplates]);
 
   useEffect(() => {
     let disposed = false;
@@ -1743,11 +1778,29 @@ function App() {
     }
   }
 
-  async function createMeetingNote(title: string) {
+  async function createMeetingNote(
+    title: string,
+    calendarEvent: CalendarEvent | null,
+  ) {
     setError(null);
+    const calendarStart = calendarEvent
+      ? Date.parse(calendarEvent.starts_at)
+      : Number.NaN;
     const note = await invoke<NoteWithContent>("create_meeting_note", {
-      title,
-      folderId: null,
+      input: {
+        title,
+        folderId: null,
+        observation: {
+          startedAtMs: Number.isFinite(calendarStart)
+            ? calendarStart
+            : Date.now(),
+          calendarId: calendarEvent?.calendar_id ?? null,
+          calendarEventId: calendarEvent?.id ?? null,
+          recurringEventId: calendarEvent?.recurring_event_id ?? null,
+          calendarTitle: calendarEvent?.title ?? null,
+          calendarParticipants: calendarEvent?.participants ?? [],
+        },
+      },
     });
     await loadBank();
     setActiveNote(note);
@@ -1923,6 +1976,83 @@ function App() {
     }
     await saveMeetingQuickNoteNow();
     return noteId;
+  }
+
+  async function applyMeetingNoteTemplate(template: NoteTemplate) {
+    const transcriptNoteId = meetingNoteIdRef.current;
+    if (!transcriptNoteId) {
+      return;
+    }
+    const preservedNotes = meetingTemplateAssignment
+      ? removeTemplateScaffolding(
+          meetingQuickNotesRef.current,
+          meetingTemplateAssignment.templateContent,
+        )
+      : meetingQuickNotesRef.current;
+    const nextContent = combineTemplateWithNotes(
+      template.content,
+      preservedNotes,
+    );
+    try {
+      const assignment = await invoke<MeetingTemplateAssignment>(
+        "assign_meeting_note_template",
+        {
+          transcriptNoteId,
+          templateId: template.id,
+        },
+      );
+      setMeetingTemplateAssignment(assignment);
+      updateMeetingQuickNotes(nextContent);
+      await ensureMeetingQuickNote();
+      toast.success(`Using “${template.name}” for this meeting`);
+    } catch (templateError) {
+      toast.error(templateError);
+    }
+  }
+
+  async function discardMeetingNoteTemplate() {
+    const transcriptNoteId = meetingNoteIdRef.current;
+    const assignment = meetingTemplateAssignment;
+    if (!transcriptNoteId || !assignment) {
+      return;
+    }
+    const preservedNotes = removeTemplateScaffolding(
+      meetingQuickNotesRef.current,
+      assignment.templateContent,
+    );
+    try {
+      await invoke("discard_meeting_note_template", { transcriptNoteId });
+      if (meetingQuickNoteCreateRef.current) {
+        await meetingQuickNoteCreateRef.current;
+      }
+      setMeetingTemplateAssignment(null);
+
+      if (!preservedNotes.trim()) {
+        if (meetingQuickNoteSaveTimerRef.current !== null) {
+          window.clearTimeout(meetingQuickNoteSaveTimerRef.current);
+          meetingQuickNoteSaveTimerRef.current = null;
+        }
+        const noteId = meetingQuickNoteIdRef.current;
+        if (noteId) {
+          const bank = await invoke<BankSnapshot>("permanent_delete_note", {
+            id: noteId,
+          });
+          setSnapshot(bank);
+        }
+        meetingQuickNotesRef.current = "";
+        meetingQuickNoteIdRef.current = null;
+        meetingQuickNoteFolderIdRef.current = null;
+        setMeetingQuickNotes("");
+        setMeetingQuickNoteId(null);
+        setMeetingQuickNoteSaveState("idle");
+      } else {
+        updateMeetingQuickNotes(preservedNotes);
+        await flushMeetingQuickNote();
+      }
+      toast.success("Template discarded; your own notes were preserved");
+    } catch (templateError) {
+      toast.error(templateError);
+    }
   }
 
   function resetMeetingDiarization() {
@@ -2224,7 +2354,7 @@ function App() {
     setMeetingDetail("Creating note");
     try {
       const title = meetingTitleNow();
-      const note = await createMeetingNote(title);
+      const note = await createMeetingNote(title, actionableCalendarEvent);
       const content = meetingInitialContent(title);
 
       meetingNoteIdRef.current = note.id;
@@ -2243,6 +2373,7 @@ function App() {
       setMeetingQuickNotes("");
       setMeetingQuickNoteId(null);
       setMeetingQuickNoteSaveState("idle");
+      setMeetingTemplateAssignment(null);
       setMeetingNotesOpen(true);
       setMeetingTasksOpen(false);
       setMeetingEndWorkflowSteps([]);
@@ -2253,6 +2384,7 @@ function App() {
           ),
         )
         .catch(() => setMeetingMentionTasks([]));
+      void refreshNoteTemplates().catch(() => setNoteTemplates([]));
       meetingAppendQueueRef.current = Promise.resolve();
       meetingSttSequenceRef.current = 0;
       meetingPendingSttJobsRef.current = 0;
@@ -2370,6 +2502,27 @@ function App() {
       }
     }
 
+    if (meetingNoteToExtract) {
+      try {
+        const suggestions = await invoke<MeetingGroupSuggestion[]>(
+          "finalize_meeting_group_observation",
+          {
+            noteId: meetingNoteToExtract,
+            transcriptParticipants: parseSpeakers(meetingContentRef.current),
+          },
+        );
+        setMeetingGroupSuggestions(suggestions);
+        const groupedNote = await invoke<NoteWithContent>("get_note", {
+          id: meetingNoteToExtract,
+        });
+        meetingFolderIdRef.current = groupedNote.folder_id;
+        applySavedNote(groupedNote);
+        await loadBank();
+      } catch (groupingError) {
+        toast.info(`Meeting grouping observation skipped: ${String(groupingError)}`);
+      }
+    }
+
     if (meetingNoteToExtract && quickNoteToComplete) {
       try {
         const completion = await invoke<MeetingNoteCompletionStatus>(
@@ -2444,6 +2597,7 @@ function App() {
     setMeetingQuickNoteId(null);
     setMeetingQuickNoteSaveState("idle");
     setMeetingMentionTasks([]);
+    setMeetingTemplateAssignment(null);
     setMeetingState("idle");
     setMeetingDetail("Ready");
   }
@@ -2660,6 +2814,54 @@ function App() {
       toast.success(`Moved to ${name}`);
     } catch (moveError) {
       toast.error(moveError);
+    }
+  }
+
+  async function acceptMeetingGroup(suggestion: MeetingGroupSuggestion) {
+    try {
+      const accepted = await invoke<MeetingGroupAcceptance>(
+        "accept_meeting_group_suggestion",
+        { candidateKey: suggestion.candidateKey },
+      );
+      setMeetingGroupSuggestions((current) =>
+        current.filter(
+          ({ candidateKey }) => candidateKey !== suggestion.candidateKey,
+        ),
+      );
+      await loadBank();
+      if (
+        activeNote &&
+        suggestion.meetings.some(({ noteId }) => noteId === activeNote.id)
+      ) {
+        const refreshed = await invoke<NoteWithContent>("get_note", {
+          id: activeNote.id,
+        });
+        setActiveNote(refreshed);
+      }
+      setCollapsedSections((current) => {
+        const key = `open:${accepted.folderId}`;
+        return current.includes(key) ? current : [...current, key];
+      });
+      toast.success(
+        `Grouped ${accepted.meetingCount} meetings in “${accepted.folderName}”`,
+      );
+    } catch (groupError) {
+      toast.error(groupError);
+    }
+  }
+
+  async function dismissMeetingGroup(suggestion: MeetingGroupSuggestion) {
+    try {
+      await invoke("dismiss_meeting_group_suggestion", {
+        candidateKey: suggestion.candidateKey,
+      });
+      setMeetingGroupSuggestions((current) =>
+        current.filter(
+          ({ candidateKey }) => candidateKey !== suggestion.candidateKey,
+        ),
+      );
+    } catch (dismissError) {
+      toast.error(dismissError);
     }
   }
 
@@ -3529,12 +3731,19 @@ function App() {
 
       {meetingNotesOpen && meetingState !== "idle" ? (
         <MeetingQuickNotesPanel
+          activeTemplate={meetingTemplateAssignment}
+          canChangeTemplate={meetingState !== "stopping"}
           noteCreated={Boolean(meetingQuickNoteId)}
           saveState={meetingQuickNoteSaveState}
           tasks={meetingMentionTasks}
+          templates={noteTemplates}
           value={meetingQuickNotes}
+          onApplyTemplate={(template) =>
+            void applyMeetingNoteTemplate(template)
+          }
           onChange={updateMeetingQuickNotes}
           onClose={() => setMeetingNotesOpen(false)}
+          onDiscardTemplate={() => void discardMeetingNoteTemplate()}
         />
       ) : null}
 
@@ -3586,6 +3795,17 @@ function App() {
         />
       ) : null}
 
+      {meetingState === "idle" && meetingGroupSuggestions[0] ? (
+        <MeetingGroupSuggestionDialog
+          suggestion={meetingGroupSuggestions[0]}
+          onAccept={() => acceptMeetingGroup(meetingGroupSuggestions[0])}
+          onDismiss={() => dismissMeetingGroup(meetingGroupSuggestions[0])}
+          onLater={() =>
+            setMeetingGroupSuggestions((current) => current.slice(1))
+          }
+        />
+      ) : null}
+
       <ToastViewport />
 
       {onboarding?.show ? (
@@ -3598,22 +3818,151 @@ function App() {
   );
 }
 
+function MeetingGroupSuggestionDialog({
+  suggestion,
+  onAccept,
+  onDismiss,
+  onLater,
+}: {
+  suggestion: MeetingGroupSuggestion;
+  onAccept: () => Promise<void>;
+  onDismiss: () => Promise<void>;
+  onLater: () => void;
+}) {
+  const [busyAction, setBusyAction] = useState<"accept" | "dismiss" | null>(
+    null,
+  );
+
+  async function run(
+    action: "accept" | "dismiss",
+    callback: () => Promise<void>,
+  ) {
+    setBusyAction(action);
+    try {
+      await callback();
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  return (
+    <div
+      className="meeting-group-backdrop"
+      role="presentation"
+      onMouseDown={busyAction ? undefined : onLater}
+    >
+      <section
+        className="meeting-group-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="meeting-group-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <span className="section-icon">
+            <FolderPlus size={18} />
+          </span>
+          <div>
+            <h2 id="meeting-group-title">Group these meetings?</h2>
+            <p>
+              Smooth noticed a recurring {suggestion.cadenceLabel.toLowerCase()}{" "}
+              meeting.
+            </p>
+          </div>
+        </header>
+
+        <div className="meeting-group-folder">
+          <Folder size={18} />
+          <div>
+            <span>New folder</span>
+            <strong>{suggestion.suggestedName}</strong>
+          </div>
+          <small>{suggestion.meetingCount} meetings</small>
+        </div>
+
+        {suggestion.participants.length > 0 ? (
+          <p className="meeting-group-participants">
+            Common participants: {suggestion.participants.join(", ")}
+          </p>
+        ) : null}
+
+        <div className="meeting-group-evidence">
+          {suggestion.meetings.slice(-3).map((meeting) => (
+            <div key={meeting.noteId}>
+              <FileText size={15} />
+              <span>{meeting.title}</span>
+              <time>
+                {new Date(meeting.startedAtMs).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </time>
+            </div>
+          ))}
+        </div>
+
+        <p className="meeting-group-explanation">
+          Future matching meetings will go into this folder automatically. You
+          can move individual meetings out at any time.
+        </p>
+
+        <footer>
+          <button type="button" onClick={onLater} disabled={busyAction !== null}>
+            Later
+          </button>
+          <button
+            type="button"
+            onClick={() => void run("dismiss", onDismiss)}
+            disabled={busyAction !== null}
+          >
+            {busyAction === "dismiss" ? "Dismissing…" : "Not now"}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void run("accept", onAccept)}
+            disabled={busyAction !== null}
+          >
+            {busyAction === "accept" ? (
+              <Loader2 className="spin" size={15} />
+            ) : (
+              <FolderPlus size={15} />
+            )}
+            Create group
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function MeetingQuickNotesPanel({
+  activeTemplate,
+  canChangeTemplate,
   noteCreated,
   saveState,
   tasks,
+  templates,
   value,
+  onApplyTemplate,
   onChange,
   onClose,
+  onDiscardTemplate,
 }: {
+  activeTemplate: MeetingTemplateAssignment | null;
+  canChangeTemplate: boolean;
   noteCreated: boolean;
   saveState: SaveState;
   tasks: AgentDefinition[];
+  templates: NoteTemplate[];
   value: string;
+  onApplyTemplate: (template: NoteTemplate) => void;
   onChange: (value: string) => void;
   onClose: () => void;
+  onDiscardTemplate: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<{
     start: number;
     end: number;
@@ -3685,10 +4034,73 @@ function MeetingQuickNotesPanel({
           <strong>Meeting notes</strong>
         </div>
         <span className={saveState === "error" ? "error" : ""}>{status}</span>
+        <button
+          type="button"
+          className={activeTemplate ? "active" : ""}
+          onClick={() => setTemplateMenuOpen((open) => !open)}
+          disabled={!canChangeTemplate}
+          title={
+            activeTemplate
+              ? `Template: ${activeTemplate.templateName}`
+              : "Choose note template"
+          }
+        >
+          <BookOpen size={15} />
+        </button>
         <button type="button" onClick={onClose} title="Close meeting notes">
           <X size={15} />
         </button>
       </header>
+      {templateMenuOpen ? (
+        <div className="meeting-template-menu">
+          <div className="meeting-template-menu-heading">
+            <strong>Note template</strong>
+            <small>
+              {activeTemplate
+                ? `Using ${activeTemplate.templateName}`
+                : "Blank note"}
+            </small>
+          </div>
+          {templates.length > 0 ? (
+            <div className="meeting-template-options">
+              {templates.map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  className={
+                    activeTemplate?.templateId === template.id ? "active" : ""
+                  }
+                  onClick={() => {
+                    setTemplateMenuOpen(false);
+                    onApplyTemplate(template);
+                  }}
+                >
+                  <FileText size={14} />
+                  <span>{template.name}</span>
+                  {activeTemplate?.templateId === template.id ? (
+                    <Check size={14} />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p>Create a note template in Settings first.</p>
+          )}
+          {activeTemplate ? (
+            <button
+              type="button"
+              className="meeting-template-discard"
+              onClick={() => {
+                setTemplateMenuOpen(false);
+                onDiscardTemplate();
+              }}
+            >
+              <Trash2 size={14} />
+              Discard template
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="meeting-quick-notes-editor">
         <textarea
           ref={textareaRef}
@@ -3697,7 +4109,14 @@ function MeetingQuickNotesPanel({
             const nextValue = event.currentTarget.value;
             const caret = event.currentTarget.selectionStart;
             onChange(nextValue);
-            updateMentionQuery(nextValue, caret);
+            const inputType = (
+              event.nativeEvent as InputEvent | undefined
+            )?.inputType;
+            if (inputType?.startsWith("delete")) {
+              setMentionQuery(null);
+            } else {
+              updateMentionQuery(nextValue, caret);
+            }
           }}
           onClick={(event) =>
             updateMentionQuery(
@@ -4033,6 +4452,7 @@ type SettingsSection =
   | "audio-capture"
   | "system-audio"
   | "speech-to-text"
+  | "note-templates"
   | "entity-interests"
   | "extraction-queue"
   | "mcp"
@@ -4062,6 +4482,11 @@ const SETTINGS_NAV: {
       { id: "system-audio", label: "System audio" },
       { id: "speech-to-text", label: "Speech to text" },
     ],
+  },
+  {
+    group: "Meetings",
+    icon: NotebookPen,
+    items: [{ id: "note-templates", label: "Note templates" }],
   },
   {
     group: "Knowledge",
@@ -4783,6 +5208,13 @@ function SettingsView({
           {settingsSection === "mcp" ? <McpSettings /> : null}
 
           {settingsSection === "slack" ? <SlackSettings /> : null}
+
+          {settingsSection === "note-templates" ? (
+            <NoteTemplateSettings
+              onError={toast.error}
+              onSuccess={toast.success}
+            />
+          ) : null}
 
       <section
         className="settings-section"

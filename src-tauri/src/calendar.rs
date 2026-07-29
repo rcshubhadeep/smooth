@@ -39,6 +39,8 @@ pub(crate) struct CalendarEvent {
     html_link: Option<String>,
     video_link: Option<String>,
     attendee_count: usize,
+    participants: Vec<String>,
+    recurring_event_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +90,8 @@ struct GoogleEvent {
     hangout_link: Option<String>,
     #[serde(rename = "conferenceData")]
     conference_data: Option<GoogleConferenceData>,
+    #[serde(rename = "recurringEventId")]
+    recurring_event_id: Option<String>,
     attendees: Option<Vec<GoogleAttendee>>,
 }
 
@@ -113,7 +117,6 @@ struct GoogleConferenceEntryPoint {
 
 #[derive(Debug, Deserialize)]
 struct GoogleAttendee {
-    #[allow(dead_code)]
     email: Option<String>,
 }
 
@@ -408,10 +411,16 @@ fn convert_event(calendar: &GoogleCalendarListEntry, event: GoogleEvent) -> Opti
     let video_link = event
         .hangout_link
         .or_else(|| conference_video_link(event.conference_data));
-    let attendee_count = event
-        .attendees
-        .map(|attendees| attendees.len())
-        .unwrap_or(0);
+    let attendees = event.attendees.unwrap_or_default();
+    let attendee_count = attendees.len();
+    let mut participants = attendees
+        .into_iter()
+        .filter_map(|attendee| attendee.email)
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| !email.is_empty())
+        .collect::<Vec<_>>();
+    participants.sort();
+    participants.dedup();
     if attendee_count == 0 && video_link.is_none() {
         return None;
     }
@@ -432,6 +441,10 @@ fn convert_event(calendar: &GoogleCalendarListEntry, event: GoogleEvent) -> Opti
         html_link: event.html_link,
         video_link,
         attendee_count,
+        participants,
+        recurring_event_id: event
+            .recurring_event_id
+            .filter(|value| !value.trim().is_empty()),
     })
 }
 

@@ -10,7 +10,9 @@ mod imports;
 mod llama_runtime;
 mod llm;
 mod mcp;
+mod meeting_groups;
 mod meeting_notes;
+mod note_templates;
 mod onboarding;
 mod reminders;
 mod semantic_search;
@@ -618,7 +620,9 @@ pub(crate) fn open_database(app: &AppHandle) -> Result<Connection, String> {
     chat::init_schema(&connection)?;
     agents::init_schema(&connection)?;
     stt::init_schema(&connection)?;
+    meeting_groups::init_schema(&connection)?;
     meeting_notes::init_schema(&connection)?;
+    note_templates::init_schema(&connection)?;
     mcp::init_schema(&connection)?;
     semantic_search::init_schema(&connection)?;
     slack::init_schema(&connection)?;
@@ -4442,13 +4446,46 @@ pub(crate) fn create_standard_note_with_id(
     )
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMeetingNoteInput {
+    title: Option<String>,
+    folder_id: Option<String>,
+    observation: meeting_groups::MeetingObservationInput,
+}
+
 #[tauri::command]
 fn create_meeting_note(
     app: AppHandle,
-    title: Option<String>,
-    folder_id: Option<String>,
+    input: CreateMeetingNoteInput,
 ) -> Result<NoteWithContent, String> {
-    create_note_with_extraction_status(app, title, folder_id, disabled_extraction_status())
+    let matched_group = if input.folder_id.is_none() {
+        let connection = open_database(&app)?;
+        meeting_groups::resolve_folder_for_new_meeting(&connection, &input.observation)?
+    } else {
+        None
+    };
+    let folder_id = input.folder_id.or_else(|| {
+        matched_group
+            .as_ref()
+            .map(|(folder_id, _)| folder_id.clone())
+    });
+    let note = create_note_with_extraction_status(
+        app.clone(),
+        input.title,
+        folder_id,
+        disabled_extraction_status(),
+    )?;
+    let connection = open_database(&app)?;
+    meeting_groups::record_started_meeting(
+        &connection,
+        &note.id,
+        &input.observation,
+        matched_group
+            .as_ref()
+            .map(|(_, group_id)| group_id.as_str()),
+    )?;
+    Ok(note)
 }
 
 pub(crate) fn create_note_with_extraction_status(
@@ -5364,8 +5401,19 @@ pub fn run() {
             save_note,
             create_meeting_note,
             save_meeting_note,
+            meeting_groups::list_meeting_group_suggestions,
+            meeting_groups::accept_meeting_group_suggestion,
+            meeting_groups::dismiss_meeting_group_suggestion,
+            meeting_groups::finalize_meeting_group_observation,
             meeting_notes::create_meeting_quick_note,
             meeting_notes::enqueue_meeting_note_completion,
+            note_templates::list_note_templates,
+            note_templates::create_note_template,
+            note_templates::update_note_template,
+            note_templates::delete_note_template,
+            note_templates::get_meeting_note_template_assignment,
+            note_templates::assign_meeting_note_template,
+            note_templates::discard_meeting_note_template,
             semantic_search::claim_embedding_job,
             semantic_search::complete_embedding_job,
             semantic_search::fail_embedding_job,

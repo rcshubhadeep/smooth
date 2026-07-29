@@ -67,6 +67,29 @@ export type AgentDefinition = {
 
 export type AgentIconName = "summary" | "links" | "overview" | "slack" | "email" | "todo";
 
+const BUILTIN_TASK_MENTION_HANDLES: Record<string, string> = {
+  "create-gmail-draft": "draft",
+  "create-todo": "todo",
+  "share-note-slack": "slack",
+  "suggest-links": "links",
+  "summarize-note": "summary",
+  "what-have-i-missed": "what-have-i-missed",
+};
+
+export function taskMentionHandle(task: AgentDefinition) {
+  const builtin = BUILTIN_TASK_MENTION_HANDLES[task.id];
+  if (builtin) {
+    return builtin;
+  }
+  const slug = task.name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || task.id.toLowerCase();
+}
+
 // Mirrors `flow::AgentRunResult` / `flow::AgentRunStep` in the Rust backend.
 export type AgentRunStep = {
   tool_name: string;
