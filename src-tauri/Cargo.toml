@@ -56,7 +56,7 @@ hound = "3.5"
 whisper-rs = { version = "0.16", default-features = false }
 tauri-plugin-google-auth = "0.5.1"
 anytomd = { version = "1.3", default-features = false }
-unpdf = { version = "0.7.1", default-features = false }
+pdf-inspector = "0.1.7"
 zip = { version = "2.4", default-features = false }
 
 # macOS-only: NSVisualEffectView translucency (frosted sidebar / window backdrop).

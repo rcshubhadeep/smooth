@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use unpdf::{parse_file, render, render::RenderOptions};
+use pdf_inspector::{process_pdf, PdfType};
 
 use super::{ConvertedAsset, ConvertedDocument, DocumentConverter};
 use crate::imports::types::{ImportFailure, ImportLimits};
@@ -17,9 +17,9 @@ impl DocumentConverter for PdfConverter {
         path: &Path,
         limits: ImportLimits,
     ) -> Result<ConvertedDocument, ImportFailure> {
-        let document = parse_file(path)
+        let result = process_pdf(path)
             .map_err(|error| ImportFailure::permanent(format!("PDF parsing failed: {error}")))?;
-        let page_count = document.page_count();
+        let page_count = result.page_count;
         if page_count > limits.max_pdf_pages {
             return Err(ImportFailure::permanent(format!(
                 "PDF has {page_count} pages; the limit is {}",
@@ -27,41 +27,34 @@ impl DocumentConverter for PdfConverter {
             )));
         }
 
-        let empty_pages = document
-            .pages
-            .iter()
-            .filter(|page| page.plain_text().trim().is_empty())
-            .count();
-        let extracted_chars = document.extraction_quality.char_count;
-        let low_density = page_count > 0 && extracted_chars < page_count as usize * 20;
-        let mostly_empty = page_count > 0 && empty_pages * 100 > page_count as usize * 60;
-        if document.extraction_quality.is_scan_pdf || low_density || mostly_empty {
+        if matches!(result.pdf_type, PdfType::Scanned | PdfType::ImageBased) {
             return Err(ImportFailure::permanent(
                 "OCR required: this PDF appears to contain scanned images rather than embedded text",
             ));
         }
+        if result.has_encoding_issues {
+            return Err(ImportFailure::permanent(
+                "OCR required: this PDF's embedded text uses an encoding that could not be read reliably",
+            ));
+        }
 
         let mut warnings = Vec::new();
-        if let Some(warning) = document.extraction_quality.warning_message() {
-            warnings.push(warning);
+        if !result.pages_needing_ocr.is_empty() {
+            warnings.push(format!(
+                "{} of {page_count} PDF pages may require OCR; imported the readable embedded text",
+                result.pages_needing_ocr.len()
+            ));
         }
-        let markdown = render::to_markdown(&document, &RenderOptions::default())
-            .map_err(|error| ImportFailure::permanent(format!("PDF rendering failed: {error}")))?;
-        let assets = document
-            .resources
-            .iter()
-            .filter(|(_, resource)| resource.is_image())
-            .map(|(id, resource)| ConvertedAsset {
-                source_reference: id.clone(),
-                suggested_name: resource.suggested_filename(id),
-                bytes: resource.data.clone(),
-            })
-            .collect();
+        let markdown = result.markdown.ok_or_else(|| {
+            ImportFailure::permanent("PDF conversion did not produce readable Markdown")
+        })?;
 
         Ok(ConvertedDocument {
-            title: document.metadata.title.clone(),
+            title: result.title,
             markdown,
-            assets,
+            // pdf-inspector focuses on structured text and emits image markers,
+            // but does not expose embedded image bytes for local persistence.
+            assets: Vec::<ConvertedAsset>::new(),
             warnings,
         })
     }
