@@ -7932,7 +7932,7 @@ function NoteEditor({
         </BubbleMenu>
       ) : null}
 
-      <EditorContent editor={editor} />
+      <EditorContent editor={editor} className="editor-content-region" />
       {reminderJumpTarget && reminderJumpTarget.noteId === note.id ? (
         <aside className="reminder-focus-card">
           <div>

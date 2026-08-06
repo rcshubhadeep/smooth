@@ -2487,14 +2487,25 @@ select:hover {
 }
 
 .editor-layout {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Flex column (not a fixed-row grid) so the header and the optional status
+     strip stay auto-height while the editor content takes the rest and scrolls.
+     A rigid grid broke when the always-on toolbar was removed. */
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   overflow: hidden;
 }
 
+/* The editor content is the one region that grows and scrolls; min-height:0 lets
+   it shrink below content size so the inner .tiptap (height:100%) can overflow. */
+.editor-content-region {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .editor-header {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 10px;
   padding: 16px 28px 14px;
@@ -2619,6 +2630,7 @@ select:hover {
    replaces the old always-on formatting toolbar. */
 .editor-status-strip {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 10px;
   padding: 8px 24px;
