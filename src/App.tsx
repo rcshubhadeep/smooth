@@ -6,6 +6,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
 import {
   ArchiveRestore,
@@ -39,6 +40,7 @@ import {
   MessageSquare,
   Mic,
   Monitor,
+  MoreHorizontal,
   Moon,
   NotebookPen,
   PanelRight,
@@ -7105,6 +7107,7 @@ function NoteEditor({
   const [draftTitle, setDraftTitle] = useState("");
   const [draftFolderId, setDraftFolderId] = useState("");
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [editorRevision, setEditorRevision] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
@@ -7144,6 +7147,15 @@ function NoteEditor({
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
   }, [folderMenuOpen]);
+
+  useEffect(() => {
+    if (!actionsMenuOpen) {
+      return;
+    }
+    const close = () => setActionsMenuOpen(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [actionsMenuOpen]);
 
   const editor = useEditor({
     extensions: [
@@ -7702,30 +7714,87 @@ function NoteEditor({
                 </span>
               ) : null}
               <button
-                className="icon-button danger"
+                className={
+                  dictationState === "recording"
+                    ? "icon-button active"
+                    : "icon-button"
+                }
                 type="button"
-                disabled={readOnly}
-                onClick={() => void onTrash(note.id)}
-                title="Move to trash"
+                disabled={
+                  Boolean(note.deleted_at) ||
+                  readOnly ||
+                  dictationState === "transcribing"
+                }
+                onClick={() => void toggleDictation()}
+                title={
+                  dictationState === "recording"
+                    ? "Stop dictation"
+                    : dictationState === "transcribing"
+                      ? "Transcribing"
+                      : "Dictate"
+                }
               >
-                <Trash2 size={17} />
+                {dictationState === "recording" ? (
+                  <Square size={16} />
+                ) : dictationState === "transcribing" ? (
+                  <RefreshCw className="spin" size={16} />
+                ) : (
+                  <Mic size={17} />
+                )}
               </button>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => void exportCurrentNote()}
-                title="Export note as Markdown"
+              <div
+                className="pop-wrap"
+                onPointerDown={(event) => event.stopPropagation()}
               >
-                <Download size={17} />
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={openEmailDraft}
-                title="Create Gmail draft"
-              >
-                <Mail size={17} />
-              </button>
+                <button
+                  className={
+                    actionsMenuOpen ? "icon-button active" : "icon-button"
+                  }
+                  type="button"
+                  onClick={() => setActionsMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={actionsMenuOpen}
+                  title="More actions"
+                >
+                  <MoreHorizontal size={17} />
+                </button>
+                {actionsMenuOpen ? (
+                  <div className="pop-menu align-right" role="menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionsMenuOpen(false);
+                        void exportCurrentNote();
+                      }}
+                    >
+                      <Download size={15} />
+                      Export as Markdown
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionsMenuOpen(false);
+                        openEmailDraft();
+                      }}
+                    >
+                      <Mail size={15} />
+                      Create Gmail draft
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={readOnly}
+                      onClick={() => {
+                        setActionsMenuOpen(false);
+                        void onTrash(note.id);
+                      }}
+                    >
+                      <Trash2 size={15} />
+                      Move to trash
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </>
           )}
           <button
@@ -7783,112 +7852,85 @@ function NoteEditor({
         ) : null}
       </header>
 
-      <div
-        className={
-          note.deleted_at || readOnly
-            ? "editor-toolbar disabled"
-            : "editor-toolbar"
-        }
-      >
-        {readOnly ? (
-          <span className="live-transcript-readonly">Live transcript · read only</span>
-        ) : null}
-        <button
-          disabled={
-            Boolean(note.deleted_at) || !editor || editor.state.selection.empty
-          }
-          type="button"
-          onClick={openReminderDialog}
-          title="Create reminder from selected text"
-        >
-          <Bell size={16} />
-        </button>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <button
-          className={dictationState === "recording" ? "active" : ""}
-          disabled={
-            Boolean(note.deleted_at) ||
-            readOnly ||
-            dictationState === "transcribing"
-          }
-          type="button"
-          onClick={() => void toggleDictation()}
-          title={
-            dictationState === "recording"
-              ? "Stop dictation"
-              : dictationState === "transcribing"
-                ? "Transcribing"
-                : "Start dictation"
+      {readOnly || dictationState !== "idle" ? (
+        <div className="editor-status-strip">
+          {readOnly ? (
+            <span className="live-transcript-readonly">
+              Live transcript · read only
+            </span>
+          ) : null}
+          {dictationState !== "idle" ? (
+            <span className="dictation-status">
+              {dictationState === "recording"
+                ? streamingTranscript || "Listening..."
+                : "Transcribing..."}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {editor ? (
+        <BubbleMenu
+          editor={editor}
+          className="bubble-menu"
+          options={{ placement: "top" }}
+          shouldShow={({ editor: ed, state }) =>
+            ed.isEditable && !state.selection.empty
           }
         >
-          {dictationState === "recording" ? (
-            <Square size={15} />
-          ) : dictationState === "transcribing" ? (
-            <RefreshCw className="spin" size={16} />
-          ) : (
-            <Mic size={16} />
-          )}
-        </button>
-        <span className="toolbar-divider" aria-hidden="true" />
-        {dictationState !== "idle" ? (
-          <span className="dictation-status">
-            {dictationState === "recording"
-              ? streamingTranscript || "Listening..."
-              : "Transcribing..."}
-          </span>
-        ) : null}
-        {dictationState !== "idle" ? (
-          <span className="toolbar-divider" aria-hidden="true" />
-        ) : null}
-        <button
-          className={editor?.isActive("bold") ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || readOnly}
-          type="button"
-          onClick={() => editor?.chain().focus().toggleBold().run()}
-          title="Bold"
-        >
-          <Bold size={16} />
-        </button>
-        <button
-          className={editor?.isActive("italic") ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || readOnly}
-          type="button"
-          onClick={() => editor?.chain().focus().toggleItalic().run()}
-          title="Italic"
-        >
-          <Italic size={16} />
-        </button>
-        <button
-          className={editor?.isActive("strike") ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || readOnly}
-          type="button"
-          onClick={() => editor?.chain().focus().toggleStrike().run()}
-          title="Strikethrough"
-        >
-          <Strikethrough size={16} />
-        </button>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <button
-          className={editor?.isActive("heading", { level: 2 }) ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || readOnly}
-          type="button"
-          onClick={() =>
-            editor?.chain().focus().toggleHeading({ level: 2 }).run()
-          }
-          title="Heading"
-        >
-          <Heading2 size={16} />
-        </button>
-        <button
-          className={editor?.isActive("bulletList") ? "active" : ""}
-          disabled={Boolean(note.deleted_at) || readOnly}
-          type="button"
-          onClick={() => editor?.chain().focus().toggleBulletList().run()}
-          title="Bullet list"
-        >
-          <List size={16} />
-        </button>
-      </div>
+          <button
+            className={editor.isActive("bold") ? "active" : ""}
+            type="button"
+            onClick={() => editor.chain().focus().toggleBold().run()}
+            title="Bold"
+          >
+            <Bold size={16} />
+          </button>
+          <button
+            className={editor.isActive("italic") ? "active" : ""}
+            type="button"
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+            title="Italic"
+          >
+            <Italic size={16} />
+          </button>
+          <button
+            className={editor.isActive("strike") ? "active" : ""}
+            type="button"
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+            title="Strikethrough"
+          >
+            <Strikethrough size={16} />
+          </button>
+          <span className="bubble-divider" aria-hidden="true" />
+          <button
+            className={editor.isActive("heading", { level: 2 }) ? "active" : ""}
+            type="button"
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 2 }).run()
+            }
+            title="Heading"
+          >
+            <Heading2 size={16} />
+          </button>
+          <button
+            className={editor.isActive("bulletList") ? "active" : ""}
+            type="button"
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            title="Bullet list"
+          >
+            <List size={16} />
+          </button>
+          <span className="bubble-divider" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={openReminderDialog}
+            title="Create reminder from selection"
+          >
+            <Bell size={16} />
+          </button>
+        </BubbleMenu>
+      ) : null}
 
       <EditorContent editor={editor} />
       {reminderJumpTarget && reminderJumpTarget.noteId === note.id ? (
