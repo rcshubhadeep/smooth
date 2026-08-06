@@ -36,6 +36,7 @@ import {
   Link2,
   List,
   Mail,
+  MessageSquare,
   Mic,
   Monitor,
   Moon,
@@ -1303,10 +1304,33 @@ function App() {
     startSemanticIndexer();
   }, []);
 
+  // A "meeting" is a transcript note plus the user-generated "… Notes" note that
+  // the backend joins with reciprocal links (labels "Meeting Note" on the
+  // transcript→notes edge, "Parent Meeting" on the reverse). We treat that pair as
+  // a single unit: the transcript note is the meeting's identity in the sidebar,
+  // and the "… Notes" child is hidden there and reachable via the in-editor tab
+  // strip instead. Only meetings whose notes have actually been generated appear
+  // here — nothing is auto-created, so a bare transcript stays a plain note.
+  const meetingIndex = useMemo(() => {
+    const notesByTranscript = new Map<string, string>();
+    const transcriptByNotes = new Map<string, string>();
+    for (const link of snapshot.links) {
+      if (link.label === "Meeting Note") {
+        notesByTranscript.set(link.source_id, link.target_id);
+        transcriptByNotes.set(link.target_id, link.source_id);
+      }
+    }
+    return { notesByTranscript, transcriptByNotes };
+  }, [snapshot.links]);
+
   const folderGroups = useMemo(() => {
     const groups = snapshot.folders.map((folder) => ({
       folder,
-      notes: filteredNotes.filter((note) => note.folder_id === folder.id),
+      notes: filteredNotes.filter(
+        (note) =>
+          note.folder_id === folder.id &&
+          !meetingIndex.transcriptByNotes.has(note.id),
+      ),
     }));
     groups.sort((first, second) => {
       if (first.folder.system_key === "imported") return -1;
@@ -1323,9 +1347,11 @@ function App() {
       });
     }
     return groups;
-  }, [filteredNotes, snapshot.folders, renamingFolderId]);
+  }, [filteredNotes, snapshot.folders, renamingFolderId, meetingIndex]);
 
-  const inboxNotes = filteredNotes.filter((note) => !note.folder_id);
+  const inboxNotes = filteredNotes.filter(
+    (note) => !note.folder_id && !meetingIndex.transcriptByNotes.has(note.id),
+  );
   const actionableCalendarEvent =
     calendarEvents.find((event) =>
       isCalendarEventActionable(event, calendarNow),
@@ -1407,6 +1433,23 @@ function App() {
       .filter((note) => linkByNoteId.has(note.id) && !note.deleted_at)
       .map((note) => ({ note, link: linkByNoteId.get(note.id)! }));
   }, [activeNote?.id, selectedIds, snapshot.links, snapshot.notes]);
+
+  // If the open note is one facet of a meeting (its transcript or its "… Notes"
+  // note), resolve both facet ids so the editor can show the Notes|Transcript
+  // tab strip. Null for ordinary notes.
+  const activeMeeting = useMemo(() => {
+    if (!activeNote) return null;
+    const { notesByTranscript, transcriptByNotes } = meetingIndex;
+    const notesNoteId = notesByTranscript.get(activeNote.id);
+    if (notesNoteId) {
+      return { transcriptId: activeNote.id, notesNoteId };
+    }
+    const transcriptId = transcriptByNotes.get(activeNote.id);
+    if (transcriptId) {
+      return { transcriptId, notesNoteId: activeNote.id };
+    }
+    return null;
+  }, [activeNote, meetingIndex]);
 
   const loadBank = useCallback(async () => {
     const bank = await invoke<BankSnapshot>("get_bank");
@@ -2895,16 +2938,24 @@ function App() {
     folderId: string | null,
     options: { indent?: boolean } = {},
   ) {
-    const rows = notes.map((note) => (
+    const rows = notes.map((note) => {
+      // Meeting rows carry the transcript's identity but land on the Notes facet,
+      // and stay highlighted while either facet is open.
+      const pairedNotesId = meetingIndex.notesByTranscript.get(note.id) ?? null;
+      const isMeetingActive =
+        activeNote?.id === note.id ||
+        (pairedNotesId !== null && activeNote?.id === pairedNotesId);
+      return (
       <NoteRow
         key={note.id}
         activeId={activeNote?.id ?? null}
+        active={isMeetingActive}
         dragging={draggedNoteId === note.id}
         indent={options.indent}
         note={note}
         onDragEnd={endNoteDrag}
         onDragStart={beginNoteDrag}
-        onOpen={openNote}
+        onOpen={pairedNotesId ? () => openNote(pairedNotesId) : openNote}
         onToggleSelected={toggleSelected}
         onContextMenu={(target, x, y) => {
           setFolderMenuTarget(null);
@@ -2923,7 +2974,8 @@ function App() {
           </button>
         }
       />
-    ));
+      );
+    });
 
     if (!draggedNoteId || !isDropTarget(folderId)) {
       return rows;
@@ -3618,6 +3670,8 @@ function App() {
                 key={`${activeNote?.id ?? "none"}:${editorReloadKey}`}
                 note={activeNote}
                 folders={snapshot.folders}
+                meeting={activeMeeting}
+                onSwitchNote={(id) => void openNote(id)}
                 panelOpen={shouldShowContextPanel}
                 externalRevision={meetingContentRevision}
                 externalNoteId={meetingNoteId}
@@ -6247,6 +6301,7 @@ function TreeSection({
 type NoteRowProps = {
   action?: React.ReactNode;
   activeId: string | null;
+  active?: boolean;
   indent?: boolean;
   muted?: boolean;
   note: NoteListItem;
@@ -6263,6 +6318,7 @@ type NoteRowProps = {
 
 function NoteRow({
   activeId,
+  active,
   action,
   indent = false,
   dragging = false,
@@ -6278,9 +6334,10 @@ function NoteRow({
   selectedIds = [],
 }: NoteRowProps) {
   const isSelected = selectedIds.includes(note.id);
+  const isActive = active ?? note.id === activeId;
   const className = [
     "note-row",
-    note.id === activeId ? "active" : "",
+    isActive ? "active" : "",
     isSelected ? "selected" : "",
     dragging ? "dragging" : "",
     muted ? "muted" : "",
@@ -6975,9 +7032,26 @@ function EntityStrip({
   );
 }
 
+// The meeting's "… Notes" facet is stored with a " Notes" suffix appended to the
+// transcript title. Strip it so the header reads as one stable meeting title
+// whichever facet is open. Only cosmetic — pairing is by link, not by title — so a
+// later edit that persists the clean title is harmless.
+function meetingDisplayTitle(
+  noteId: string,
+  title: string,
+  meeting: { transcriptId: string; notesNoteId: string } | null,
+): string {
+  if (meeting && noteId === meeting.notesNoteId) {
+    return title.replace(/\s+Notes$/, "").trim() || title;
+  }
+  return title;
+}
+
 type NoteEditorProps = {
   note: NoteWithContent | null;
   folders: Folder[];
+  meeting: { transcriptId: string; notesNoteId: string } | null;
+  onSwitchNote: (id: string) => void;
   panelOpen: boolean;
   externalRevision: number;
   externalNoteId: string | null;
@@ -7009,6 +7083,8 @@ type NoteEditorProps = {
 function NoteEditor({
   note,
   folders,
+  meeting,
+  onSwitchNote,
   panelOpen,
   externalRevision,
   externalNoteId,
@@ -7104,7 +7180,7 @@ function NoteEditor({
   useEffect(() => {
     isLoadingNoteRef.current = true;
     hasUnsavedChangesRef.current = false;
-    setDraftTitle(note?.title ?? "");
+    setDraftTitle(note ? meetingDisplayTitle(note.id, note.title, meeting) : "");
     setDraftFolderId(note?.folder_id ?? "");
     setSaveState("idle");
     if (editor && !editor.isDestroyed) {
@@ -7130,7 +7206,7 @@ function NoteEditor({
 
     isLoadingNoteRef.current = true;
     hasUnsavedChangesRef.current = false;
-    setDraftTitle(note.title);
+    setDraftTitle(meetingDisplayTitle(note.id, note.title, meeting));
     setDraftFolderId(note.folder_id ?? "");
     editor.commands.setContent(markdownToHtml(note.content));
     window.queueMicrotask(() => {
@@ -7671,6 +7747,40 @@ function NoteEditor({
           }}
           placeholder="Untitled note"
         />
+        {meeting && !note.deleted_at ? (
+          <div className="meeting-tabs">
+            <div className="segmented" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={note.id === meeting.notesNoteId}
+                className={note.id === meeting.notesNoteId ? "active" : ""}
+                onClick={() => {
+                  if (note.id !== meeting.notesNoteId) {
+                    onSwitchNote(meeting.notesNoteId);
+                  }
+                }}
+              >
+                <FileText size={14} />
+                Notes
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={note.id === meeting.transcriptId}
+                className={note.id === meeting.transcriptId ? "active" : ""}
+                onClick={() => {
+                  if (note.id !== meeting.transcriptId) {
+                    onSwitchNote(meeting.transcriptId);
+                  }
+                }}
+              >
+                <MessageSquare size={14} />
+                Transcript
+              </button>
+            </div>
+          </div>
+        ) : null}
       </header>
 
       <div

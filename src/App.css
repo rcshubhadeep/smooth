@@ -3004,6 +3004,22 @@ select:hover {
   color: var(--text);
 }
 
+/* Meeting facet switcher (Notes | Transcript). Lives inside the editor header, so
+   the header supplies the outer padding and the single divider below it. */
+.meeting-tabs {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.meeting-tabs .segmented {
+  width: fit-content;
+}
+
+.meeting-tabs .segmented button {
+  padding: 0 18px;
+}
+
 .segmented button.active {
   background: var(--panel-strong);
   color: var(--text);
