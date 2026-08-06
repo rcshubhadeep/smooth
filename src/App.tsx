@@ -1119,7 +1119,7 @@ function App() {
     }
   };
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
 
   // First-run onboarding — only under the Tauri shell (no backend in browser).
