@@ -7144,7 +7144,6 @@ function NoteEditor({
   const [editorRevision, setEditorRevision] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
-  const [streamingTranscript, setStreamingTranscript] = useState("");
   const [emailDraft, setEmailDraft] = useState<GmailDraftInput | null>(null);
   const [isCreatingEmailDraft, setIsCreatingEmailDraft] = useState(false);
   const [reminderSelection, setReminderSelection] =
@@ -7454,7 +7453,6 @@ function NoteEditor({
     dictationSessionIdRef.current = crypto.randomUUID();
     dictationSequenceRef.current = 0;
     dictationActiveRef.current = true;
-    setStreamingTranscript("");
     setDictationState("recording");
     try {
       await invoke<AudioCaptureStatus>("start_audio_capture");
@@ -7543,9 +7541,6 @@ function NoteEditor({
     const prefix = insertedDictationRef.current ? " " : "";
     editor.chain().focus().insertContent(`${prefix}${cleanText}`).run();
     insertedDictationRef.current = true;
-    setStreamingTranscript((current) =>
-      `${current}${prefix}${cleanText}`.trim().slice(-240),
-    );
     hasUnsavedChangesRef.current = true;
     setEditorRevision((revision) => revision + 1);
   }
