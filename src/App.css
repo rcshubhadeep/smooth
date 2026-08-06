@@ -297,6 +297,30 @@ select:focus-visible,
   letter-spacing: 0.01em;
 }
 
+.titlebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition:
+    background var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.titlebar-toggle:hover,
+.titlebar-toggle.active {
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--text);
+}
+
 .palette-trigger {
   display: inline-flex;
   align-items: center;
@@ -340,12 +364,31 @@ select:focus-visible,
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   min-height: 0;
+  /* Animate the column collapse when entering/leaving focus mode. */
+  transition: grid-template-columns 240ms var(--ease);
+}
+
+/* Focus mode: fold the sidebar away so the editor gets the full width. The grid
+   column animates to 0 while the sidebar clips (overflow) and fades in sync. */
+.app-body.focus .sidebar {
+  margin-left: 0;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-body,
+  .sidebar {
+    transition: none;
+  }
 }
 
 .sidebar {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) 52px;
   gap: 12px;
+  min-width: 0;
   min-height: 0;
   margin: 6px 4px 8px 8px;
   padding: 14px 12px 6px;
@@ -353,6 +396,10 @@ select:focus-visible,
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition:
+    margin 240ms var(--ease),
+    opacity 240ms var(--ease);
 }
 
 .sidebar-header {

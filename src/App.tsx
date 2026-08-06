@@ -43,6 +43,8 @@ import {
   MoreHorizontal,
   Moon,
   NotebookPen,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
   Pause,
   Pencil,
@@ -1120,6 +1122,7 @@ function App() {
   };
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
 
   // First-run onboarding — only under the Tauri shell (no backend in browser).
@@ -1383,6 +1386,13 @@ function App() {
       } else if (meta && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setPaletteOpen(true);
+      } else if (
+        meta &&
+        event.shiftKey &&
+        (event.key === "\\" || event.key === "|")
+      ) {
+        event.preventDefault();
+        setFocusMode((on) => !on);
       } else if (meta && event.key === "\\") {
         event.preventDefault();
         setPanelOpen((open) => !open);
@@ -3234,6 +3244,23 @@ function App() {
   return (
     <div className="app-shell">
       <header className="titlebar" data-tauri-drag-region>
+        <button
+          className={focusMode ? "titlebar-toggle active" : "titlebar-toggle"}
+          type="button"
+          onClick={() => setFocusMode((on) => !on)}
+          title={
+            focusMode
+              ? "Show sidebar (⌘⇧\\)"
+              : "Focus mode — hide sidebar (⌘⇧\\)"
+          }
+          aria-pressed={focusMode}
+        >
+          {focusMode ? (
+            <PanelLeftOpen size={16} />
+          ) : (
+            <PanelLeftClose size={16} />
+          )}
+        </button>
         <span className="brand">
           <span className="brand-mark" aria-hidden="true">
             S
@@ -3253,8 +3280,12 @@ function App() {
         </button>
       </header>
       <div
-        className="app-body"
-        style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}
+        className={focusMode ? "app-body focus" : "app-body"}
+        style={{
+          gridTemplateColumns: focusMode
+            ? "0px minmax(0, 1fr)"
+            : `${sidebarWidth}px minmax(0, 1fr)`,
+        }}
       >
         <aside className="sidebar">
           <div className="sidebar-header">
@@ -3729,12 +3760,14 @@ function App() {
             </div>
           )}
         </section>
-        <ResizeHandle
-          side="left"
-          ariaLabel="Resize sidebar"
-          style={{ left: sidebarWidth }}
-          onResize={resizeSidebar}
-        />
+        {!focusMode ? (
+          <ResizeHandle
+            side="left"
+            ariaLabel="Resize sidebar"
+            style={{ left: sidebarWidth }}
+            onResize={resizeSidebar}
+          />
+        ) : null}
       </div>
 
       {paletteOpen ? (
@@ -7852,20 +7885,11 @@ function NoteEditor({
         ) : null}
       </header>
 
-      {readOnly || dictationState !== "idle" ? (
+      {readOnly ? (
         <div className="editor-status-strip">
-          {readOnly ? (
-            <span className="live-transcript-readonly">
-              Live transcript · read only
-            </span>
-          ) : null}
-          {dictationState !== "idle" ? (
-            <span className="dictation-status">
-              {dictationState === "recording"
-                ? streamingTranscript || "Listening..."
-                : "Transcribing..."}
-            </span>
-          ) : null}
+          <span className="live-transcript-readonly">
+            Live transcript · read only
+          </span>
         </div>
       ) : null}
 
