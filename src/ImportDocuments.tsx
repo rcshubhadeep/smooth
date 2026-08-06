@@ -47,10 +47,25 @@ const FILE_FILTERS = [
     name: "Documents",
     extensions: [
       "pdf",
+      "doc",
       "docx",
+      "docm",
+      "ppt",
+      "pps",
+      "pot",
       "pptx",
+      "pptm",
+      "ppsx",
+      "ppsm",
       "xlsx",
       "xls",
+      "xlsm",
+      "xlsb",
+      "odt",
+      "ods",
+      "odp",
+      "rtf",
+      "epub",
       "html",
       "htm",
       "csv",
@@ -194,7 +209,7 @@ export default function ImportDocuments({
             <header>
               <div>
                 <h2 id="import-title">Import documents</h2>
-                <p>Files become Markdown notes in Imported.</p>
+                <p>Office files, PDFs, ebooks, and text files become Markdown notes in Imported.</p>
               </div>
               <button type="button" onClick={() => setOpenPanel(false)} aria-label="Close">
                 <X size={18} />

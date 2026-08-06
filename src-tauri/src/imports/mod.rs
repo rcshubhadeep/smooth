@@ -387,9 +387,11 @@ fn detect_format(path: &std::path::Path) -> Result<String, String> {
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| "The selected file has no supported extension".to_string())?;
     const SUPPORTED: &[&str] = &[
-        "pdf", "docx", "pptx", "xlsx", "xls", "html", "htm", "csv", "ipynb", "json", "xml", "txt",
-        "md", "rst", "log", "toml", "yaml", "yml", "ini", "cfg", "py", "rs", "js", "jsx", "ts",
-        "tsx", "c", "h", "cpp", "hpp", "go", "java", "rb", "swift", "sh", "sql", "css",
+        "pdf", "doc", "docx", "docm", "ppt", "pps", "pot", "pptx", "pptm", "ppsx", "ppsm", "xls",
+        "xlsx", "xlsm", "xlsb", "odt", "ods", "odp", "rtf", "epub", "html", "htm", "csv", "ipynb",
+        "json", "xml", "txt", "md", "rst", "log", "toml", "yaml", "yml", "ini", "cfg", "py", "rs",
+        "js", "jsx", "ts", "tsx", "c", "h", "cpp", "hpp", "go", "java", "rb", "swift", "sh", "sql",
+        "css",
     ];
     if SUPPORTED.contains(&extension.as_str()) {
         Ok(extension)
@@ -401,7 +403,10 @@ fn detect_format(path: &std::path::Path) -> Result<String, String> {
 fn validate_source_size(format: &str, size: u64, limits: ImportLimits) -> Result<(), String> {
     let limit = match format {
         "pdf" => limits.max_pdf_bytes,
-        "docx" | "pptx" | "xlsx" | "xls" => limits.max_office_bytes,
+        "doc" | "docx" | "docm" | "ppt" | "pps" | "pot" | "pptx" | "pptm" | "ppsx" | "ppsm"
+        | "xls" | "xlsx" | "xlsm" | "xlsb" | "odt" | "ods" | "odp" | "rtf" | "epub" => {
+            limits.max_office_bytes
+        }
         "html" | "htm" | "csv" | "ipynb" | "json" | "xml" => limits.max_structured_bytes,
         _ => limits.max_text_bytes,
     };
@@ -463,5 +468,16 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn detects_new_anydoc_formats() {
+        for extension in [
+            "doc", "docm", "ppt", "pps", "pot", "pptm", "ppsx", "ppsm", "xlsm", "xlsb", "odt",
+            "ods", "odp", "rtf", "epub",
+        ] {
+            let path = PathBuf::from(format!("document.{extension}"));
+            assert_eq!(detect_format(&path).unwrap(), extension);
+        }
     }
 }

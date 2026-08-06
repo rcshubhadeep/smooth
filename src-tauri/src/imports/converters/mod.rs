@@ -1,5 +1,5 @@
+mod anydoc;
 mod anytomd;
-mod pdf;
 
 use std::path::Path;
 
@@ -32,7 +32,8 @@ pub(crate) fn convert(
     format: &str,
     limits: ImportLimits,
 ) -> Result<ConvertedDocument, ImportFailure> {
-    let converters: [&dyn DocumentConverter; 2] = [&pdf::PdfConverter, &anytomd::AnyToMdConverter];
+    let converters: [&dyn DocumentConverter; 2] =
+        [&anydoc::AnydocConverter, &anytomd::AnyToMdConverter];
     let converter = converters
         .into_iter()
         .find(|converter| converter.supports(format))

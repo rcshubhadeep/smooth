@@ -9,7 +9,7 @@ pub(crate) struct AnyToMdConverter;
 
 impl DocumentConverter for AnyToMdConverter {
     fn supports(&self, format: &str) -> bool {
-        format != "pdf"
+        !super::anydoc::supports_format(format)
     }
 
     fn convert(
@@ -17,15 +17,6 @@ impl DocumentConverter for AnyToMdConverter {
         path: &Path,
         limits: ImportLimits,
     ) -> Result<ConvertedDocument, ImportFailure> {
-        if matches!(
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref(),
-            Some("docx" | "pptx" | "xlsx")
-        ) {
-            validate_archive(path, limits)?;
-        }
         let options = ConversionOptions {
             extract_images: true,
             extract_comments: false,
@@ -62,49 +53,4 @@ impl DocumentConverter for AnyToMdConverter {
             warnings,
         })
     }
-}
-
-fn validate_archive(path: &Path, limits: ImportLimits) -> Result<(), ImportFailure> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| ImportFailure::retryable(format!("Could not open document: {error}")))?;
-    let source_size = file
-        .metadata()
-        .map_err(|error| ImportFailure::retryable(format!("Could not inspect document: {error}")))?
-        .len()
-        .max(1);
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| ImportFailure::permanent(format!("Invalid Office archive: {error}")))?;
-    if archive.len() > limits.max_archive_entries {
-        return Err(ImportFailure::permanent(format!(
-            "Office document contains {} archive entries; the limit is {}",
-            archive.len(),
-            limits.max_archive_entries
-        )));
-    }
-
-    let mut expanded = 0_u64;
-    for index in 0..archive.len() {
-        let entry = archive
-            .by_index(index)
-            .map_err(|error| ImportFailure::permanent(format!("Invalid archive entry: {error}")))?;
-        if entry.enclosed_name().is_none() {
-            return Err(ImportFailure::permanent(
-                "Office document contains an unsafe archive path",
-            ));
-        }
-        expanded = expanded.saturating_add(entry.size());
-        if expanded > limits.max_expanded_archive_bytes as u64 {
-            return Err(ImportFailure::permanent(format!(
-                "Expanded Office document exceeds {} MiB",
-                limits.max_expanded_archive_bytes / 1024 / 1024
-            )));
-        }
-    }
-    if expanded / source_size > limits.max_archive_expansion_ratio {
-        return Err(ImportFailure::permanent(format!(
-            "Office document expansion ratio exceeds {}x",
-            limits.max_archive_expansion_ratio
-        )));
-    }
-    Ok(())
 }
