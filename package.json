@@ -10,9 +10,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:dev:metal": "tauri dev -- --features metal",
-    "tauri:build": "./scripts/tauri-build.sh metal",
-    "tauri:build:metal": "./scripts/tauri-build.sh metal",
-    "tauri:build:cpu": "./scripts/tauri-build.sh cpu"
+    "tauri:build": "node scripts/tauri-build.mjs",
+    "tauri:build:metal": "node scripts/tauri-build.mjs metal",
+    "tauri:build:cpu": "node scripts/tauri-build.mjs cpu"
   },
   "dependencies": {
     "@choochmeque/tauri-plugin-google-auth-api": "^0.5.1",

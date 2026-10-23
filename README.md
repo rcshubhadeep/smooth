@@ -23,7 +23,7 @@ Smooth is a desktop knowledge-bank app (built with Tauri + React) for capturing,
 
 ```bash
 npm install
-npm run tauri:dev        # default build (Metal acceleration on macOS)
+npm run tauri:dev        # portable CPU build
 npm run tauri:dev:metal  # explicit Metal build
 ```
 
@@ -32,7 +32,7 @@ Other acceleration backends are available as Cargo features on the `src-tauri` c
 ## Building
 
 ```bash
-npm run tauri:build       # Metal (default on macOS)
+npm run tauri:build       # Metal on macOS, CPU on Windows/Linux
 npm run tauri:build:cpu   # CPU-only, no acceleration feature
 ```
 
@@ -110,3 +110,24 @@ Claude Desktop only talks to MCP servers over stdio, but Smooth's MCP server spe
 
 - Do **NOT** commit your token to version control.
 - If you regenerate the token in Smooth's MCP settings panel, update `AUTH_HEADER` here too — the old token stops working immediately.
+
+### Windows builds
+
+Install Visual Studio Build Tools with Desktop development with C++, the Windows SDK, Rust MSVC, CMake, LLVM (libclang), and WebView2. Set `LIBCLANG_PATH` to the LLVM bin directory if needed. Run `npm install`, then `npm run tauri:build:cpu` from PowerShell. Set `LLAMA_SERVER_PATH` to llama-server.exe before packaging.
+
+Use a Visual Studio developer PowerShell so the C++ compiler and Windows SDK
+are available. In that same session, configure the native dependencies:
+
+```powershell
+$env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
+$env:LLAMA_SERVER_PATH = 'C:\path\to\llama-server.exe'
+npm run tauri:build:cpu
+# Or run the application during development:
+npm run tauri:dev
+```
+
+Replace the llama-server path with your actual Windows executable. It is required
+by the current sidecar configuration for both development and packaged builds.
+If Rust picks Git's `link.exe`, set
+`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` to the full path of Microsoft's
+`link.exe` in your installed MSVC `bin\Hostx64\x64` directory.

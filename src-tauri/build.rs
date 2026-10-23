@@ -383,7 +383,10 @@ fn build_diarization_helper() {
     let sidecar_lock = sidecar_dir.join("Cargo.lock");
     let sidecar_source = sidecar_dir.join("src").join("main.rs");
     let binaries_dir = manifest_dir.join("binaries");
-    let output = binaries_dir.join(format!("smooth-diarize-{target}"));
+    let output = binaries_dir.join(format!(
+        "smooth-diarize-{target}{}",
+        if target.contains("windows") { ".exe" } else { "" }
+    ));
 
     println!("cargo:rerun-if-changed={}", sidecar_manifest.display());
     println!("cargo:rerun-if-changed={}", sidecar_lock.display());

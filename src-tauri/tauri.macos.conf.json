@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/smooth-system-audio",
+      "binaries/smooth-diarize",
+      "binaries/llama-server"
+    ],
+    "resources": [
+      "binaries/llama-libs"
+    ]
+  }
+}
