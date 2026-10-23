@@ -131,3 +131,6 @@ by the current sidecar configuration for both development and packaged builds.
 If Rust picks Git's `link.exe`, set
 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` to the full path of Microsoft's
 `link.exe` in your installed MSVC `bin\Hostx64\x64` directory.
+
+**NOTE**
+Full working build is not tested in Windows. If you find issues please report. Thanks!
